@@ -26,4 +26,5 @@ type ResultReport struct {
 	Summary      string `json:"summary"`
 	JSONLFile    string `json:"jsonl_file"`
 	ToolCallsRun int    `json:"tool_calls_run"`
+	WorkingDir   string `json:"working_dir"`
 }

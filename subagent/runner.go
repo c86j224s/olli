@@ -119,6 +119,7 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 				Summary:      "⚠️ Subagent execution was interrupted by user (ESC Key).",
 				JSONLFile:    jsonlPath,
 				ToolCallsRun: toolCallsRun,
+				WorkingDir:   r.workspace,
 			}, nil
 		default:
 		}
@@ -135,6 +136,7 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 					Summary:      "⚠️ Subagent execution was interrupted by user (ESC Key).",
 					JSONLFile:    jsonlPath,
 					ToolCallsRun: toolCallsRun,
+					WorkingDir:   r.workspace,
 				}, nil
 			}
 			return nil, fmt.Errorf("subagent LLM stream failed: %w", err)
@@ -162,6 +164,7 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 						Summary:      "⚠️ Subagent execution was interrupted by user (ESC Key).",
 						JSONLFile:    jsonlPath,
 						ToolCallsRun: toolCallsRun,
+						WorkingDir:   r.workspace,
 					}, nil
 				}
 
@@ -202,6 +205,7 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 		Summary:      strings.TrimSpace(finalAnswer),
 		JSONLFile:    jsonlPath,
 		ToolCallsRun: toolCallsRun,
+		WorkingDir:   r.workspace,
 	}
 
 	return report, nil
