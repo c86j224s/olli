@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// ViewFile reads file contents within workspace boundary
+// ViewFile reads file contents within workspace boundary with line-range slicing
 func ViewFile(filePath string, startLine int, endLine int, workspace string) (string, error) {
 	safePath, err := IsPathSafe(filePath, workspace)
 	if err != nil {
@@ -50,7 +50,7 @@ func ViewFile(filePath string, startLine int, endLine int, workspace string) (st
 	return fmt.Sprintf("File: %s (Lines %d-%d):\n%s", safePath, startLine, endLine, strings.Join(lines, "\n")), nil
 }
 
-// EditFile replaces content in a file within workspace boundary
+// EditFile replaces a specific target section or creates/overwrites file content within workspace boundary
 func EditFile(filePath string, targetContent string, replacementContent string, workspace string) (string, error) {
 	safePath, err := IsPathSafe(filePath, workspace)
 	if err != nil {
@@ -71,7 +71,7 @@ func EditFile(filePath string, targetContent string, replacementContent string, 
 	content := string(data)
 	if targetContent != "" {
 		if !strings.Contains(content, targetContent) {
-			return "", fmt.Errorf("target content not found in file '%s'", safePath)
+			return "", fmt.Errorf("target content chunk not found in file '%s'", safePath)
 		}
 		content = strings.Replace(content, targetContent, replacementContent, 1)
 	} else {
@@ -83,6 +83,26 @@ func EditFile(filePath string, targetContent string, replacementContent string, 
 	}
 
 	return fmt.Sprintf("File '%s' successfully updated.", safePath), nil
+}
+
+// AppendFile appends new content to the end of a file without overwriting existing content
+func AppendFile(filePath string, appendContent string, workspace string) (string, error) {
+	safePath, err := IsPathSafe(filePath, workspace)
+	if err != nil {
+		return "", fmt.Errorf("security block: %w", err)
+	}
+
+	file, err := os.OpenFile(safePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return "", fmt.Errorf("failed to open file '%s' for append: %w", safePath, err)
+	}
+	defer file.Close()
+
+	if _, err := file.WriteString(appendContent); err != nil {
+		return "", fmt.Errorf("failed to append content to file '%s': %w", safePath, err)
+	}
+
+	return fmt.Sprintf("Successfully appended %d bytes to file '%s'.", len(appendContent), safePath), nil
 }
 
 // GrepSearch performs pattern search across files in workspace
@@ -99,15 +119,8 @@ func GrepSearch(query string, searchPath string, workspace string) (string, erro
 	queryLower := strings.ToLower(query)
 	var matches []string
 
-	err = filepath.Walk(safePath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		if info.IsDir() {
-			name := info.Name()
-			if name == ".git" || name == "node_modules" || name == "bin" || name == "sessions" {
-				return filepath.SkipDir
-			}
+	_ = filepath.Walk(safePath, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
 			return nil
 		}
 
@@ -124,9 +137,9 @@ func GrepSearch(query string, searchPath string, workspace string) (string, erro
 			text := scanner.Text()
 			if strings.Contains(strings.ToLower(text), queryLower) {
 				relPath, _ := filepath.Rel(workspace, path)
-				matches = append(matches, fmt.Sprintf("%s:%d: %s", relPath, lineNo, strings.TrimSpace(text)))
-				if len(matches) >= 50 {
-					return fmt.Errorf("limit reached")
+				matches = append(matches, fmt.Sprintf("%s:%d: %s", relPath, lineNo, text))
+				if len(matches) >= 100 {
+					return fmt.Errorf("max matches reached")
 				}
 			}
 		}
@@ -134,13 +147,13 @@ func GrepSearch(query string, searchPath string, workspace string) (string, erro
 	})
 
 	if len(matches) == 0 {
-		return fmt.Sprintf("No matches found for query '%s' in %s", query, searchPath), nil
+		return fmt.Sprintf("No matches found for query '%s' in path '%s'", query, searchPath), nil
 	}
 
 	return fmt.Sprintf("Grep Search Results for '%s' (%d matches):\n%s", query, len(matches), strings.Join(matches, "\n")), nil
 }
 
-// ListDir lists directory contents safely
+// ListDir lists directory contents within workspace boundary
 func ListDir(dirPath string, workspace string) (string, error) {
 	if dirPath == "" {
 		dirPath = workspace
@@ -153,139 +166,95 @@ func ListDir(dirPath string, workspace string) (string, error) {
 
 	entries, err := os.ReadDir(safePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to list directory '%s': %w", safePath, err)
+		return "", fmt.Errorf("failed to read directory '%s': %w", safePath, err)
 	}
 
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("Contents of '%s':\n", safePath))
+	var results []string
 	for _, entry := range entries {
-		kind := "FILE"
+		info, err := entry.Info()
+		typeStr := "[FILE]"
 		if entry.IsDir() {
-			kind = "DIR "
+			typeStr = "[DIR ]"
 		}
-		sb.WriteString(fmt.Sprintf("  [%s] %s\n", kind, entry.Name()))
+		sizeStr := ""
+		if err == nil && !entry.IsDir() {
+			sizeStr = fmt.Sprintf(" (%d bytes)", info.Size())
+		}
+		results = append(results, fmt.Sprintf("  • %s %s%s", typeStr, entry.Name(), sizeStr))
 	}
 
-	return sb.String(), nil
+	return fmt.Sprintf("Directory Contents of '%s' (%d items):\n%s", safePath, len(results), strings.Join(results, "\n")), nil
 }
 
-// ParseCommandArgs extracts command string gracefully from various LLM argument schemas
-func ParseCommandArgs(args map[string]interface{}) string {
-	possibleKeys := []string{"command", "cmd", "command_string", "args", "arguments"}
-
-	for _, k := range possibleKeys {
-		val, exists := args[k]
-		if !exists || val == nil {
-			continue
-		}
-
-		switch v := val.(type) {
-		case string:
-			trimmed := strings.TrimSpace(v)
-			if trimmed != "" {
-				return cleanCommandString(trimmed)
-			}
-		case []interface{}:
-			var parts []string
-			for _, elem := range v {
-				parts = append(parts, fmt.Sprintf("%v", elem))
-			}
-			joined := strings.TrimSpace(strings.Join(parts, " "))
-			if joined != "" {
-				return cleanCommandString(joined)
-			}
-		}
-	}
-
-	if cmd, ok := args["command"].(string); ok {
-		return cleanCommandString(cmd)
-	}
-
-	return ""
-}
-
-func cleanCommandString(cmdStr string) string {
+// ExecuteCommandWithWorkspace executes terminal commands safely within the target workspace directory
+func ExecuteCommandWithWorkspace(ctx context.Context, cmdStr string, workspace string) (string, string, error) {
 	cmdStr = strings.TrimSpace(cmdStr)
-	if (strings.HasPrefix(cmdStr, `"`) && strings.HasSuffix(cmdStr, `"`)) ||
-		(strings.HasPrefix(cmdStr, `'`) && strings.HasSuffix(cmdStr, `'`)) {
-		cmdStr = strings.Trim(cmdStr, `"'`)
-	}
-	return strings.TrimSpace(cmdStr)
-}
-
-// ExecuteCommand runs terminal commands safely inside workspace
-func ExecuteCommand(cmdStr string, workspace string) (string, error) {
-	return ExecuteCommandWithContext(context.Background(), cmdStr, workspace)
-}
-
-// ExecuteCommandWithContext runs terminal command with cancellation context support to kill process on interrupt
-func ExecuteCommandWithContext(ctx context.Context, cmdStr string, workspace string) (string, error) {
-	output, _, err := ExecuteCommandWithWorkspace(ctx, cmdStr, workspace)
-	return output, err
-}
-
-// ExecuteCommandWithWorkspace executes command and returns updated workspace if 'cd' was invoked
-func ExecuteCommandWithWorkspace(ctx context.Context, cmdStr string, workspace string) (output string, newWorkspace string, err error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	execCtx := ctx
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		var cancel context.CancelFunc
-		execCtx, cancel = context.WithTimeout(ctx, 35*time.Second)
-		defer cancel()
-	}
-
-	newWorkspace = workspace
 	if cmdStr == "" {
-		return "", newWorkspace, fmt.Errorf("empty terminal command received")
+		return "", workspace, fmt.Errorf("command string cannot be empty")
 	}
 
-	if err := ValidateCommandSafety(cmdStr, workspace); err != nil {
-		return "", newWorkspace, fmt.Errorf("security block: %w", err)
-	}
-
-	// If command contains 'cd', calculate resulting directory and update active workspace
-	trimmed := strings.TrimSpace(cmdStr)
-	if strings.HasPrefix(trimmed, "cd ") || strings.Contains(trimmed, " cd ") || strings.Contains(trimmed, ";cd ") || strings.Contains(trimmed, "&&cd ") {
-		cdCheckCmd := fmt.Sprintf("%s && pwd", trimmed)
-		checkCmd := exec.CommandContext(execCtx, "bash", "-c", cdCheckCmd)
-		checkCmd.Dir = workspace
-		checkOut, checkErr := checkCmd.CombinedOutput()
-		if checkErr == nil {
-			lines := strings.Split(strings.TrimSpace(string(checkOut)), "\n")
-			if len(lines) > 0 {
-				lastLine := strings.TrimSpace(lines[len(lines)-1])
-				if safeDir, sErr := IsPathSafe(lastLine, workspace); sErr == nil {
-					newWorkspace = safeDir
-				}
-			}
+	// Handle 'cd <dir>' command to mutate current working directory
+	if strings.HasPrefix(cmdStr, "cd ") || cmdStr == "cd" {
+		targetDir := strings.TrimPrefix(cmdStr, "cd")
+		targetDir = strings.TrimSpace(targetDir)
+		if targetDir == "" {
+			home, _ := os.UserHomeDir()
+			targetDir = home
 		}
+
+		targetDir = ExpandTilde(targetDir)
+		if !filepath.IsAbs(targetDir) {
+			targetDir = filepath.Join(workspace, targetDir)
+		}
+
+		if err := IsWorkspaceLocationSafe(targetDir); err != nil {
+			return "", workspace, fmt.Errorf("security block: directory '%s' is forbidden: %w", targetDir, err)
+		}
+
+		info, err := os.Stat(targetDir)
+		if err != nil || !info.IsDir() {
+			return "", workspace, fmt.Errorf("directory '%s' does not exist or is not a directory", targetDir)
+		}
+
+		return fmt.Sprintf("Working directory successfully changed to '%s'", targetDir), targetDir, nil
 	}
 
-	cmd := exec.CommandContext(execCtx, "bash", "-c", cmdStr)
+	// Security check on workspace
+	if err := IsWorkspaceLocationSafe(workspace); err != nil {
+		return "", workspace, fmt.Errorf("security block: workspace directory '%s' is forbidden: %w", workspace, err)
+	}
+
+	// 35-second execution timeout guard to prevent terminal hangs
+	execCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(execCtx, "sh", "-c", cmdStr)
 	cmd.Dir = workspace
 
-	out, err := cmd.CombinedOutput()
-	outputStr := string(out)
+	outBytes, err := cmd.CombinedOutput()
+	output := string(outBytes)
+
+	if execCtx.Err() == context.DeadlineExceeded {
+		return output + "\n⚠️ [Timeout Error] Terminal command timed out after 35 seconds.", workspace, fmt.Errorf("command execution timed out after 35s")
+	}
+
 	if err != nil {
-		if execCtx.Err() == context.DeadlineExceeded {
-			return fmt.Sprintf("⚠️ [Command Execution Timeout]: Command '%s' exceeded 35 seconds limit.\nPartial Output:\n%s", cmdStr, outputStr), newWorkspace, nil
-		}
-		if ctx.Err() == context.Canceled {
-			return "", newWorkspace, context.Canceled
-		}
-		return fmt.Sprintf("Command exited with error: %v\nOutput:\n%s", err, outputStr), newWorkspace, nil
+		return output, workspace, fmt.Errorf("command exited with error: %w", err)
 	}
 
-	if len(outputStr) > 4000 {
-		outputStr = outputStr[:4000] + "\n... [Output Truncated]"
+	if output == "" {
+		output = "[Command executed successfully with no output]"
 	}
 
-	if newWorkspace != workspace {
-		outputStr = fmt.Sprintf("%s\n\n📌 [Workspace Directory Updated]: Now working in '%s'", strings.TrimSpace(outputStr), newWorkspace)
-	}
+	return output, workspace, nil
+}
 
-	return outputStr, newWorkspace, nil
+func ParseCommandArgs(args map[string]interface{}) string {
+	if cmd, ok := args["command"].(string); ok {
+		return cmd
+	}
+	if cmd, ok := args["cmd"].(string); ok {
+		return cmd
+	}
+	return ""
 }

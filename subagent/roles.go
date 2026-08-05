@@ -127,7 +127,7 @@ func (r *SubagentRunner) RunCoder(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_coder_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, query session history and past subagent investigation reports, and perform edits or code refactoring as requested."
+	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, query session history and past subagent investigation reports, and perform targeted edits, incremental appends, or code refactoring as requested."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -137,7 +137,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "view_file",
-			Description: "View lines of code from a file",
+			Description: "View specific lines of code from a file (sliced by start_line and end_line)",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
@@ -159,12 +159,12 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "edit_file",
-			Description: "Create or replace content in a code file",
+			Description: "Targeted replace of a specific code chunk or section in a file",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
 					"file_path":           {Type: "string", Description: "File path to edit"},
-					"target_content":      {Type: "string", Description: "Target string to replace (empty for new file)"},
+					"target_content":      {Type: "string", Description: "Target code chunk to replace (empty to create/overwrite whole file)"},
 					"replacement_content": {Type: "string", Description: "Replacement content string"},
 				},
 				Required: []string{"file_path", "replacement_content"},
@@ -175,6 +175,26 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
 		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "append_file",
+			Description: "Append new code or content to the end of a file incrementally without overwriting existing content",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"file_path":      {Type: "string", Description: "Target file path to append to"},
+					"append_content": {Type: "string", Description: "Content text or code section to append to the end of the file"},
+				},
+				Required: []string{"file_path", "append_content"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		fp, _ := args["file_path"].(string)
+		ac, _ := args["append_content"].(string)
+		return tools.AppendFile(fp, ac, reg.GetWorkspace())
 	})
 
 	reg.Register(ollama.Tool{
@@ -461,7 +481,7 @@ func (r *SubagentRunner) RunDocumenter(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_documenter_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, and READMEs. MANDATORY INSTRUCTION: Before writing documentation, you MUST use 'list_subagent_reports', 'view_subagent_report', 'search_session_history', 'view_file', or 'list_dir' to inspect subagent investigation findings, user history, and real source code. Always write the final documentation file using 'edit_file'."
+	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, and READMEs. INCREMENTAL EDITING INSTRUCTION: You can view specific line ranges with 'view_file(path, start, end)', replace targeted sections with 'edit_file(path, target_content, replacement_content)', or append new sections incrementally with 'append_file(path, append_content)'. Before writing, inspect subagent investigation findings ('list_subagent_reports' / 'view_subagent_report'), active session history ('search_session_history'), and real source code."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -549,12 +569,12 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "view_file",
-			Description: "View existing documentation or source code file",
+			Description: "View existing documentation or source code file by line-range chunk (start_line, end_line)",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
 					"file_path":  {Type: "string", Description: "File path"},
-					"start_line": {Type: "number", Description: "Start line"},
+					"start_line": {Type: "number", Description: "Start line (1-indexed)"},
 					"end_line":   {Type: "number", Description: "End line"},
 				},
 				Required: []string{"file_path"},
@@ -591,13 +611,13 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "edit_file",
-			Description: "Create or update Markdown documentation file",
+			Description: "Targeted replace of a specific section/chunk or create/overwrite a file",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
 					"file_path":           {Type: "string", Description: "Doc file path"},
-					"target_content":      {Type: "string", Description: "Target string"},
-					"replacement_content": {Type: "string", Description: "Replacement content"},
+					"target_content":      {Type: "string", Description: "Target section chunk to replace (empty to create new file)"},
+					"replacement_content": {Type: "string", Description: "Replacement content string"},
 				},
 				Required: []string{"file_path", "replacement_content"},
 			},
@@ -607,6 +627,26 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
 		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "append_file",
+			Description: "Append new markdown section or content to the end of a file incrementally without overwriting existing content",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"file_path":      {Type: "string", Description: "Target file path to append to"},
+					"append_content": {Type: "string", Description: "Content text or markdown section to append to the end of the file"},
+				},
+				Required: []string{"file_path", "append_content"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		fp, _ := args["file_path"].(string)
+		ac, _ := args["append_content"].(string)
+		return tools.AppendFile(fp, ac, reg.GetWorkspace())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeDocumenter), task, sysPrompt, reg)
