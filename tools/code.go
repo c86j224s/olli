@@ -85,6 +85,40 @@ func EditFile(filePath string, targetContent string, replacementContent string, 
 	return fmt.Sprintf("File '%s' successfully updated.", safePath), nil
 }
 
+// InsertContent inserts new content right before or right after an anchor text chunk in the middle of a file
+func InsertContent(filePath string, anchorContent string, position string, newContent string, workspace string) (string, error) {
+	safePath, err := IsPathSafe(filePath, workspace)
+	if err != nil {
+		return "", fmt.Errorf("security block: %w", err)
+	}
+
+	data, err := os.ReadFile(safePath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read file '%s': %w", safePath, err)
+	}
+
+	content := string(data)
+	if !strings.Contains(content, anchorContent) {
+		return "", fmt.Errorf("anchor content '%s' not found in file '%s'", anchorContent, safePath)
+	}
+
+	var replacement string
+	position = strings.ToLower(strings.TrimSpace(position))
+	if position == "before" {
+		replacement = newContent + anchorContent
+	} else { // default to "after"
+		replacement = anchorContent + newContent
+	}
+
+	updated := strings.Replace(content, anchorContent, replacement, 1)
+
+	if err := os.WriteFile(safePath, []byte(updated), 0644); err != nil {
+		return "", fmt.Errorf("failed to write inserted content to file '%s': %w", safePath, err)
+	}
+
+	return fmt.Sprintf("Successfully inserted content %s anchor in file '%s'.", position, safePath), nil
+}
+
 // AppendFile appends new content to the end of a file without overwriting existing content
 func AppendFile(filePath string, appendContent string, workspace string) (string, error) {
 	safePath, err := IsPathSafe(filePath, workspace)

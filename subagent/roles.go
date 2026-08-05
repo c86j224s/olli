@@ -127,7 +127,7 @@ func (r *SubagentRunner) RunCoder(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_coder_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, query session history and past subagent investigation reports, and perform targeted edits, incremental appends, or code refactoring as requested."
+	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, query session history and past subagent investigation reports, and perform targeted edits, middle insertions ('insert_content'), incremental appends ('append_file'), or code refactoring as requested."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -175,6 +175,30 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
 		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "insert_content",
+			Description: "Insert new code or text right before or right after an anchor line in the middle of a file",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"file_path":       {Type: "string", Description: "Target file path"},
+					"anchor_content":  {Type: "string", Description: "Target line or text chunk in the middle of the file to position against"},
+					"insert_position": {Type: "string", Description: "Position relative to anchor: 'after' or 'before'"},
+					"new_content":     {Type: "string", Description: "Content text to insert"},
+				},
+				Required: []string{"file_path", "anchor_content", "new_content"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		fp, _ := args["file_path"].(string)
+		ac, _ := args["anchor_content"].(string)
+		pos, _ := args["insert_position"].(string)
+		nc, _ := args["new_content"].(string)
+		return tools.InsertContent(fp, ac, pos, nc, reg.GetWorkspace())
 	})
 
 	reg.Register(ollama.Tool{
@@ -481,7 +505,7 @@ func (r *SubagentRunner) RunDocumenter(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_documenter_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, and READMEs. INCREMENTAL EDITING INSTRUCTION: You can view specific line ranges with 'view_file(path, start, end)', replace targeted sections with 'edit_file(path, target_content, replacement_content)', or append new sections incrementally with 'append_file(path, append_content)'. Before writing, inspect subagent investigation findings ('list_subagent_reports' / 'view_subagent_report'), active session history ('search_session_history'), and real source code."
+	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, and READMEs. FLEXIBLE EDITING INSTRUCTION: You can view specific line ranges with 'view_file(path, start, end)', replace targeted sections with 'edit_file(path, target_content, replacement_content)', insert new sections in the middle with 'insert_content(path, anchor_content, insert_position, new_content)', or append new sections to the end with 'append_file(path, append_content)'. Before writing, inspect subagent investigation findings ('list_subagent_reports' / 'view_subagent_report'), active session history ('search_session_history'), and real source code."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -627,6 +651,30 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
 		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "insert_content",
+			Description: "Insert new content or section right before or right after an anchor line/text in the middle of a file",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"file_path":       {Type: "string", Description: "Target file path"},
+					"anchor_content":  {Type: "string", Description: "Target line or text chunk in the middle of the file to position against"},
+					"insert_position": {Type: "string", Description: "Position relative to anchor: 'after' or 'before'"},
+					"new_content":     {Type: "string", Description: "Content text to insert"},
+				},
+				Required: []string{"file_path", "anchor_content", "new_content"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		fp, _ := args["file_path"].(string)
+		ac, _ := args["anchor_content"].(string)
+		pos, _ := args["insert_position"].(string)
+		nc, _ := args["new_content"].(string)
+		return tools.InsertContent(fp, ac, pos, nc, reg.GetWorkspace())
 	})
 
 	reg.Register(ollama.Tool{
