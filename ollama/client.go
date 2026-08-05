@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -22,7 +23,7 @@ func NewClient(baseURL string) *Client {
 	return &Client{
 		BaseURL: baseURL,
 		HTTPClient: &http.Client{
-			Timeout: 5 * time.Minute,
+			Timeout: 10 * time.Minute, // Generous 10 minute timeout for long local LLM reasoning & subagent runs
 		},
 	}
 }
@@ -102,33 +103,33 @@ type StreamCallbacks struct {
 	OnContent  func(token string)
 }
 
-// ListModels retrieves the available models in local Ollama instance
 func (c *Client) ListModels() ([]string, error) {
 	resp, err := c.HTTPClient.Get(c.BaseURL + "/api/tags")
 	if err != nil {
-		return nil, fmt.Errorf("failed to fetch models: %w", err)
+		return nil, fmt.Errorf("failed to reach Ollama API: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("ollama API error: status %d", resp.StatusCode)
+		return nil, fmt.Errorf("Ollama API returned status: %d", resp.StatusCode)
 	}
 
 	var res ListModelsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
-		return nil, fmt.Errorf("failed to decode response: %w", err)
+		return nil, fmt.Errorf("failed to decode models response: %w", err)
 	}
 
 	names := make([]string, 0, len(res.Models))
 	for _, m := range res.Models {
 		names = append(names, m.Name)
 	}
+
 	return names, nil
 }
 
-// ChatStreamFull handles full streaming for thinking, content, and collects tool calls
 func (c *Client) ChatStreamFull(req ChatRequest, cb StreamCallbacks) (*Message, error) {
 	req.Stream = true
+
 	bodyBytes, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
@@ -142,25 +143,34 @@ func (c *Client) ChatStreamFull(req ChatRequest, cb StreamCallbacks) (*Message, 
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
-		return nil, fmt.Errorf("ollama request failed: %w", err)
+		if strings.Contains(err.Error(), "context deadline exceeded") {
+			return nil, fmt.Errorf("LLM stream request timed out (context deadline exceeded)")
+		}
+		return nil, fmt.Errorf("http request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("ollama API returned status %d: %s", resp.StatusCode, string(body))
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Ollama error (status %d): %s", resp.StatusCode, string(b))
 	}
 
-	scanner := bufio.NewScanner(resp.Body)
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
+	reader := bufio.NewReader(resp.Body)
 
-	var fullContent bytes.Buffer
-	var fullThinking bytes.Buffer
-	var collectedToolCalls []ToolCall
+	var thinkingSB strings.Builder
+	var contentSB strings.Builder
+	var lastToolCalls []ToolCall
 
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	for {
+		line, err := reader.ReadBytes('\n')
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("error reading stream chunk: %w", err)
+		}
+
+		line = bytes.TrimSpace(line)
 		if len(line) == 0 {
 			continue
 		}
@@ -171,21 +181,21 @@ func (c *Client) ChatStreamFull(req ChatRequest, cb StreamCallbacks) (*Message, 
 		}
 
 		if chunk.Message.Thinking != "" {
-			fullThinking.WriteString(chunk.Message.Thinking)
+			thinkingSB.WriteString(chunk.Message.Thinking)
 			if cb.OnThinking != nil {
 				cb.OnThinking(chunk.Message.Thinking)
 			}
 		}
 
 		if chunk.Message.Content != "" {
-			fullContent.WriteString(chunk.Message.Content)
+			contentSB.WriteString(chunk.Message.Content)
 			if cb.OnContent != nil {
 				cb.OnContent(chunk.Message.Content)
 			}
 		}
 
 		if len(chunk.Message.ToolCalls) > 0 {
-			collectedToolCalls = append(collectedToolCalls, chunk.Message.ToolCalls...)
+			lastToolCalls = chunk.Message.ToolCalls
 		}
 
 		if chunk.Done {
@@ -193,14 +203,12 @@ func (c *Client) ChatStreamFull(req ChatRequest, cb StreamCallbacks) (*Message, 
 		}
 	}
 
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("stream scanning error: %w", err)
+	fullMsg := &Message{
+		Role:      "assistant",
+		Content:   contentSB.String(),
+		Thinking:  thinkingSB.String(),
+		ToolCalls: lastToolCalls,
 	}
 
-	return &Message{
-		Role:      "assistant",
-		Content:   fullContent.String(),
-		Thinking:  fullThinking.String(),
-		ToolCalls: collectedToolCalls,
-	}, nil
+	return fullMsg, nil
 }

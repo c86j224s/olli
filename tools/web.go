@@ -18,7 +18,7 @@ func ReadURLContent(targetURL string) (string, error) {
 	}
 
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 30 * time.Second, // 30s timeout to prevent context deadline exceeded
 	}
 
 	req, err := http.NewRequest("GET", targetURL, nil)
@@ -29,6 +29,9 @@ func ReadURLContent(targetURL string) (string, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "Client.Timeout") {
+			return "", fmt.Errorf("request to '%s' timed out (network slow)", targetURL)
+		}
 		return "", fmt.Errorf("failed to fetch URL '%s': %w", targetURL, err)
 	}
 	defer resp.Body.Close()
@@ -57,7 +60,7 @@ func WebSearch(query string) (string, error) {
 	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
 
 	client := &http.Client{
-		Timeout: 15 * time.Second,
+		Timeout: 30 * time.Second, // 30s timeout
 	}
 
 	req, err := http.NewRequest("GET", searchURL, nil)
@@ -68,6 +71,9 @@ func WebSearch(query string) (string, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if strings.Contains(err.Error(), "context deadline exceeded") || strings.Contains(err.Error(), "Client.Timeout") {
+			return "", fmt.Errorf("web search timed out for query '%s'", query)
+		}
 		return "", fmt.Errorf("web search failed: %w", err)
 	}
 	defer resp.Body.Close()
@@ -107,7 +113,6 @@ type SearchResult struct {
 func parseDuckDuckGoResults(html string) []SearchResult {
 	var results []SearchResult
 
-	// Extract result links and snippets using regex
 	titleRegex := regexp.MustCompile(`<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>`)
 	snippetRegex := regexp.MustCompile(`<a[^>]*class="result__snippet"[^>]*>(.*?)</a>`)
 
@@ -116,7 +121,6 @@ func parseDuckDuckGoResults(html string) []SearchResult {
 
 	for i := 0; i < len(titles); i++ {
 		link := titles[i][1]
-		// Decode duckduckgo redirect link if present
 		if strings.Contains(link, "uddg=") {
 			if u, err := url.Parse(link); err == nil {
 				if actual := u.Query().Get("uddg"); actual != "" {
@@ -144,16 +148,13 @@ func parseDuckDuckGoResults(html string) []SearchResult {
 }
 
 func extractCleanTextFromHTML(html string) string {
-	// Remove script and style tags
 	reScript := regexp.MustCompile(`(?s)<script.*?>.*?</script>`)
 	reStyle := regexp.MustCompile(`(?s)<style.*?>.*?</style>`)
 	html = reScript.ReplaceAllString(html, "")
 	html = reStyle.ReplaceAllString(html, "")
 
-	// Strip HTML tags
 	text := stripHTMLTags(html)
 
-	// Clean up consecutive blank lines
 	lines := strings.Split(text, "\n")
 	var cleanLines []string
 	for _, l := range lines {
