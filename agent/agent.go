@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/c86j224s/olli/config"
 	"github.com/c86j224s/olli/ollama"
@@ -18,6 +19,14 @@ const (
 	ModeAuto       ToolMode = "auto"
 	ModeAsk        ToolMode = "ask"
 	ModeAcceptEdit ToolMode = "accept-edit"
+)
+
+const (
+	ColorYellow = "\033[33m"
+	ColorReset  = "\033[0m"
+	ColorBold   = "\033[1m"
+	ColorGray   = "\033[90m"
+	ColorGreen  = "\033[32m"
 )
 
 type Callbacks struct {
@@ -34,20 +43,21 @@ type Callbacks struct {
 }
 
 type Agent struct {
-	client     *ollama.Client
-	model      string
-	systemMsg  string
-	numCtx     int
-	history    []ollama.Message
-	toolMode   ToolMode
-	summary    string
-	activeGoal string
-	initialDir string
-	currentDir string
-	registry   *tools.Registry
-	sessMgr    *session.Manager
-	cfg        *config.Config
-	activeCB   Callbacks
+	client              *ollama.Client
+	model               string
+	systemMsg           string
+	numCtx              int
+	history             []ollama.Message
+	toolMode            ToolMode
+	summary             string
+	activeGoal          string
+	initialDir          string
+	currentDir          string
+	registry            *tools.Registry
+	sessMgr             *session.Manager
+	cfg                 *config.Config
+	activeCB            Callbacks
+	lastPromptEvalCount int
 }
 
 func FormatArgs(args map[string]interface{}) string {
@@ -204,19 +214,21 @@ func (a *Agent) registerBuiltinTools() {
 			"session_file":              sessFile,
 			"active_goal":              a.activeGoal,
 			"num_ctx":                  fmt.Sprintf("%d", a.numCtx),
+			"last_prompt_tokens":       fmt.Sprintf("%d", a.lastPromptEvalCount),
 		}
 		b, _ := json.MarshalIndent(statusInfo, "", "  ")
 		return string(b), nil
 	})
 }
 
-func (a *Agent) GetConfig() *config.Config { return a.cfg }
-func (a *Agent) SetModel(m string)        { a.model = m }
-func (a *Agent) GetModel() string         { return a.model }
-func (a *Agent) SetNumCtx(n int)          { a.numCtx = n }
-func (a *Agent) GetNumCtx() int           { return a.numCtx }
-func (a *Agent) SetToolMode(m ToolMode)   { a.toolMode = m }
-func (a *Agent) GetToolMode() ToolMode    { return a.toolMode }
+func (a *Agent) GetConfig() *config.Config   { return a.cfg }
+func (a *Agent) SetModel(m string)          { a.model = m }
+func (a *Agent) GetModel() string           { return a.model }
+func (a *Agent) SetNumCtx(n int)            { a.numCtx = n }
+func (a *Agent) GetNumCtx() int             { return a.numCtx }
+func (a *Agent) SetToolMode(m ToolMode)     { a.toolMode = m }
+func (a *Agent) GetToolMode() ToolMode      { return a.toolMode }
+func (a *Agent) GetLastPromptEvalCount() int { return a.lastPromptEvalCount }
 
 func (a *Agent) SetCurrentDir(d string) {
 	a.currentDir = d
@@ -258,6 +270,61 @@ func (a *Agent) ShouldRequirePermission(toolName string) bool {
 		return true
 	default:
 		return true
+	}
+}
+
+func (a *Agent) checkAndCompactContext(ctx context.Context, promptEvalCount int) {
+	if promptEvalCount <= 0 {
+		return
+	}
+
+	threshold := int(float64(a.numCtx) * 0.80)
+	if promptEvalCount < threshold {
+		return
+	}
+
+	fmt.Printf("\n⚡ %s[Auto Context Compaction]%s Prompt tokens (%s%d%s / %d) reached 80%% threshold.\n",
+		ColorYellow, ColorReset, ColorBold, promptEvalCount, ColorReset, a.numCtx)
+	fmt.Printf("   %s📜 Automatically synthesizing memory summary and pruning older history...%s\n", ColorGray, ColorReset)
+
+	a.CompactHistoryAndSummarize(ctx)
+}
+
+func (a *Agent) CompactHistoryAndSummarize(ctx context.Context) {
+	if len(a.history) <= 6 {
+		return
+	}
+
+	splitIdx := len(a.history) - 6
+	olderMsgs := a.history[:splitIdx]
+	recentMsgs := a.history[splitIdx:]
+
+	var sb strings.Builder
+	sb.WriteString("Summarize the following past conversation history between User and Agent into concise bullet points. Include key decisions, requested features, user preferences, and working directory changes:\n\n")
+	for _, m := range olderMsgs {
+		if m.Role == "user" || m.Role == "assistant" {
+			if m.Content != "" {
+				sb.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, m.Content))
+			}
+		}
+	}
+
+	sumReq := ollama.ChatRequest{
+		Model: a.model,
+		Messages: []ollama.Message{
+			{Role: "system", Content: "You are a concise conversation summarizer. Extract essential facts, user requirements, and technical progress into clear bullet points."},
+			{Role: "user", Content: sb.String()},
+		},
+		Options: &ollama.Options{
+			NumCtx: 4096,
+		},
+	}
+
+	resp, err := a.client.ChatStreamFullWithContext(ctx, sumReq, ollama.StreamCallbacks{})
+	if err == nil && resp.Content != "" {
+		a.summary = fmt.Sprintf("Auto-compacted memory summary:\n%s", strings.TrimSpace(resp.Content))
+		a.history = recentMsgs
+		fmt.Printf("   %s✅ Memory successfully compacted! Retained %d recent messages & updated summary.%s\n\n", ColorGreen, len(recentMsgs), ColorReset)
 	}
 }
 
@@ -351,6 +418,11 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 				return "", context.Canceled
 			}
 			return "", err
+		}
+
+		if resp.PromptEvalCount > 0 {
+			a.lastPromptEvalCount = resp.PromptEvalCount
+			a.checkAndCompactContext(ctx, resp.PromptEvalCount)
 		}
 
 		if len(resp.ToolCalls) > 0 {

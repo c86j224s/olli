@@ -68,10 +68,12 @@ type ToolCall struct {
 }
 
 type Message struct {
-	Role      string     `json:"role"` // "system", "user", "assistant", "tool"
-	Content   string     `json:"content"`
-	Thinking  string     `json:"thinking,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
+	Role            string     `json:"role"` // "system", "user", "assistant", "tool"
+	Content         string     `json:"content"`
+	Thinking        string     `json:"thinking,omitempty"`
+	ToolCalls       []ToolCall `json:"tool_calls,omitempty"`
+	PromptEvalCount int        `json:"prompt_eval_count,omitempty"`
+	EvalCount       int        `json:"eval_count,omitempty"`
 }
 
 type ChatRequest struct {
@@ -83,10 +85,12 @@ type ChatRequest struct {
 }
 
 type ChatResponseChunk struct {
-	Model     string   `json:"model"`
-	CreatedAt string   `json:"created_at"`
-	Message   Message  `json:"message"`
-	Done      bool     `json:"done"`
+	Model           string   `json:"model"`
+	CreatedAt       string   `json:"created_at"`
+	Message         Message  `json:"message"`
+	Done            bool     `json:"done"`
+	PromptEvalCount int      `json:"prompt_eval_count,omitempty"`
+	EvalCount       int      `json:"eval_count,omitempty"`
 }
 
 type ModelItem struct {
@@ -168,6 +172,8 @@ func (c *Client) ChatStreamFullWithContext(ctx context.Context, req ChatRequest,
 	var thinkingSB strings.Builder
 	var contentSB strings.Builder
 	var lastToolCalls []ToolCall
+	totalPromptEvalCount := 0
+	totalEvalCount := 0
 
 	for {
 		select {
@@ -197,6 +203,13 @@ func (c *Client) ChatStreamFullWithContext(ctx context.Context, req ChatRequest,
 			continue
 		}
 
+		if chunk.PromptEvalCount > 0 {
+			totalPromptEvalCount = chunk.PromptEvalCount
+		}
+		if chunk.EvalCount > 0 {
+			totalEvalCount = chunk.EvalCount
+		}
+
 		if chunk.Message.Thinking != "" {
 			thinkingSB.WriteString(chunk.Message.Thinking)
 			if cb.OnThinking != nil {
@@ -221,10 +234,12 @@ func (c *Client) ChatStreamFullWithContext(ctx context.Context, req ChatRequest,
 	}
 
 	fullMsg := &Message{
-		Role:      "assistant",
-		Content:   contentSB.String(),
-		Thinking:  thinkingSB.String(),
-		ToolCalls: lastToolCalls,
+		Role:            "assistant",
+		Content:         contentSB.String(),
+		Thinking:        thinkingSB.String(),
+		ToolCalls:       lastToolCalls,
+		PromptEvalCount: totalPromptEvalCount,
+		EvalCount:       totalEvalCount,
 	}
 
 	return fullMsg, nil
