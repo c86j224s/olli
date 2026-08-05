@@ -142,22 +142,26 @@ func main() {
 		}
 
 		fmt.Println()
-		fmt.Printf("%s💬 User:%s %s\n\n", cli.ColorBold+cli.ColorCyan, cli.ColorReset, input)
+		spinner := cli.NewSpinner()
+		spinner.Start("Processing request...")
 
 		contentStarted := false
 		subThinkingActive := false
 
 		callbacks := agent.Callbacks{
 			OnThinkingStart: func() {
+				spinner.Stop()
 				fmt.Printf("%s🧠 [Thinking]%s %s", cli.MainItalic, cli.ColorReset, cli.ColorGray)
 			},
 			OnThinkingToken: func(token string) {
+				spinner.Stop()
 				fmt.Print(token)
 			},
 			OnThinkingEnd: func() {
 				fmt.Printf("%s\n\n", cli.ColorReset)
 			},
 			OnContentToken: func(token string) {
+				spinner.Stop()
 				if !contentStarted {
 					contentStarted = true
 					fmt.Printf("%sAgent (%s):%s\n", cli.ColorBold+cli.ColorGreen, ag.GetModel(), cli.ColorReset)
@@ -165,6 +169,7 @@ func main() {
 				fmt.Print(token)
 			},
 			OnToolCall: func(toolName string, args map[string]interface{}, result string, execErr error) {
+				spinner.Stop()
 				fmt.Printf("\n%s⚙️  [Main Tool]%s %s%s%s(%s)\n", cli.MainBold, cli.ColorReset, cli.ColorBold, toolName, cli.ColorReset, agent.FormatArgs(args))
 				if execErr != nil {
 					fmt.Printf("%s   ❌ [Error/Rejection]%s %v\n", cli.ColorRed, cli.ColorReset, execErr)
@@ -178,6 +183,7 @@ func main() {
 				fmt.Println()
 			},
 			ConfirmToolCallWithAction: func(toolName string, args map[string]interface{}) (bool, bool) {
+				spinner.Stop()
 				prompt := fmt.Sprintf("\n%s❓ [Permission Required]%s Tool %s%s%s(%s).\n   Options: %s[y]%s Yes (once)  |  %s[a]%s Always (add to config.json whitelist)  |  %s[n]%s No (deny)\n   Choice [y/a/N]: ",
 					cli.ColorYellow, cli.ColorReset, cli.ColorBold, toolName, cli.ColorReset, agent.FormatArgs(args),
 					cli.ColorBold, cli.ColorReset, cli.ColorGreen, cli.ColorReset, cli.ColorRed, cli.ColorReset)
@@ -198,11 +204,13 @@ func main() {
 				return false, false
 			},
 			OnSubagentThinkingStart: func(subType string) {
+				spinner.Stop()
 				subThinkingActive = true
 				boldColor, italicColor := cli.GetSubagentPalette(subType)
 				fmt.Printf("   %s↳ 🧠 [%s Thinking]%s %s", boldColor, subType, cli.ColorReset, italicColor)
 			},
 			OnSubagentThinkingToken: func(token string) {
+				spinner.Stop()
 				fmt.Print(token)
 			},
 			OnSubagentThinkingEnd: func() {
@@ -212,6 +220,7 @@ func main() {
 				}
 			},
 			OnSubagentToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
+				spinner.Stop()
 				boldColor, dimColor := cli.GetSubagentPalette(subType)
 				fmt.Printf("   %s↳ ⚙️  [%s Tool Executed]%s %s%s%s(%s)\n", boldColor, subType, cli.ColorReset, cli.ColorBold, toolName, cli.ColorReset, agent.FormatArgs(args))
 				if execErr != nil {
@@ -234,6 +243,7 @@ func main() {
 		_, err = ag.AskWithContext(askCtx, input, callbacks)
 		close(doneChan)
 		cancel()
+		spinner.Stop()
 
 		if contentStarted {
 			fmt.Println()
