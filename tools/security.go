@@ -8,18 +8,38 @@ import (
 	"strings"
 )
 
-// ExpandTilde resolves paths starting with "~" or "~/" to user home directory
+// ExpandTilde resolves paths starting with "~", "~/", or typos like "~llm-pg" to user home directory
 func ExpandTilde(path string) string {
 	trimmed := strings.TrimSpace(path)
-	if trimmed == "~" || strings.HasPrefix(trimmed, "~/") {
-		homeDir, err := os.UserHomeDir()
-		if err == nil && homeDir != "" {
-			if trimmed == "~" {
-				return homeDir
-			}
-			return filepath.Join(homeDir, trimmed[2:])
-		}
+	if trimmed == "" {
+		return trimmed
 	}
+
+	homeDir, err := os.UserHomeDir()
+	if err != nil || homeDir == "" {
+		return trimmed
+	}
+
+	if trimmed == "~" {
+		return homeDir
+	}
+
+	if strings.HasPrefix(trimmed, "~/") {
+		return filepath.Join(homeDir, trimmed[2:])
+	}
+
+	// Handle missing slash typo like "~llm-pg" -> "~/llm-pg"
+	if strings.HasPrefix(trimmed, "~") && !strings.HasPrefix(trimmed, "~/") {
+		folderName := trimmed[1:]
+		targetPath := filepath.Join(homeDir, folderName)
+		// Check if folder exists in $HOME
+		if _, statErr := os.Stat(targetPath); statErr == nil {
+			return targetPath
+		}
+		// Fallback join
+		return targetPath
+	}
+
 	return trimmed
 }
 
