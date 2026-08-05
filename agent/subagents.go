@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/subagent"
@@ -33,6 +34,21 @@ func (a *Agent) buildSubagentCallbacks() subagent.SubagentCallbacks {
 	}
 }
 
+func (a *Agent) buildEnrichedSubagentTask(rawTask string) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📋 [CONTEXT FROM MAIN AGENT]:\n- Active Working Directory: %s\n", a.currentDir))
+
+	if a.activeGoal != "" {
+		sb.WriteString(fmt.Sprintf("- Active Goal / Mission: %s\n", a.activeGoal))
+	}
+	if a.summary != "" {
+		sb.WriteString(fmt.Sprintf("- Conversation Memory Summary: %s\n", a.summary))
+	}
+
+	sb.WriteString(fmt.Sprintf("\n🎯 [DELEGATED TASK OBJECTIVE]:\n%s", rawTask))
+	return sb.String()
+}
+
 func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 	// 1. delegate_researcher
 	a.registry.Register(ollama.Tool{
@@ -53,9 +69,10 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
+		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunResearcherWithContext(ctx, task)
+		report, err := runner.RunResearcherWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("researcher subagent failed: %w", err)
 		}
@@ -82,9 +99,10 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
+		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunCoderWithContext(ctx, task)
+		report, err := runner.RunCoderWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
 		}
@@ -111,9 +129,10 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
+		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunTesterWithContext(ctx, task)
+		report, err := runner.RunTesterWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("tester subagent failed: %w", err)
 		}
@@ -140,9 +159,10 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
+		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunReviewerWithContext(ctx, task)
+		report, err := runner.RunReviewerWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("reviewer subagent failed: %w", err)
 		}
@@ -169,9 +189,10 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
+		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunDocumenterWithContext(ctx, task)
+		report, err := runner.RunDocumenterWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("documenter subagent failed: %w", err)
 		}
@@ -198,9 +219,10 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
+		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunPresenterWithContext(ctx, task)
+		report, err := runner.RunPresenterWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("presenter subagent failed: %w", err)
 		}
