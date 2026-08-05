@@ -37,8 +37,12 @@ case "$ACTION" in
         ;;
 
     run)
-        echo -e "\n${YELLOW}🚀 Running $APP_NAME...${NC}"
-        go run main.go
+        echo -e "\n${YELLOW}🔨 Building fresh $APP_NAME binary...${NC}"
+        mkdir -p "$BUILD_DIR"
+        go build -ldflags="-s -w" -o "$BUILD_DIR/$APP_NAME" .
+        cp "$BUILD_DIR/$APP_NAME" "./$APP_NAME"
+        echo -e "\n${GREEN}🚀 Running ./$APP_NAME...${NC}"
+        ./"$APP_NAME"
         ;;
 
     cross)
