@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -165,4 +166,26 @@ func ListDir(dirPath string, workspace string) (string, error) {
 	}
 
 	return sb.String(), nil
+}
+
+// ExecuteCommand runs terminal commands safely inside workspace
+func ExecuteCommand(cmdStr string, workspace string) (string, error) {
+	if err := ValidateCommandSafety(cmdStr, workspace); err != nil {
+		return "", fmt.Errorf("security block: %w", err)
+	}
+
+	cmd := exec.Command("bash", "-c", cmdStr)
+	cmd.Dir = workspace
+
+	out, err := cmd.CombinedOutput()
+	outputStr := string(out)
+	if err != nil {
+		return fmt.Sprintf("Command exited with error: %v\nOutput:\n%s", err, outputStr), nil
+	}
+
+	if len(outputStr) > 4000 {
+		outputStr = outputStr[:4000] + "\n... [Output Truncated]"
+	}
+
+	return outputStr, nil
 }

@@ -25,6 +25,7 @@ const (
 	ColorYellow  = "\033[33m"
 	ColorRed     = "\033[31m"
 	ColorMagenta = "\033[35m"
+	ColorBlue    = "\033[34m"
 	ColorGray    = "\033[90m"
 
 	// Single-Hue Palette for Main Agent (Cyan Family)
@@ -44,6 +45,18 @@ const (
 	CoderNormal = "\033[0;35m"
 	CoderDim    = "\033[2;35m"
 	CoderItalic = "\033[3;35m"
+
+	// Single-Hue Palette for Tester Subagent (Green/Emerald Family)
+	TesterBold   = "\033[1;32m"
+	TesterNormal = "\033[0;32m"
+	TesterDim    = "\033[2;32m"
+	TesterItalic = "\033[3;32m"
+
+	// Single-Hue Palette for Reviewer Subagent (Blue Family)
+	ReviewerBold   = "\033[1;34m"
+	ReviewerNormal = "\033[0;34m"
+	ReviewerDim    = "\033[2;34m"
+	ReviewerItalic = "\033[3;34m"
 )
 
 func main() {
@@ -266,6 +279,10 @@ func getSubagentPalette(subType string) (boldColor string, secondaryColor string
 		return ResBold, ResItalic
 	case "coder":
 		return CoderBold, CoderItalic
+	case "tester":
+		return TesterBold, TesterItalic
+	case "reviewer":
+		return ReviewerBold, ReviewerItalic
 	default:
 		return ResBold, ResDim
 	}
@@ -302,6 +319,7 @@ func printBanner(ag *agent.Agent, models []string, sessionID string) {
 	for _, t := range registeredTools {
 		toolNames = append(toolNames, t.Function.Name)
 	}
+	fmt.Printf("• %sSubagents Available:%s Researcher, Coder, Tester, Reviewer\n", ColorGreen, ColorReset)
 	fmt.Printf("• %sRegistered Tools (%d):%s %s\n", ColorMagenta, len(registeredTools), ColorReset, strings.Join(toolNames, ", "))
 	fmt.Printf("• %sCommands:%s /mode <auto|ask|accept-edit>, /config allow <tool>, /goal set, /exit\n", ColorGray, ColorReset)
 	fmt.Println(strings.Repeat("─", 70))

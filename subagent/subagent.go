@@ -19,6 +19,8 @@ type SubagentType string
 const (
 	TypeResearcher SubagentType = "Researcher"
 	TypeCoder      SubagentType = "Coder"
+	TypeTester     SubagentType = "Tester"
+	TypeReviewer   SubagentType = "Reviewer"
 )
 
 type SubagentCallbacks struct {
@@ -197,6 +199,109 @@ func (r *SubagentRunner) RunCoder(task string) (*ResultReport, error) {
 	})
 
 	return r.executeSubagentLoop(subID, string(TypeCoder), task, sysPrompt, reg)
+}
+
+// RunTester Task creates a dedicated Tester subagent to execute builds & tests
+func (r *SubagentRunner) RunTester(task string) (*ResultReport, error) {
+	subID := fmt.Sprintf("subagent_tester_%s", time.Now().Format("20060102_150405"))
+	sysPrompt := "You are a specialized Software Tester Subagent. Your goal is to dynamically execute test commands (e.g. go test ./...), build scripts, and verify runtime correctness."
+
+	reg := tools.NewRegistry()
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "run_terminal_command",
+			Description: "Execute test or build terminal commands safely within workspace",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"command": {Type: "string", Description: "Terminal command to execute (e.g. go test ./...)"},
+				},
+				Required: []string{"command"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		cmdStr, _ := args["command"].(string)
+		if err := tools.ValidateCommandSafety(cmdStr, r.workspace); err != nil {
+			return "", fmt.Errorf("security block: %w", err)
+		}
+		return tools.ExecuteCommand(cmdStr, r.workspace)
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "view_file",
+			Description: "View test log files or test source files",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"file_path":  {Type: "string", Description: "File path to view"},
+					"start_line": {Type: "number", Description: "Start line"},
+					"end_line":   {Type: "number", Description: "End line"},
+				},
+				Required: []string{"file_path"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		fp, _ := args["file_path"].(string)
+		start, _ := args["start_line"].(float64)
+		end, _ := args["end_line"].(float64)
+		return tools.ViewFile(fp, int(start), int(end), r.workspace)
+	})
+
+	return r.executeSubagentLoop(subID, string(TypeTester), task, sysPrompt, reg)
+}
+
+// RunReviewer Task creates a dedicated Reviewer subagent to perform static code reviews
+func (r *SubagentRunner) RunReviewer(task string) (*ResultReport, error) {
+	subID := fmt.Sprintf("subagent_reviewer_%s", time.Now().Format("20060102_150405"))
+	sysPrompt := "You are a specialized Code Reviewer Subagent. Your goal is to statically inspect code diffs, review code readability, check edge cases, and verify architectural alignment."
+
+	reg := tools.NewRegistry()
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "view_file",
+			Description: "View lines of code from a file for static review",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"file_path":  {Type: "string", Description: "File path to view"},
+					"start_line": {Type: "number", Description: "Start line"},
+					"end_line":   {Type: "number", Description: "End line"},
+				},
+				Required: []string{"file_path"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		fp, _ := args["file_path"].(string)
+		start, _ := args["start_line"].(float64)
+		end, _ := args["end_line"].(float64)
+		return tools.ViewFile(fp, int(start), int(end), r.workspace)
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "grep_search",
+			Description: "Search code patterns across workspace files for code review",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"query":       {Type: "string", Description: "Keyword or pattern to search"},
+					"search_path": {Type: "string", Description: "Path to search within"},
+				},
+				Required: []string{"query"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		q, _ := args["query"].(string)
+		sp, _ := args["search_path"].(string)
+		return tools.GrepSearch(q, sp, r.workspace)
+	})
+
+	return r.executeSubagentLoop(subID, string(TypeReviewer), task, sysPrompt, reg)
 }
 
 func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task string, sysPrompt string, reg *tools.Registry) (*ResultReport, error) {

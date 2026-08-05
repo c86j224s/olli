@@ -56,7 +56,7 @@ type Agent struct {
 
 func New(client *ollama.Client, model string, systemPrompt string, sessMgr *session.Manager, cfg *config.Config) *Agent {
 	if systemPrompt == "" {
-		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering and Subagent Delegation capabilities. Always delegate code investigation and web research to specialized subagents."
+		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering and Subagent Delegation capabilities. Always delegate specialized tasks to Subagents (Researcher, Coder, Tester, Reviewer)."
 	}
 
 	wd, err := os.Getwd()
@@ -143,7 +143,33 @@ func (a *Agent) registerGoalTools() {
 	})
 }
 
+func (a *Agent) buildSubagentCallbacks() subagent.SubagentCallbacks {
+	return subagent.SubagentCallbacks{
+		OnThinkingStart: func(subType string) {
+			if a.activeCB.OnSubagentThinkingStart != nil {
+				a.activeCB.OnSubagentThinkingStart(subType)
+			}
+		},
+		OnThinkingToken: func(token string) {
+			if a.activeCB.OnSubagentThinkingToken != nil {
+				a.activeCB.OnSubagentThinkingToken(token)
+			}
+		},
+		OnThinkingEnd: func() {
+			if a.activeCB.OnSubagentThinkingEnd != nil {
+				a.activeCB.OnSubagentThinkingEnd()
+			}
+		},
+		OnToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
+			if a.activeCB.OnSubagentToolCall != nil {
+				a.activeCB.OnSubagentToolCall(subType, toolName, args, result, execErr)
+			}
+		},
+	}
+}
+
 func (a *Agent) registerSubagentTools() {
+	// 1. delegate_researcher
 	a.registry.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
@@ -162,28 +188,7 @@ func (a *Agent) registerSubagentTools() {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
-		subCB := subagent.SubagentCallbacks{
-			OnThinkingStart: func(subType string) {
-				if a.activeCB.OnSubagentThinkingStart != nil {
-					a.activeCB.OnSubagentThinkingStart(subType)
-				}
-			},
-			OnThinkingToken: func(token string) {
-				if a.activeCB.OnSubagentThinkingToken != nil {
-					a.activeCB.OnSubagentThinkingToken(token)
-				}
-			},
-			OnThinkingEnd: func() {
-				if a.activeCB.OnSubagentThinkingEnd != nil {
-					a.activeCB.OnSubagentThinkingEnd()
-				}
-			},
-			OnToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
-				if a.activeCB.OnSubagentToolCall != nil {
-					a.activeCB.OnSubagentToolCall(subType, toolName, args, result, execErr)
-				}
-			},
-		}
+		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
 		report, err := runner.RunResearcher(task)
 		if err != nil {
@@ -193,17 +198,18 @@ func (a *Agent) registerSubagentTools() {
 			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
 	})
 
+	// 2. delegate_coder
 	a.registry.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_coder",
-			Description: "[PREFERRED TOOL FOR CODEBASE & FILE INSPECTION] Delegate code inspection, file viewing, file editing, or searching codebase to a specialized Coder Subagent",
+			Description: "[PREFERRED TOOL FOR CODE IMPLEMENTATION & FILE EDITING] Delegate code writing, editing, file creation, or refactoring to a specialized Coder Subagent",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
 					"task_description": {
 						Type:        "string",
-						Description: "Detailed code modification or file inspection task description",
+						Description: "Detailed code modification or writing task description",
 					},
 				},
 				Required: []string{"task_description"},
@@ -211,34 +217,71 @@ func (a *Agent) registerSubagentTools() {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
-		subCB := subagent.SubagentCallbacks{
-			OnThinkingStart: func(subType string) {
-				if a.activeCB.OnSubagentThinkingStart != nil {
-					a.activeCB.OnSubagentThinkingStart(subType)
-				}
-			},
-			OnThinkingToken: func(token string) {
-				if a.activeCB.OnSubagentThinkingToken != nil {
-					a.activeCB.OnSubagentThinkingToken(token)
-				}
-			},
-			OnThinkingEnd: func() {
-				if a.activeCB.OnSubagentThinkingEnd != nil {
-					a.activeCB.OnSubagentThinkingEnd()
-				}
-			},
-			OnToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
-				if a.activeCB.OnSubagentToolCall != nil {
-					a.activeCB.OnSubagentToolCall(subType, toolName, args, result, execErr)
-				}
-			},
-		}
+		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
 		report, err := runner.RunCoder(task)
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
 		}
 		return fmt.Sprintf("💻 [Coder Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
+			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
+	})
+
+	// 3. delegate_tester
+	a.registry.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "delegate_tester",
+			Description: "[PREFERRED TOOL FOR TESTING & BUILD VERIFICATION] Delegate dynamic build verification, test running (go test ./...), and runtime error checking to a specialized Tester Subagent",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"task_description": {
+						Type:        "string",
+						Description: "Detailed testing or build verification task description",
+					},
+				},
+				Required: []string{"task_description"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		task, _ := args["task_description"].(string)
+		subCB := a.buildSubagentCallbacks()
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
+		report, err := runner.RunTester(task)
+		if err != nil {
+			return "", fmt.Errorf("tester subagent failed: %w", err)
+		}
+		return fmt.Sprintf("🧪 [Tester Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
+			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
+	})
+
+	// 4. delegate_reviewer
+	a.registry.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "delegate_reviewer",
+			Description: "[PREFERRED TOOL FOR STATIC CODE REVIEW] Delegate static code analysis, code style review, readability checks, and edge-case code review to a specialized Reviewer Subagent",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"task_description": {
+						Type:        "string",
+						Description: "Detailed code review task description",
+					},
+				},
+				Required: []string{"task_description"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		task, _ := args["task_description"].(string)
+		subCB := a.buildSubagentCallbacks()
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
+		report, err := runner.RunReviewer(task)
+		if err != nil {
+			return "", fmt.Errorf("reviewer subagent failed: %w", err)
+		}
+		return fmt.Sprintf("🧐 [Reviewer Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
 			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
 	})
 }
@@ -552,8 +595,10 @@ func (a *Agent) buildMessagesPayload() []ollama.Message {
 	fullSystemPrompt := a.systemPrompt
 
 	subagentProtocol := "\n\n🤖 [SUBAGENT DELEGATION PROTOCOL]:\n" +
-		"- When asked to inspect code, search codebase files, edit files, or analyze project code, ALWAYS call 'delegate_coder(task_description)' instead of running manual terminal commands.\n" +
-		"- When asked to research topics, search the web, or read external URLs, ALWAYS call 'delegate_researcher(task_description)'."
+		"- For writing, editing, or refactoring code: Call 'delegate_coder(task_description)'.\n" +
+		"- For running tests (go test), build verification, or runtime testing: Call 'delegate_tester(task_description)'.\n" +
+		"- For static code review, code style checks, or architecture inspection: Call 'delegate_reviewer(task_description)'.\n" +
+		"- For web searching or URL reading: Call 'delegate_researcher(task_description)'."
 
 	fullSystemPrompt += subagentProtocol
 

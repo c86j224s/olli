@@ -10,7 +10,7 @@ import (
 	"github.com/c86j224s/olli/subagent"
 )
 
-func TestSubagentRunner(t *testing.T) {
+func TestSubagentRunnerAllTypes(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "subagent_test_*")
 	if err != nil {
 		t.Fatalf("failed to create temp dir: %v", err)
