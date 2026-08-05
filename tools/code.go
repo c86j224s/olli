@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ViewFile reads file contents within workspace boundary
@@ -229,6 +230,13 @@ func ExecuteCommandWithWorkspace(ctx context.Context, cmdStr string, workspace s
 		ctx = context.Background()
 	}
 
+	execCtx := ctx
+	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
+		var cancel context.CancelFunc
+		execCtx, cancel = context.WithTimeout(ctx, 35*time.Second)
+		defer cancel()
+	}
+
 	newWorkspace = workspace
 	if cmdStr == "" {
 		return "", newWorkspace, fmt.Errorf("empty terminal command received")
@@ -242,7 +250,7 @@ func ExecuteCommandWithWorkspace(ctx context.Context, cmdStr string, workspace s
 	trimmed := strings.TrimSpace(cmdStr)
 	if strings.HasPrefix(trimmed, "cd ") || strings.Contains(trimmed, " cd ") || strings.Contains(trimmed, ";cd ") || strings.Contains(trimmed, "&&cd ") {
 		cdCheckCmd := fmt.Sprintf("%s && pwd", trimmed)
-		checkCmd := exec.CommandContext(ctx, "bash", "-c", cdCheckCmd)
+		checkCmd := exec.CommandContext(execCtx, "bash", "-c", cdCheckCmd)
 		checkCmd.Dir = workspace
 		checkOut, checkErr := checkCmd.CombinedOutput()
 		if checkErr == nil {
@@ -256,12 +264,15 @@ func ExecuteCommandWithWorkspace(ctx context.Context, cmdStr string, workspace s
 		}
 	}
 
-	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
+	cmd := exec.CommandContext(execCtx, "bash", "-c", cmdStr)
 	cmd.Dir = workspace
 
 	out, err := cmd.CombinedOutput()
 	outputStr := string(out)
 	if err != nil {
+		if execCtx.Err() == context.DeadlineExceeded {
+			return fmt.Sprintf("⚠️ [Command Execution Timeout]: Command '%s' exceeded 35 seconds limit.\nPartial Output:\n%s", cmdStr, outputStr), newWorkspace, nil
+		}
 		if ctx.Err() == context.Canceled {
 			return "", newWorkspace, context.Canceled
 		}

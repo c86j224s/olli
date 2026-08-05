@@ -18,6 +18,8 @@ func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task stri
 	sysPrompt := "You are a specialized Web Researcher Subagent. Your goal is to gather information using web search and reading web pages, then synthesize a clear, concise report."
 
 	reg := tools.NewRegistry()
+	reg.SetWorkspace(r.workspace)
+
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
@@ -66,6 +68,8 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, and perform edits or code refactoring as requested."
 
 	reg := tools.NewRegistry()
+	reg.SetWorkspace(r.workspace)
+
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
@@ -85,7 +89,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		fp, _ := args["file_path"].(string)
 		start, _ := args["start_line"].(float64)
 		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), r.workspace)
+		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
 	})
 
 	reg.Register(ollama.Tool{
@@ -107,7 +111,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		fp, _ := args["file_path"].(string)
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
-		return tools.EditFile(fp, target, replacement, r.workspace)
+		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
 	})
 
 	reg.Register(ollama.Tool{
@@ -127,7 +131,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 	}, func(args map[string]interface{}) (string, error) {
 		q, _ := args["query"].(string)
 		sp, _ := args["search_path"].(string)
-		return tools.GrepSearch(q, sp, r.workspace)
+		return tools.GrepSearch(q, sp, reg.GetWorkspace())
 	})
 
 	reg.Register(ollama.Tool{
@@ -144,7 +148,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		dp, _ := args["dir_path"].(string)
-		return tools.ListDir(dp, r.workspace)
+		return tools.ListDir(dp, reg.GetWorkspace())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeCoder), task, sysPrompt, reg)
@@ -159,6 +163,8 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 	sysPrompt := "You are a specialized Software Tester Subagent. Your goal is to dynamically execute test commands (e.g. go test ./...), build scripts, and verify runtime correctness."
 
 	reg := tools.NewRegistry()
+	reg.SetWorkspace(r.workspace)
+
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
@@ -177,9 +183,9 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 		if cmdStr == "" {
 			return "", fmt.Errorf("missing or empty 'command' argument")
 		}
-		output, newWs, err := tools.ExecuteCommandWithWorkspace(ctx, cmdStr, r.workspace)
-		if newWs != r.workspace {
-			r.workspace = newWs
+		output, newWs, err := tools.ExecuteCommandWithWorkspace(ctx, cmdStr, reg.GetWorkspace())
+		if newWs != reg.GetWorkspace() {
+			reg.SetWorkspace(newWs)
 		}
 		return output, err
 	})
@@ -203,7 +209,7 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 		fp, _ := args["file_path"].(string)
 		start, _ := args["start_line"].(float64)
 		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), r.workspace)
+		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeTester), task, sysPrompt, reg)
@@ -215,18 +221,20 @@ func (r *SubagentRunner) RunReviewer(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_reviewer_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Code Reviewer Subagent. Your goal is to statically inspect code diffs, review code readability, check edge cases, and verify architectural alignment."
+	sysPrompt := "You are a specialized Code Reviewer Subagent. Your goal is to inspect code style, security vulnerabilities, edge cases, and architectural clean code principles."
 
 	reg := tools.NewRegistry()
+	reg.SetWorkspace(r.workspace)
+
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "view_file",
-			Description: "View lines of code from a file for static review",
+			Description: "View file contents for review",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"file_path":  {Type: "string", Description: "File path to view"},
+					"file_path":  {Type: "string", Description: "File path"},
 					"start_line": {Type: "number", Description: "Start line"},
 					"end_line":   {Type: "number", Description: "End line"},
 				},
@@ -237,19 +245,19 @@ func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string
 		fp, _ := args["file_path"].(string)
 		start, _ := args["start_line"].(float64)
 		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), r.workspace)
+		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
 	})
 
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "grep_search",
-			Description: "Search code patterns across workspace files for code review",
+			Description: "Search code patterns for review",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"query":       {Type: "string", Description: "Keyword or pattern to search"},
-					"search_path": {Type: "string", Description: "Path to search within"},
+					"query":       {Type: "string", Description: "Pattern query"},
+					"search_path": {Type: "string", Description: "Search path"},
 				},
 				Required: []string{"query"},
 			},
@@ -257,7 +265,7 @@ func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string
 	}, func(args map[string]interface{}) (string, error) {
 		q, _ := args["query"].(string)
 		sp, _ := args["search_path"].(string)
-		return tools.GrepSearch(q, sp, r.workspace)
+		return tools.GrepSearch(q, sp, reg.GetWorkspace())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeReviewer), task, sysPrompt, reg)
@@ -269,18 +277,42 @@ func (r *SubagentRunner) RunDocumenter(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_documenter_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write well-structured Markdown documentation, READMEs, API specs, and technical manuals using edit_file."
+	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, READMEs, and architecture docs."
 
 	reg := tools.NewRegistry()
+	reg.SetWorkspace(r.workspace)
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "edit_file",
+			Description: "Create or update Markdown documentation file",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"file_path":           {Type: "string", Description: "Doc file path"},
+					"target_content":      {Type: "string", Description: "Target string"},
+					"replacement_content": {Type: "string", Description: "Replacement content"},
+				},
+				Required: []string{"file_path", "replacement_content"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		fp, _ := args["file_path"].(string)
+		target, _ := args["target_content"].(string)
+		replacement, _ := args["replacement_content"].(string)
+		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+	})
+
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "view_file",
-			Description: "View source files or existing documentation files",
+			Description: "View existing documentation or source code file",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"file_path":  {Type: "string", Description: "File path to view"},
+					"file_path":  {Type: "string", Description: "File path"},
 					"start_line": {Type: "number", Description: "Start line"},
 					"end_line":   {Type: "number", Description: "End line"},
 				},
@@ -291,46 +323,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		fp, _ := args["file_path"].(string)
 		start, _ := args["start_line"].(float64)
 		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), r.workspace)
-	})
-
-	reg.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "edit_file",
-			Description: "Create or update Markdown documentation files (.md)",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"file_path":           {Type: "string", Description: "Markdown file path (e.g. README.md or docs/manual.md)"},
-					"target_content":      {Type: "string", Description: "Target text to replace (empty for new file)"},
-					"replacement_content": {Type: "string", Description: "Markdown content to write"},
-				},
-				Required: []string{"file_path", "replacement_content"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		fp, _ := args["file_path"].(string)
-		target, _ := args["target_content"].(string)
-		replacement, _ := args["replacement_content"].(string)
-		return tools.EditFile(fp, target, replacement, r.workspace)
-	})
-
-	reg.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "list_dir",
-			Description: "List workspace files to organize documentation structure",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"dir_path": {Type: "string", Description: "Directory path"},
-				},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		dp, _ := args["dir_path"].(string)
-		return tools.ListDir(dp, r.workspace)
+		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeDocumenter), task, sysPrompt, reg)
@@ -342,47 +335,22 @@ func (r *SubagentRunner) RunPresenter(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_presenter_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := `You are a specialized Presentation Designer Subagent. Your goal is to transform Markdown documents, technical specs, or meeting notes into a self-contained Interactive HTML PPT Slide presentation.
-The generated HTML file should feature:
-- Modern dark glassmorphism aesthetic CSS with smooth slide transitions.
-- Interactive keyboard arrow navigation (Left Arrow ⬅️ / Right Arrow ➡️) and clickable Prev/Next buttons.
-- Dynamic Slide Indicators (e.g., Slide 1 of N) and progress bar.
-Write the final standalone HTML file using edit_file.`
+	sysPrompt := "You are a specialized Presenter Subagent. Your goal is to generate interactive HTML presentation slides with modern CSS glassmorphism, animations, and clean layouts."
 
 	reg := tools.NewRegistry()
-	reg.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "view_file",
-			Description: "View source Markdown or text files to build slides from",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"file_path":  {Type: "string", Description: "File path to view"},
-					"start_line": {Type: "number", Description: "Start line"},
-					"end_line":   {Type: "number", Description: "End line"},
-				},
-				Required: []string{"file_path"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		fp, _ := args["file_path"].(string)
-		start, _ := args["start_line"].(float64)
-		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), r.workspace)
-	})
+	reg.SetWorkspace(r.workspace)
 
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "edit_file",
-			Description: "Create or write the interactive HTML PPT presentation slide file (.html)",
+			Description: "Create or update HTML presentation file",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"file_path":           {Type: "string", Description: "Target HTML presentation file path (e.g., presentation.html)"},
-					"target_content":      {Type: "string", Description: "Target content to replace (empty for new file)"},
-					"replacement_content": {Type: "string", Description: "Complete HTML/CSS/JS slide deck content"},
+					"file_path":           {Type: "string", Description: "HTML file path"},
+					"target_content":      {Type: "string", Description: "Target string"},
+					"replacement_content": {Type: "string", Description: "Replacement HTML content"},
 				},
 				Required: []string{"file_path", "replacement_content"},
 			},
@@ -391,7 +359,7 @@ Write the final standalone HTML file using edit_file.`
 		fp, _ := args["file_path"].(string)
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
-		return tools.EditFile(fp, target, replacement, r.workspace)
+		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypePresenter), task, sysPrompt, reg)
