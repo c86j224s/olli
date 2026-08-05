@@ -17,9 +17,16 @@ import (
 type SubagentType string
 
 const (
-	TypeResearcher SubagentType = "researcher"
-	TypeCoder      SubagentType = "coder"
+	TypeResearcher SubagentType = "Researcher"
+	TypeCoder      SubagentType = "Coder"
 )
+
+type SubagentCallbacks struct {
+	OnThinkingStart func(subType string)
+	OnThinkingToken func(token string)
+	OnThinkingEnd   func()
+	OnToolCall      func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
+}
 
 type ResultReport struct {
 	SubagentID   string `json:"subagent_id"`
@@ -37,9 +44,10 @@ type SubagentRunner struct {
 	cfg       *config.Config
 	outputDir string
 	workspace string
+	callbacks SubagentCallbacks
 }
 
-func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string) *SubagentRunner {
+func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string, callbacks SubagentCallbacks) *SubagentRunner {
 	if workspace == "" {
 		workspace = "."
 	}
@@ -52,6 +60,7 @@ func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspac
 		cfg:       cfg,
 		outputDir: outDir,
 		workspace: workspace,
+		callbacks: callbacks,
 	}
 }
 
@@ -61,7 +70,6 @@ func (r *SubagentRunner) RunResearcher(task string) (*ResultReport, error) {
 	sysPrompt := "You are a specialized Web Researcher Subagent. Your goal is to gather information using web search and reading web pages, then synthesize a clear, concise report."
 
 	reg := tools.NewRegistry()
-	// Register Web Tools for Researcher
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
@@ -107,7 +115,6 @@ func (r *SubagentRunner) RunCoder(task string) (*ResultReport, error) {
 	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, and perform edits or code refactoring as requested."
 
 	reg := tools.NewRegistry()
-	// Register Code Tools for Coder
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
@@ -212,7 +219,6 @@ func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task 
 		jsonlFile.Sync()
 	}
 
-	// 1. Initial Prompt Setup
 	messages := []ollama.Message{
 		{Role: "system", Content: sysPrompt},
 		{Role: "user", Content: task},
@@ -232,11 +238,40 @@ func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task 
 	toolCallsRun := 0
 	var finalAnswer string
 
-	// 2. Subagent Tool Loop (Max 5 turns)
+	thinkingActive := false
+	streamCB := ollama.StreamCallbacks{
+		OnThinking: func(token string) {
+			if !thinkingActive {
+				thinkingActive = true
+				if r.callbacks.OnThinkingStart != nil {
+					r.callbacks.OnThinkingStart(subType)
+				}
+			}
+			if r.callbacks.OnThinkingToken != nil {
+				r.callbacks.OnThinkingToken(token)
+			}
+		},
+		OnContent: func(token string) {
+			if thinkingActive {
+				thinkingActive = false
+				if r.callbacks.OnThinkingEnd != nil {
+					r.callbacks.OnThinkingEnd()
+				}
+			}
+		},
+	}
+
 	for turn := 0; turn < 5; turn++ {
-		resp, err := r.client.ChatStreamFull(req, ollama.StreamCallbacks{})
+		resp, err := r.client.ChatStreamFull(req, streamCB)
 		if err != nil {
 			return nil, fmt.Errorf("subagent LLM stream failed: %w", err)
+		}
+
+		if thinkingActive {
+			thinkingActive = false
+			if r.callbacks.OnThinkingEnd != nil {
+				r.callbacks.OnThinkingEnd()
+			}
 		}
 
 		if len(resp.ToolCalls) > 0 {
@@ -249,6 +284,10 @@ func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task 
 				resContent := toolRes
 				if tErr != nil {
 					resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)
+				}
+
+				if r.callbacks.OnToolCall != nil {
+					r.callbacks.OnToolCall(subType, tc.Function.Name, tc.Function.Arguments, resContent, tErr)
 				}
 
 				toolMsg := ollama.Message{Role: "tool", Content: resContent}

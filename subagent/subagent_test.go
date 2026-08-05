@@ -20,9 +20,8 @@ func TestSubagentRunner(t *testing.T) {
 	client := ollama.NewClient("http://localhost:11434")
 	cfg, _ := config.LoadConfig(filepath.Join(tempDir, "config.json"))
 
-	runner := subagent.NewRunner(client, "qwen3.5:0.8b", cfg, tempDir)
+	runner := subagent.NewRunner(client, "qwen3.5:0.8b", cfg, tempDir, subagent.SubagentCallbacks{})
 
-	// Verify runner creation
 	if runner == nil {
 		t.Fatalf("expected non-nil runner")
 	}

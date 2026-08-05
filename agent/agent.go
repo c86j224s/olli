@@ -31,6 +31,10 @@ type Callbacks struct {
 	OnToolCall                func(toolName string, args map[string]interface{}, result string, execErr error)
 	ConfirmToolCall           func(toolName string, args map[string]interface{}) bool
 	ConfirmToolCallWithAction func(toolName string, args map[string]interface{}) (allowed bool, addWhitelist bool)
+	OnSubagentThinkingStart   func(subType string)
+	OnSubagentThinkingToken   func(token string)
+	OnSubagentThinkingEnd     func()
+	OnSubagentToolCall        func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
 }
 
 type Agent struct {
@@ -47,6 +51,7 @@ type Agent struct {
 	history      []ollama.Message
 	registry     *tools.Registry
 	sessMgr      *session.Manager
+	activeCB     Callbacks
 }
 
 func New(client *ollama.Client, model string, systemPrompt string, sessMgr *session.Manager, cfg *config.Config) *Agent {
@@ -157,7 +162,29 @@ func (a *Agent) registerSubagentTools() {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir)
+		subCB := subagent.SubagentCallbacks{
+			OnThinkingStart: func(subType string) {
+				if a.activeCB.OnSubagentThinkingStart != nil {
+					a.activeCB.OnSubagentThinkingStart(subType)
+				}
+			},
+			OnThinkingToken: func(token string) {
+				if a.activeCB.OnSubagentThinkingToken != nil {
+					a.activeCB.OnSubagentThinkingToken(token)
+				}
+			},
+			OnThinkingEnd: func() {
+				if a.activeCB.OnSubagentThinkingEnd != nil {
+					a.activeCB.OnSubagentThinkingEnd()
+				}
+			},
+			OnToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
+				if a.activeCB.OnSubagentToolCall != nil {
+					a.activeCB.OnSubagentToolCall(subType, toolName, args, result, execErr)
+				}
+			},
+		}
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
 		report, err := runner.RunResearcher(task)
 		if err != nil {
 			return "", fmt.Errorf("researcher subagent failed: %w", err)
@@ -184,7 +211,29 @@ func (a *Agent) registerSubagentTools() {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir)
+		subCB := subagent.SubagentCallbacks{
+			OnThinkingStart: func(subType string) {
+				if a.activeCB.OnSubagentThinkingStart != nil {
+					a.activeCB.OnSubagentThinkingStart(subType)
+				}
+			},
+			OnThinkingToken: func(token string) {
+				if a.activeCB.OnSubagentThinkingToken != nil {
+					a.activeCB.OnSubagentThinkingToken(token)
+				}
+			},
+			OnThinkingEnd: func() {
+				if a.activeCB.OnSubagentThinkingEnd != nil {
+					a.activeCB.OnSubagentThinkingEnd()
+				}
+			},
+			OnToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
+				if a.activeCB.OnSubagentToolCall != nil {
+					a.activeCB.OnSubagentToolCall(subType, toolName, args, result, execErr)
+				}
+			},
+		}
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
 		report, err := runner.RunCoder(task)
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
@@ -337,6 +386,8 @@ func (a *Agent) AutoSummarize() (string, error) {
 }
 
 func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
+	a.activeCB = cb
+
 	userMsg := ollama.Message{
 		Role:    "user",
 		Content: userInput,
@@ -500,7 +551,6 @@ func (a *Agent) buildMessagesPayload() []ollama.Message {
 
 	fullSystemPrompt := a.systemPrompt
 
-	// Inject explicit Subagent Delegation Protocol into System Prompt
 	subagentProtocol := "\n\n🤖 [SUBAGENT DELEGATION PROTOCOL]:\n" +
 		"- When asked to inspect code, search codebase files, edit files, or analyze project code, ALWAYS call 'delegate_coder(task_description)' instead of running manual terminal commands.\n" +
 		"- When asked to research topics, search the web, or read external URLs, ALWAYS call 'delegate_researcher(task_description)'."

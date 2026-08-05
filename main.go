@@ -62,7 +62,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	ag := agent.New(client, defaultModel, "You are an intelligent AI assistant equipped with Goal Steering and Tool Calling capabilities. Stay focused on achieving active goals.", sessMgr, cfg)
+	ag := agent.New(client, defaultModel, "You are an intelligent AI assistant equipped with Goal Steering and Subagent Delegation capabilities. Stay focused on achieving active goals.", sessMgr, cfg)
 
 	printBanner(ag, models, sessMgr.GetCurrentID())
 
@@ -146,6 +146,7 @@ func main() {
 		fmt.Println()
 
 		contentStarted := false
+		subThinkingActive := false
 
 		callbacks := agent.Callbacks{
 			OnThinkingStart: func() {
@@ -165,11 +166,15 @@ func main() {
 				fmt.Print(token)
 			},
 			OnToolCall: func(toolName string, args map[string]interface{}, result string, execErr error) {
-				fmt.Printf("\n%s⚙️  [Tool Executed]%s %s%s%s(%s)\n", ColorMagenta, ColorReset, ColorBold, toolName, ColorReset, agent.FormatArgs(args))
+				fmt.Printf("\n%s⚙️  [Main Agent Tool]%s %s%s%s(%s)\n", ColorMagenta, ColorReset, ColorBold, toolName, ColorReset, agent.FormatArgs(args))
 				if execErr != nil {
 					fmt.Printf("%s   ❌ [Error/Rejection]%s %v\n", ColorRed, ColorReset, execErr)
 				} else {
-					fmt.Printf("%s   📥 [Output]%s %s\n", ColorGray, ColorReset, result)
+					truncRes := result
+					if len(truncRes) > 200 {
+						truncRes = truncRes[:200] + "... [truncated]"
+					}
+					fmt.Printf("%s   📥 [Output Summary]%s %s\n", ColorGray, ColorReset, truncRes)
 				}
 				fmt.Println()
 			},
@@ -192,6 +197,31 @@ func main() {
 					return true, false
 				}
 				return false, false
+			},
+			OnSubagentThinkingStart: func(subType string) {
+				subThinkingActive = true
+				fmt.Printf("   %s↳ 🧠 [%s Subagent Thinking]%s %s", ColorCyan, subType, ColorReset, ColorGray)
+			},
+			OnSubagentThinkingToken: func(token string) {
+				fmt.Print(token)
+			},
+			OnSubagentThinkingEnd: func() {
+				if subThinkingActive {
+					subThinkingActive = false
+					fmt.Printf("%s\n", ColorReset)
+				}
+			},
+			OnSubagentToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
+				fmt.Printf("   %s↳ ⚙️  [%s Subagent Tool Executed]%s %s%s%s(%s)\n", ColorYellow, subType, ColorReset, ColorBold, toolName, ColorReset, agent.FormatArgs(args))
+				if execErr != nil {
+					fmt.Printf("   %s    ❌ [Error/Rejection]%s %v\n\n", ColorRed, ColorReset, execErr)
+				} else {
+					truncRes := result
+					if len(truncRes) > 150 {
+						truncRes = truncRes[:150] + "... [truncated]"
+					}
+					fmt.Printf("   %s    📥 [Output]%s %s\n\n", ColorGray, ColorReset, truncRes)
+				}
 			},
 		}
 
