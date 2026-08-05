@@ -199,7 +199,7 @@ func (r *Registry) registerDefaultTools() {
 			return "", fmt.Errorf("query argument required")
 		}
 
-		matches, err := searchSessionLogs("./sessions", query)
+		matches, err := SearchSessionLogs("./sessions", query)
 		if err != nil {
 			return "", err
 		}
@@ -263,7 +263,7 @@ func evalMathExpr(expr string) (string, error) {
 	return fmt.Sprintf("%.2f", res), nil
 }
 
-func searchSessionLogs(dir string, query string) ([]string, error) {
+func SearchSessionLogs(dir string, query string) ([]string, error) {
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		return nil, nil
 	}

@@ -15,7 +15,7 @@ func (r *SubagentRunner) RunResearcher(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_researcher_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Web Researcher Subagent. Your goal is to gather information using web search and reading web pages, then synthesize a clear, concise report."
+	sysPrompt := "You are a specialized Web Researcher Subagent. Your goal is to gather information using web search, URL content reading, and past session log retrieval, then synthesize a clear report."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -56,6 +56,31 @@ func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task stri
 		return tools.ReadURLContent(u)
 	})
 
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "search_session_history",
+			Description: "Search past conversation session logs by keyword to retrieve specific past messages, user directives, or prior project details",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"query": {Type: "string", Description: "Keyword to search in past session logs"},
+				},
+				Required: []string{"query"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		q, _ := args["query"].(string)
+		matches, err := tools.SearchSessionLogs("./sessions", q)
+		if err != nil {
+			return "", err
+		}
+		if len(matches) == 0 {
+			return fmt.Sprintf("No session logs found matching query '%s'", q), nil
+		}
+		return fmt.Sprintf("Found %d session log matches for '%s':\n%s", len(matches), q, matches), nil
+	})
+
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeResearcher), task, sysPrompt, reg)
 }
 
@@ -65,7 +90,7 @@ func (r *SubagentRunner) RunCoder(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_coder_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, and perform edits or code refactoring as requested."
+	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, query session history for past context, and perform edits or code refactoring as requested."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -151,6 +176,31 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		return tools.ListDir(dp, reg.GetWorkspace())
 	})
 
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "search_session_history",
+			Description: "Search past conversation session logs by keyword to retrieve specific past user preferences or prior code details",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"query": {Type: "string", Description: "Keyword to search in past session logs"},
+				},
+				Required: []string{"query"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		q, _ := args["query"].(string)
+		matches, err := tools.SearchSessionLogs("./sessions", q)
+		if err != nil {
+			return "", err
+		}
+		if len(matches) == 0 {
+			return fmt.Sprintf("No session logs found matching query '%s'", q), nil
+		}
+		return fmt.Sprintf("Found %d session log matches for '%s':\n%v", len(matches), q, matches), nil
+	})
+
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeCoder), task, sysPrompt, reg)
 }
 
@@ -160,7 +210,7 @@ func (r *SubagentRunner) RunTester(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_tester_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Software Tester Subagent. Your goal is to dynamically execute test commands (e.g. go test ./...), build scripts, and verify runtime correctness."
+	sysPrompt := "You are a specialized Software Tester Subagent. Your goal is to dynamically execute test commands (e.g. go test ./...), build scripts, query session history, and verify runtime correctness."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -212,6 +262,31 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
 	})
 
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "search_session_history",
+			Description: "Search past conversation session logs by keyword to retrieve specific past test expectations or details",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"query": {Type: "string", Description: "Keyword to search in past session logs"},
+				},
+				Required: []string{"query"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		q, _ := args["query"].(string)
+		matches, err := tools.SearchSessionLogs("./sessions", q)
+		if err != nil {
+			return "", err
+		}
+		if len(matches) == 0 {
+			return fmt.Sprintf("No session logs found matching query '%s'", q), nil
+		}
+		return fmt.Sprintf("Found %d session log matches for '%s':\n%v", len(matches), q, matches), nil
+	})
+
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeTester), task, sysPrompt, reg)
 }
 
@@ -221,7 +296,7 @@ func (r *SubagentRunner) RunReviewer(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_reviewer_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Code Reviewer Subagent. Your goal is to inspect code style, security vulnerabilities, edge cases, and architectural clean code principles."
+	sysPrompt := "You are a specialized Code Reviewer Subagent. Your goal is to inspect code style, security vulnerabilities, edge cases, session history, and architectural clean code principles."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -268,6 +343,31 @@ func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string
 		return tools.GrepSearch(q, sp, reg.GetWorkspace())
 	})
 
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "search_session_history",
+			Description: "Search past conversation session logs by keyword to retrieve specific past requirements",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"query": {Type: "string", Description: "Keyword to search in past session logs"},
+				},
+				Required: []string{"query"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		q, _ := args["query"].(string)
+		matches, err := tools.SearchSessionLogs("./sessions", q)
+		if err != nil {
+			return "", err
+		}
+		if len(matches) == 0 {
+			return fmt.Sprintf("No session logs found matching query '%s'", q), nil
+		}
+		return fmt.Sprintf("Found %d session log matches for '%s':\n%v", len(matches), q, matches), nil
+	})
+
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeReviewer), task, sysPrompt, reg)
 }
 
@@ -277,7 +377,7 @@ func (r *SubagentRunner) RunDocumenter(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_documenter_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, READMEs, and architecture docs."
+	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, READMEs, and query session logs for past conversation context."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -326,6 +426,31 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
 	})
 
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "search_session_history",
+			Description: "Search past conversation session logs by keyword to retrieve specific past discussion details for technical documentation",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"query": {Type: "string", Description: "Keyword to search in past session logs"},
+				},
+				Required: []string{"query"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		q, _ := args["query"].(string)
+		matches, err := tools.SearchSessionLogs("./sessions", q)
+		if err != nil {
+			return "", err
+		}
+		if len(matches) == 0 {
+			return fmt.Sprintf("No session logs found matching query '%s'", q), nil
+		}
+		return fmt.Sprintf("Found %d session log matches for '%s':\n%v", len(matches), q, matches), nil
+	})
+
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeDocumenter), task, sysPrompt, reg)
 }
 
@@ -335,7 +460,7 @@ func (r *SubagentRunner) RunPresenter(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_presenter_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Presenter Subagent. Your goal is to generate interactive HTML presentation slides with modern CSS glassmorphism, animations, and clean layouts."
+	sysPrompt := "You are a specialized Presenter Subagent. Your goal is to generate interactive HTML presentation slides with modern CSS glassmorphism, animations, and query session logs for content."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -360,6 +485,31 @@ func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task strin
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
 		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "search_session_history",
+			Description: "Search past conversation session logs by keyword to retrieve specific presentation topics",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"query": {Type: "string", Description: "Keyword to search in past session logs"},
+				},
+				Required: []string{"query"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		q, _ := args["query"].(string)
+		matches, err := tools.SearchSessionLogs("./sessions", q)
+		if err != nil {
+			return "", err
+		}
+		if len(matches) == 0 {
+			return fmt.Sprintf("No session logs found matching query '%s'", q), nil
+		}
+		return fmt.Sprintf("Found %d session log matches for '%s':\n%v", len(matches), q, matches), nil
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypePresenter), task, sysPrompt, reg)
