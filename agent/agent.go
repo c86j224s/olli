@@ -130,11 +130,18 @@ func (a *Agent) SetNumCtx(n int)          { a.numCtx = n }
 func (a *Agent) GetNumCtx() int           { return a.numCtx }
 func (a *Agent) SetToolMode(m ToolMode)   { a.toolMode = m }
 func (a *Agent) GetToolMode() ToolMode    { return a.toolMode }
-func (a *Agent) SetCurrentDir(d string)   { a.currentDir = d }
-func (a *Agent) GetCurrentDir() string    { return a.currentDir }
-func (a *Agent) GetInitialDir() string    { return a.initialDir }
-func (a *Agent) SetSummary(s string)      { a.summary = s }
-func (a *Agent) GetSummary() string       { return a.summary }
+
+func (a *Agent) SetCurrentDir(d string) {
+	a.currentDir = d
+	if a.registry != nil {
+		a.registry.SetWorkspace(d)
+	}
+}
+
+func (a *Agent) GetCurrentDir() string { return a.currentDir }
+func (a *Agent) GetInitialDir() string { return a.initialDir }
+func (a *Agent) SetSummary(s string)   { a.summary = s }
+func (a *Agent) GetSummary() string    { return a.summary }
 
 func (a *Agent) ClearHistory() {
 	a.history = make([]ollama.Message, 0)

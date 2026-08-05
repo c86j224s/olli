@@ -2,12 +2,13 @@ package tools
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,6 +35,16 @@ func NewRegistry() *Registry {
 	}
 	r.registerDefaultTools()
 	return r
+}
+
+func (r *Registry) SetWorkspace(ws string) {
+	if ws != "" {
+		r.workspace = ws
+	}
+}
+
+func (r *Registry) GetWorkspace() string {
+	return r.workspace
 }
 
 func (r *Registry) Register(tool ollama.Tool, handler ToolHandler) {
@@ -116,17 +127,18 @@ func (r *Registry) registerDefaultTools() {
 			"arch":       runtime.GOARCH,
 			"num_cpu":    fmt.Sprintf("%d", runtime.NumCPU()),
 			"go_version": runtime.Version(),
+			"workspace":  r.workspace,
 		}
 		b, _ := json.Marshal(info)
 		return string(b), nil
 	})
 
-	// Tool 4: run_terminal_command (with Sandbox Boundary Guard)
+	// Tool 4: run_terminal_command (using ExecuteCommandWithWorkspace)
 	r.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "run_terminal_command",
-			Description: "Run safe CLI terminal commands like 'ls', 'pwd', 'whoami', 'date', 'go version'",
+			Description: "Run safe CLI terminal commands like 'ls', 'pwd', 'go test', 'cd <dir>'",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
@@ -139,36 +151,16 @@ func (r *Registry) registerDefaultTools() {
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		cmdStr, ok := args["command"].(string)
-		if !ok || cmdStr == "" {
+		cmdStr := ParseCommandArgs(args)
+		if cmdStr == "" {
 			return "", fmt.Errorf("invalid command argument")
 		}
 
-		// Security Check 1: Inspect for dangerous home/root deletion patterns
-		if err := ValidateCommandSafety(cmdStr, r.workspace); err != nil {
-			return "", fmt.Errorf("command execution blocked: %w", err)
+		output, newWs, err := ExecuteCommandWithWorkspace(context.Background(), cmdStr, r.workspace)
+		if newWs != r.workspace {
+			r.workspace = newWs
 		}
-
-		parts := strings.Fields(cmdStr)
-		if len(parts) == 0 {
-			return "", fmt.Errorf("empty command")
-		}
-
-		allowedCmds := map[string]bool{
-			"ls": true, "pwd": true, "whoami": true, "date": true,
-			"go": true, "echo": true, "uptime": true, "uname": true,
-		}
-
-		if !allowedCmds[parts[0]] {
-			return "", fmt.Errorf("command '%s' is not in the whitelist for safety reasons", parts[0])
-		}
-
-		cmd := exec.Command(parts[0], parts[1:]...)
-		output, err := cmd.CombinedOutput()
-		if err != nil {
-			return fmt.Sprintf("Command error: %v, output: %s", err, string(output)), nil
-		}
-		return strings.TrimSpace(string(output)), nil
+		return output, err
 	})
 
 	// Tool 5: search_session_history
@@ -198,33 +190,87 @@ func (r *Registry) registerDefaultTools() {
 		if err != nil {
 			return "", err
 		}
+
 		if len(matches) == 0 {
-			return fmt.Sprintf("No past conversation logs found matching '%s'", query), nil
+			return fmt.Sprintf("No past session logs found matching query '%s'", query), nil
 		}
 
-		return fmt.Sprintf("Found %d matching past messages:\n%s", len(matches), strings.Join(matches, "\n---\n")), nil
+		return fmt.Sprintf("Found %d session log matches for '%s':\n%s", len(matches), query, strings.Join(matches, "\n")), nil
 	})
 }
 
-func searchSessionLogs(sessionsDir string, query string) ([]string, error) {
-	files, err := os.ReadDir(sessionsDir)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read sessions dir: %w", err)
+func evalMathExpr(expr string) (string, error) {
+	expr = strings.ReplaceAll(expr, " ", "")
+	var op rune
+	var opIdx = -1
+
+	for i, r := range expr {
+		if r == '+' || r == '-' || r == '*' || r == '/' {
+			if i > 0 {
+				op = r
+				opIdx = i
+				break
+			}
+		}
+	}
+
+	if opIdx == -1 {
+		val, err := strconv.ParseFloat(expr, 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid number")
+		}
+		return fmt.Sprintf("%.2f", val), nil
+	}
+
+	leftStr := expr[:opIdx]
+	rightStr := expr[opIdx+1:]
+
+	left, err1 := strconv.ParseFloat(leftStr, 64)
+	right, err2 := strconv.ParseFloat(rightStr, 64)
+
+	if err1 != nil || err2 != nil {
+		return "", fmt.Errorf("invalid operand numbers")
+	}
+
+	var res float64
+	switch op {
+	case '+':
+		res = left + right
+	case '-':
+		res = left - right
+	case '*':
+		res = left * right
+	case '/':
+		if right == 0 {
+			return "", fmt.Errorf("division by zero")
+		}
+		res = left / right
+	}
+
+	return fmt.Sprintf("%.2f", res), nil
+}
+
+func searchSessionLogs(dir string, query string) ([]string, error) {
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return nil, nil
 	}
 
 	queryLower := strings.ToLower(query)
-	var matches []string
+	var results []string
 
-	for _, f := range files {
-		if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
-			continue
-		}
-
-		filePath := filepath.Join(sessionsDir, f.Name())
-		file, err := os.Open(filePath)
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			continue
+			return nil
 		}
+		if info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+
+		file, err := os.Open(path)
+		if err != nil {
+			return nil
+		}
+		defer file.Close()
 
 		scanner := bufio.NewScanner(file)
 		lineNo := 0
@@ -232,32 +278,19 @@ func searchSessionLogs(sessionsDir string, query string) ([]string, error) {
 			lineNo++
 			text := scanner.Text()
 			if strings.Contains(strings.ToLower(text), queryLower) {
-				var raw map[string]interface{}
-				if err := json.Unmarshal([]byte(text), &raw); err == nil {
-					role, _ := raw["role"].(string)
-					content, _ := raw["content"].(string)
-					if content != "" {
-						matches = append(matches, fmt.Sprintf("[%s L%d - %s]: %s", f.Name(), lineNo, role, content))
-					}
-				} else {
-					matches = append(matches, fmt.Sprintf("[%s L%d]: %s", f.Name(), lineNo, text))
+				relPath, _ := filepath.Rel(".", path)
+				truncText := text
+				if len(truncText) > 200 {
+					truncText = truncText[:200] + "... [truncated]"
 				}
-				if len(matches) >= 10 {
-					break
+				results = append(results, fmt.Sprintf("[%s L%d] %s", relPath, lineNo, truncText))
+				if len(results) >= 20 {
+					return fmt.Errorf("match limit reached")
 				}
 			}
 		}
-		file.Close()
-	}
+		return nil
+	})
 
-	return matches, nil
-}
-
-func evalMathExpr(expr string) (string, error) {
-	cmd := exec.Command("python3", "-c", fmt.Sprintf("print(%s)", expr))
-	out, err := cmd.Output()
-	if err == nil {
-		return strings.TrimSpace(string(out)), nil
-	}
-	return "", fmt.Errorf("calculation failed: %v", err)
+	return results, nil
 }
