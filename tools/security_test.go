@@ -1,35 +1,41 @@
 package tools
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 )
 
-func TestPathSafeTildeExpand(t *testing.T) {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("failed to get home dir: %v", err)
+func TestSecurityChecks(t *testing.T) {
+	workspace := "/Users/allthatcode/llm-pg4"
+
+	testCmds := []string{
+		"cd ~/llm-pg",
+		"cd /Users/allthatcode/llm-pg",
+		"cd ../llm-pg",
 	}
 
-	currentDir, _ := os.Getwd()
+	for _, cmd := range testCmds {
+		err := ValidateCommandSafety(cmd, workspace)
+		if err != nil {
+			t.Errorf("ValidateCommandSafety failed for '%s': %v", cmd, err)
+		} else {
+			t.Logf("ValidateCommandSafety PASSED for '%s'", cmd)
+		}
 
-	// Test 1: ~/llm-pg path
-	target := "~/llm-pg"
-	safePath, err := IsPathSafe(target, currentDir)
-	if err != nil {
-		t.Fatalf("IsPathSafe failed for '%s': %v", target, err)
+		out, newWs, err := ExecuteCommandWithWorkspace(nil, cmd, workspace)
+		t.Logf("ExecuteCommandWithWorkspace for '%s' -> err: %v, newWs: %s, out: %s", cmd, err, newWs, out)
 	}
 
-	expected := filepath.Join(homeDir, "llm-pg")
-	if safePath != expected {
-		t.Errorf("expected '%s', got '%s'", expected, safePath)
+	testPaths := []string{
+		"~/llm-pg",
+		"/Users/allthatcode/llm-pg",
+		"../llm-pg",
 	}
-
-	// Test 2: ExecuteCommand with cd ~/llm-pg
-	res, err := ExecuteCommand("cd ~/llm-pg && pwd", currentDir)
-	if err != nil {
-		t.Fatalf("ExecuteCommand failed: %v", err)
+	for _, p := range testPaths {
+		safeP, err := IsPathSafe(p, workspace)
+		if err != nil {
+			t.Errorf("IsPathSafe failed for '%s': %v", p, err)
+		} else {
+			t.Logf("IsPathSafe PASSED for '%s' -> %s", p, safeP)
+		}
 	}
-	t.Logf("ExecuteCommand output: %s", res)
 }

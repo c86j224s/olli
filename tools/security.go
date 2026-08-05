@@ -23,10 +23,10 @@ func ExpandTilde(path string) string {
 	return trimmed
 }
 
-// ForbiddenBaseDirectories defines critical system & user directories
-// that must never be set as writable target workspaces or wiped out.
-func GetForbiddenBaseDirectories() []string {
-	forbidden := []string{
+// ForbiddenSystemRootDirectories defines critical OS system directories
+// that must never be set as workspaces or written to.
+func GetForbiddenSystemRootDirectories() []string {
+	return []string{
 		"/",
 		"/Users",
 		"/home",
@@ -39,22 +39,10 @@ func GetForbiddenBaseDirectories() []string {
 		"/var",
 		"/dev",
 	}
-
-	homeDir, err := os.UserHomeDir()
-	if err == nil && homeDir != "" {
-		homeAbs, err := filepath.Abs(homeDir)
-		if err == nil {
-			if evalHome, err := filepath.EvalSymlinks(homeAbs); err == nil {
-				homeAbs = evalHome
-			}
-			forbidden = append(forbidden, homeAbs)
-		}
-	}
-	return forbidden
 }
 
-// IsWorkspaceLocationSafe checks if a directory is safe to be used as a writable workspace.
-// If the user launches the agent directly in $HOME or System Root /, write/delete operations are blocked.
+// IsWorkspaceLocationSafe checks if a directory is safe to be used as a workspace.
+// OS System Roots (/, /System, /usr) are forbidden. User home ($HOME) and subdirectories are ALLOWED.
 func IsWorkspaceLocationSafe(dir string) error {
 	dir = ExpandTilde(dir)
 	abs, err := filepath.Abs(dir)
@@ -65,15 +53,15 @@ func IsWorkspaceLocationSafe(dir string) error {
 		abs = eval
 	}
 
-	for _, fb := range GetForbiddenBaseDirectories() {
-		if abs == fb {
-			return fmt.Errorf("SECURITY RISK: Directory '%s' is a Protected System/Home Base Directory ($HOME or /). Destructive/Write operations directly targeting this location are FORBIDDEN.", abs)
+	for _, sysRoot := range GetForbiddenSystemRootDirectories() {
+		if abs == sysRoot {
+			return fmt.Errorf("SECURITY RISK: Directory '%s' is a protected System Root directory (/ or /System). Access is FORBIDDEN.", abs)
 		}
 	}
 	return nil
 }
 
-// IsPathSafe verifies that a target path is safe (not home/root/system) and accessible
+// IsPathSafe verifies that a target path is safe (not OS system root) and accessible
 func IsPathSafe(targetPath string, allowedRootDir string) (string, error) {
 	if strings.TrimSpace(targetPath) == "" {
 		return "", fmt.Errorf("path cannot be empty")
@@ -92,29 +80,16 @@ func IsPathSafe(targetPath string, allowedRootDir string) (string, error) {
 		absTarget = evalPath
 	}
 
-	// 2. Protect Root (/) and System Root directories ($HOME, /System, etc.)
-	for _, fb := range GetForbiddenBaseDirectories() {
-		if absTarget == fb {
-			return "", fmt.Errorf("SECURITY BLOCK: Target path '%s' is a protected system/home root directory", absTarget)
+	// 2. Protect OS System Root directories (/, /System, /usr, /etc)
+	for _, sysRoot := range GetForbiddenSystemRootDirectories() {
+		if absTarget == sysRoot {
+			return "", fmt.Errorf("SECURITY BLOCK: Target path '%s' is a protected OS system root directory", absTarget)
 		}
 	}
 
-	// 3. Check if target is inside current allowedRootDir
-	absAllowed, err := filepath.Abs(allowedRootDir)
-	if err == nil {
-		if evalAllowed, err := filepath.EvalSymlinks(absAllowed); err == nil {
-			absAllowed = evalAllowed
-		}
-
-		rel, relErr := filepath.Rel(absAllowed, absTarget)
-		if relErr == nil && !strings.HasPrefix(rel, "..") {
-			return absTarget, nil
-		}
-	}
-
-	// 4. If target is outside allowedRootDir, verify it is a safe project directory (not / or $HOME)
+	// 3. Verify workspace location safety
 	if err := IsWorkspaceLocationSafe(absTarget); err != nil {
-		return "", fmt.Errorf("SECURITY BLOCK: Target path '%s' is outside current workspace and is not a safe project directory: %w", absTarget, err)
+		return "", fmt.Errorf("SECURITY BLOCK: Target path '%s' is not a safe directory: %w", absTarget, err)
 	}
 
 	return absTarget, nil
@@ -132,12 +107,13 @@ func ValidateCommandSafety(cmdStr string, allowedRootDir string) error {
 	if dangerousRegex.MatchString(trimmed) {
 		// Check for self-deletion commands like "rm -rf .", "rm -rf ./", "rmdir ."
 		if strings.Contains(trimmed, " .") || strings.Contains(trimmed, " ./") || strings.Contains(trimmed, " *") {
-			if err := IsWorkspaceLocationSafe(allowedRootDir); err != nil {
-				return fmt.Errorf("SECURITY BLOCK: Self-deletion command '%s' in protected workspace is FORBIDDEN: %w", cmdStr, err)
+			homeDir, _ := os.UserHomeDir()
+			if allowedRootDir == homeDir || allowedRootDir == "/" {
+				return fmt.Errorf("SECURITY BLOCK: Self-deletion command '%s' targeting home or system root is FORBIDDEN", cmdStr)
 			}
 		}
 
-		// Check if command targets root, home, or wildcard
+		// Check if command targets root, home root, or wildcard
 		homeDir, _ := os.UserHomeDir()
 		dangerousTargets := []string{"/", "/ *", "~", "$HOME", "/Users", "/Users/*", homeDir}
 

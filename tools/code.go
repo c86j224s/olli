@@ -225,6 +225,10 @@ func ExecuteCommandWithContext(ctx context.Context, cmdStr string, workspace str
 
 // ExecuteCommandWithWorkspace executes command and returns updated workspace if 'cd' was invoked
 func ExecuteCommandWithWorkspace(ctx context.Context, cmdStr string, workspace string) (output string, newWorkspace string, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
 	newWorkspace = workspace
 	if cmdStr == "" {
 		return "", newWorkspace, fmt.Errorf("empty terminal command received")
