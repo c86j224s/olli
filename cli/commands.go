@@ -6,6 +6,7 @@ import (
 
 	"github.com/c86j224s/olli/agent"
 	"github.com/c86j224s/olli/ollama"
+	"github.com/c86j224s/olli/tools"
 )
 
 func HandleCommand(cmd string, ag *agent.Agent, client *ollama.Client, availableModels []string) bool {
@@ -18,6 +19,7 @@ func HandleCommand(cmd string, ag *agent.Agent, client *ollama.Client, available
 
 	case "/help":
 		fmt.Println("\nAvailable Commands:")
+		fmt.Println("  /cd <path>           - Jump to another project working directory")
 		fmt.Println("  /mode <auto|ask|accept-edit> - Change Tool Execution Mode:")
 		fmt.Println("                                   • auto        : Run ALL tools automatically without prompt")
 		fmt.Println("                                   • ask         : Prompt user for ALL tool executions (y/N/a)")
@@ -41,6 +43,20 @@ func HandleCommand(cmd string, ag *agent.Agent, client *ollama.Client, available
 		fmt.Println("  /clear                - Clear in-memory conversation history")
 		fmt.Println("  /exit                 - Quit the agent")
 		fmt.Println()
+
+	case "/cd":
+		if len(parts) < 2 {
+			fmt.Printf("%sCurrent Working Directory: %s\nUsage: /cd <target_directory_path>%s\n\n", ColorYellow, ag.GetCurrentDir(), ColorReset)
+			return false
+		}
+		targetDir := parts[1]
+		safeDir, err := tools.IsPathSafe(targetDir, ag.GetCurrentDir())
+		if err != nil {
+			fmt.Printf("%s[Security Block]%s Cannot change directory to '%s': %v\n\n", ColorRed, ColorReset, targetDir, err)
+			return false
+		}
+		ag.SetCurrentDir(safeDir)
+		fmt.Printf("%s[Agent]%s Working directory changed to: %s%s%s\n\n", ColorGreen, ColorReset, ColorBold, safeDir, ColorReset)
 
 	case "/mode":
 		if len(parts) < 2 {
@@ -310,6 +326,6 @@ func handleSessionSubcommands(args []string, ag *agent.Agent) {
 		fmt.Printf("%s[Session]%s Session '%s' deleted.\n\n", ColorGreen, ColorReset, targetID)
 
 	default:
-		fmt.Printf("%sUnknown session subcommand '%s'. Available: list, new, load, rename, current, delete%s\n\n", ColorYellow, sub, ColorReset)
+		fmt.Printf("%sUnknown session subcommand '%s'. Type /help for assistance.%s\n\n", ColorYellow, sub, ColorReset)
 	}
 }

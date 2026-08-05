@@ -58,6 +58,7 @@ func main() {
 
 	completer := readline.NewPrefixCompleter(
 		readline.PcItem("/help"),
+		readline.PcItem("/cd"),
 		readline.PcItem("/mode",
 			readline.PcItem("auto"),
 			readline.PcItem("ask"),

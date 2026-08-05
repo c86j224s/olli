@@ -57,19 +57,13 @@ func IsWorkspaceLocationSafe(dir string) error {
 	return nil
 }
 
-// IsPathSafe verifies that a target path is strictly within the allowed workspace boundary
-// AND ensures the workspace itself is not a protected system/home root.
+// IsPathSafe verifies that a target path is safe (not home/root/system) and accessible
 func IsPathSafe(targetPath string, allowedRootDir string) (string, error) {
 	if strings.TrimSpace(targetPath) == "" {
 		return "", fmt.Errorf("path cannot be empty")
 	}
 
-	// 1. Verify workspace itself is not a protected base location
-	if err := IsWorkspaceLocationSafe(allowedRootDir); err != nil {
-		return "", err
-	}
-
-	// 2. Resolve target absolute path
+	// 1. Resolve target absolute path
 	absTarget, err := filepath.Abs(targetPath)
 	if err != nil {
 		return "", fmt.Errorf("invalid target path: %w", err)
@@ -79,36 +73,29 @@ func IsPathSafe(targetPath string, allowedRootDir string) (string, error) {
 		absTarget = evalPath
 	}
 
+	// 2. Protect Root (/) and System Root directories ($HOME, /System, etc.)
+	for _, fb := range GetForbiddenBaseDirectories() {
+		if absTarget == fb {
+			return "", fmt.Errorf("SECURITY BLOCK: Target path '%s' is a protected system/home root directory", absTarget)
+		}
+	}
+
+	// 3. Check if target is inside current allowedRootDir
 	absAllowed, err := filepath.Abs(allowedRootDir)
-	if err != nil {
-		return "", fmt.Errorf("invalid workspace path: %w", err)
-	}
-	if evalAllowed, err := filepath.EvalSymlinks(absAllowed); err == nil {
-		absAllowed = evalAllowed
-	}
-
-	// 3. Protect Root (/) and System Root directories
-	if absTarget == "/" || absTarget == "/Users" || absTarget == "/home" || absTarget == "/System" {
-		return "", fmt.Errorf("SECURITY BLOCK: Target path '%s' is a protected system root directory", absTarget)
-	}
-
-	// 4. Protect User Home Directory ($HOME)
-	homeDir, _ := os.UserHomeDir()
-	if homeDir != "" {
-		homeAbs, _ := filepath.Abs(homeDir)
-		if evalHome, err := filepath.EvalSymlinks(homeAbs); err == nil {
-			homeAbs = evalHome
+	if err == nil {
+		if evalAllowed, err := filepath.EvalSymlinks(absAllowed); err == nil {
+			absAllowed = evalAllowed
 		}
 
-		if absTarget == homeAbs {
-			return "", fmt.Errorf("SECURITY BLOCK: Target path '%s' is user Home directory ($HOME)", absTarget)
+		rel, relErr := filepath.Rel(absAllowed, absTarget)
+		if relErr == nil && !strings.HasPrefix(rel, "..") {
+			return absTarget, nil
 		}
 	}
 
-	// 5. Ensure target is strictly inside allowed workspace directory
-	rel, err := filepath.Rel(absAllowed, absTarget)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("SECURITY BLOCK: Target path '%s' escapes workspace boundary '%s'", absTarget, absAllowed)
+	// 4. If target is outside allowedRootDir, verify it is a safe project directory (not / or $HOME)
+	if err := IsWorkspaceLocationSafe(absTarget); err != nil {
+		return "", fmt.Errorf("SECURITY BLOCK: Target path '%s' is outside current workspace and is not a safe project directory: %w", absTarget, err)
 	}
 
 	return absTarget, nil
