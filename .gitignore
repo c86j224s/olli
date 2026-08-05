@@ -1,0 +1,14 @@
+# Binaries
+bin/
+toy-agent
+olli
+
+# Temporary files
+*.tmp
+.toy_agent_readline_history
+
+# Sessions data (optional: keep directory structure if desired)
+sessions/
+
+# Config overrides
+# config.json
