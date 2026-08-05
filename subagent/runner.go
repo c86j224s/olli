@@ -16,15 +16,16 @@ import (
 )
 
 type SubagentRunner struct {
-	client    *ollama.Client
-	model     string
-	cfg       *config.Config
-	outputDir string
-	workspace string
-	callbacks SubagentCallbacks
+	client      *ollama.Client
+	model       string
+	cfg         *config.Config
+	outputDir   string
+	workspace   string
+	sessionFile string
+	callbacks   SubagentCallbacks
 }
 
-func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string, callbacks SubagentCallbacks) *SubagentRunner {
+func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string, sessionFile string, callbacks SubagentCallbacks) *SubagentRunner {
 	if workspace == "" {
 		workspace = "."
 	}
@@ -32,13 +33,18 @@ func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspac
 	os.MkdirAll(outDir, 0755)
 
 	return &SubagentRunner{
-		client:    client,
-		model:     model,
-		cfg:       cfg,
-		outputDir: outDir,
-		workspace: workspace,
-		callbacks: callbacks,
+		client:      client,
+		model:       model,
+		cfg:         cfg,
+		outputDir:   outDir,
+		workspace:   workspace,
+		sessionFile: sessionFile,
+		callbacks:   callbacks,
 	}
+}
+
+func (r *SubagentRunner) GetSessionFile() string {
+	return r.sessionFile
 }
 
 func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task string, sysPrompt string, reg *tools.Registry) (*ResultReport, error) {

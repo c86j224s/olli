@@ -21,6 +21,7 @@ type Registry struct {
 	definitions []ollama.Tool
 	handlers    map[string]ToolHandler
 	workspace   string
+	sessionFile string
 }
 
 func NewRegistry() *Registry {
@@ -45,6 +46,14 @@ func (r *Registry) SetWorkspace(ws string) {
 
 func (r *Registry) GetWorkspace() string {
 	return r.workspace
+}
+
+func (r *Registry) SetSessionFile(sf string) {
+	r.sessionFile = sf
+}
+
+func (r *Registry) GetSessionFile() string {
+	return r.sessionFile
 }
 
 // ResolvePath resolves relative paths, tildes, or absolute paths against the active workspace
@@ -176,7 +185,7 @@ func (r *Registry) registerDefaultTools() {
 		return output, err
 	})
 
-	// Tool 5: search_session_history
+	// Tool 5: search_session_history (Scoped to active session file or sessions dir)
 	r.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
@@ -199,7 +208,12 @@ func (r *Registry) registerDefaultTools() {
 			return "", fmt.Errorf("query argument required")
 		}
 
-		matches, err := SearchSessionLogs("./sessions", query)
+		targetFile := r.sessionFile
+		if targetFile == "" {
+			targetFile = "./sessions"
+		}
+
+		matches, err := SearchSessionLogs(targetFile, query)
 		if err != nil {
 			return "", err
 		}
@@ -263,25 +277,24 @@ func evalMathExpr(expr string) (string, error) {
 	return fmt.Sprintf("%.2f", res), nil
 }
 
-func SearchSessionLogs(dir string, query string) ([]string, error) {
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
+// SearchSessionLogs searches either a single .jsonl session file or entire sessions directory
+func SearchSessionLogs(targetPath string, query string) ([]string, error) {
+	if targetPath == "" {
+		targetPath = "./sessions"
+	}
+
+	info, err := os.Stat(targetPath)
+	if os.IsNotExist(err) {
 		return nil, nil
 	}
 
 	queryLower := strings.ToLower(query)
 	var results []string
 
-	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+	searchFile := func(filePath string) {
+		file, err := os.Open(filePath)
 		if err != nil {
-			return nil
-		}
-		if info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
-			return nil
-		}
-
-		file, err := os.Open(path)
-		if err != nil {
-			return nil
+			return
 		}
 		defer file.Close()
 
@@ -291,16 +304,34 @@ func SearchSessionLogs(dir string, query string) ([]string, error) {
 			lineNo++
 			text := scanner.Text()
 			if strings.Contains(strings.ToLower(text), queryLower) {
-				relPath, _ := filepath.Rel(".", path)
+				relPath, _ := filepath.Rel(".", filePath)
 				truncText := text
 				if len(truncText) > 200 {
 					truncText = truncText[:200] + "... [truncated]"
 				}
 				results = append(results, fmt.Sprintf("[%s L%d] %s", relPath, lineNo, truncText))
 				if len(results) >= 20 {
-					return fmt.Errorf("match limit reached")
+					return
 				}
 			}
+		}
+	}
+
+	if !info.IsDir() {
+		searchFile(targetPath)
+		return results, nil
+	}
+
+	_ = filepath.Walk(targetPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+			return nil
+		}
+		searchFile(path)
+		if len(results) >= 20 {
+			return fmt.Errorf("match limit reached")
 		}
 		return nil
 	})
