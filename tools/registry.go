@@ -338,3 +338,72 @@ func SearchSessionLogs(targetPath string, query string) ([]string, error) {
 
 	return results, nil
 }
+
+// ListSubagentReports lists all past subagent research, code analysis, testing, or review logs saved in workspace
+func ListSubagentReports(workspace string) (string, error) {
+	subDir := filepath.Join(workspace, "sessions", "subagents")
+	if _, err := os.Stat(subDir); os.IsNotExist(err) {
+		return "No subagent investigation reports found in sessions/subagents.", nil
+	}
+
+	entries, err := os.ReadDir(subDir)
+	if err != nil {
+		return "", fmt.Errorf("failed to read subagent logs directory: %w", err)
+	}
+
+	var reports []string
+	for _, entry := range entries {
+		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
+			reports = append(reports, fmt.Sprintf("  • %s", entry.Name()))
+		}
+	}
+
+	if len(reports) == 0 {
+		return "No subagent investigation reports found.", nil
+	}
+
+	return fmt.Sprintf("Past Subagent Investigation Reports (%d files in sessions/subagents):\n%s", len(reports), strings.Join(reports, "\n")), nil
+}
+
+// ViewSubagentReport reads and summarizes a specific subagent report JSONL log
+func ViewSubagentReport(workspace string, reportFilename string) (string, error) {
+	reportFilename = strings.TrimSpace(reportFilename)
+	if reportFilename == "" {
+		return "", fmt.Errorf("report filename required")
+	}
+
+	if !strings.HasSuffix(reportFilename, ".jsonl") {
+		reportFilename += ".jsonl"
+	}
+
+	subDir := filepath.Join(workspace, "sessions", "subagents")
+	targetPath := filepath.Join(subDir, filepath.Base(reportFilename))
+
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to read subagent report '%s': %w", targetPath, err)
+	}
+
+	lines := strings.Split(string(data), "\n")
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("Subagent Report Contents (%s):\n", filepath.Base(targetPath)))
+
+	count := 0
+	for _, l := range lines {
+		l = strings.TrimSpace(l)
+		if l == "" {
+			continue
+		}
+		count++
+		if len(l) > 300 {
+			l = l[:300] + "... [truncated]"
+		}
+		sb.WriteString(fmt.Sprintf("  [%d] %s\n", count, l))
+		if count >= 30 {
+			sb.WriteString("  ... [Truncated at 30 events limit]\n")
+			break
+		}
+	}
+
+	return sb.String(), nil
+}

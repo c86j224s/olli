@@ -15,7 +15,7 @@ func (r *SubagentRunner) RunResearcher(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_researcher_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Web Researcher Subagent. Your goal is to gather information using web search, URL content reading, and past session log retrieval, then synthesize a clear report."
+	sysPrompt := "You are a specialized Web Researcher Subagent. Your goal is to gather information using web search, URL content reading, subagent report inspection, and past session log retrieval, then synthesize a clear report."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -86,6 +86,38 @@ func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task stri
 		return fmt.Sprintf("Found %d session log matches for '%s':\n%s", len(matches), q, matches), nil
 	})
 
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "list_subagent_reports",
+			Description: "List all past subagent research, code analysis, testing, or review logs saved in workspace",
+			Parameters: ollama.FunctionParamSchema{
+				Type:       "object",
+				Properties: map[string]ollama.FunctionParamProperty{},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		return tools.ListSubagentReports(reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "view_subagent_report",
+			Description: "Read contents of a past subagent investigation report file",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"report_filename": {Type: "string", Description: "Filename of the report in sessions/subagents (e.g. subagent_coder_...)"},
+				},
+				Required: []string{"report_filename"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		rf, _ := args["report_filename"].(string)
+		return tools.ViewSubagentReport(reg.GetWorkspace(), rf)
+	})
+
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeResearcher), task, sysPrompt, reg)
 }
 
@@ -95,7 +127,7 @@ func (r *SubagentRunner) RunCoder(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_coder_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, query session history for past context, and perform edits or code refactoring as requested."
+	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, query session history and past subagent investigation reports, and perform edits or code refactoring as requested."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -209,6 +241,38 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 			return fmt.Sprintf("No session log matches found for query '%s'", q), nil
 		}
 		return fmt.Sprintf("Found %d session log matches for '%s':\n%s", len(matches), q, matches), nil
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "list_subagent_reports",
+			Description: "List all past subagent research, code analysis, testing, or review logs saved in workspace",
+			Parameters: ollama.FunctionParamSchema{
+				Type:       "object",
+				Properties: map[string]ollama.FunctionParamProperty{},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		return tools.ListSubagentReports(reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "view_subagent_report",
+			Description: "Read contents of a past subagent investigation report file",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"report_filename": {Type: "string", Description: "Filename of the report in sessions/subagents"},
+				},
+				Required: []string{"report_filename"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		rf, _ := args["report_filename"].(string)
+		return tools.ViewSubagentReport(reg.GetWorkspace(), rf)
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeCoder), task, sysPrompt, reg)
@@ -397,7 +461,7 @@ func (r *SubagentRunner) RunDocumenter(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_documenter_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, READMEs, and query active session log for past conversation context."
+	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, and READMEs. MANDATORY INSTRUCTION: Before writing documentation, you MUST use 'list_subagent_reports', 'view_subagent_report', 'search_session_history', 'view_file', or 'list_dir' to inspect subagent investigation findings, user history, and real source code. Always write the final documentation file using 'edit_file'."
 
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(r.workspace)
@@ -406,45 +470,33 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
-			Name:        "edit_file",
-			Description: "Create or update Markdown documentation file",
+			Name:        "list_subagent_reports",
+			Description: "List all past subagent research, code analysis, testing, or review investigation logs saved in workspace",
 			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"file_path":           {Type: "string", Description: "Doc file path"},
-					"target_content":      {Type: "string", Description: "Target string"},
-					"replacement_content": {Type: "string", Description: "Replacement content"},
-				},
-				Required: []string{"file_path", "replacement_content"},
+				Type:       "object",
+				Properties: map[string]ollama.FunctionParamProperty{},
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		fp, _ := args["file_path"].(string)
-		target, _ := args["target_content"].(string)
-		replacement, _ := args["replacement_content"].(string)
-		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+		return tools.ListSubagentReports(reg.GetWorkspace())
 	})
 
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
-			Name:        "view_file",
-			Description: "View existing documentation or source code file",
+			Name:        "view_subagent_report",
+			Description: "Read contents of a past subagent investigation report file",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"file_path":  {Type: "string", Description: "File path"},
-					"start_line": {Type: "number", Description: "Start line"},
-					"end_line":   {Type: "number", Description: "End line"},
+					"report_filename": {Type: "string", Description: "Filename of the report in sessions/subagents"},
 				},
-				Required: []string{"file_path"},
+				Required: []string{"report_filename"},
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		fp, _ := args["file_path"].(string)
-		start, _ := args["start_line"].(float64)
-		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
+		rf, _ := args["report_filename"].(string)
+		return tools.ViewSubagentReport(reg.GetWorkspace(), rf)
 	})
 
 	reg.Register(ollama.Tool{
@@ -474,6 +526,87 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 			return fmt.Sprintf("No session log matches found for query '%s'", q), nil
 		}
 		return fmt.Sprintf("Found %d session log matches for '%s':\n%s", len(matches), q, matches), nil
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "list_dir",
+			Description: "List directory files and folders to explore project structure",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"dir_path": {Type: "string", Description: "Directory path"},
+				},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		dp, _ := args["dir_path"].(string)
+		return tools.ListDir(dp, reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "view_file",
+			Description: "View existing documentation or source code file",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"file_path":  {Type: "string", Description: "File path"},
+					"start_line": {Type: "number", Description: "Start line"},
+					"end_line":   {Type: "number", Description: "End line"},
+				},
+				Required: []string{"file_path"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		fp, _ := args["file_path"].(string)
+		start, _ := args["start_line"].(float64)
+		end, _ := args["end_line"].(float64)
+		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "grep_search",
+			Description: "Search code patterns across workspace files",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"query":       {Type: "string", Description: "Keyword to search"},
+					"search_path": {Type: "string", Description: "Path to search within"},
+				},
+				Required: []string{"query"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		q, _ := args["query"].(string)
+		sp, _ := args["search_path"].(string)
+		return tools.GrepSearch(q, sp, reg.GetWorkspace())
+	})
+
+	reg.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "edit_file",
+			Description: "Create or update Markdown documentation file",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"file_path":           {Type: "string", Description: "Doc file path"},
+					"target_content":      {Type: "string", Description: "Target string"},
+					"replacement_content": {Type: "string", Description: "Replacement content"},
+				},
+				Required: []string{"file_path", "replacement_content"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		fp, _ := args["file_path"].(string)
+		target, _ := args["target_content"].(string)
+		replacement, _ := args["replacement_content"].(string)
+		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeDocumenter), task, sysPrompt, reg)
@@ -521,7 +654,7 @@ func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task strin
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"query": {Type: "string", Description: "Keyword to search in active session log"},
+					"query": {Type: "string", Description: "Keyword to search in past session logs"},
 				},
 				Required: []string{"query"},
 			},
