@@ -34,12 +34,6 @@ func (a *Agent) buildSubagentCallbacks() subagent.SubagentCallbacks {
 }
 
 func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
-	syncWorkingDir := func(report *subagent.ResultReport) {
-		if report != nil && report.WorkingDir != "" && report.WorkingDir != a.currentDir {
-			a.SetCurrentDir(report.WorkingDir)
-		}
-	}
-
 	// 1. delegate_researcher
 	a.registry.Register(ollama.Tool{
 		Type: "function",
@@ -65,7 +59,6 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("researcher subagent failed: %w", err)
 		}
-		syncWorkingDir(report)
 		return fmt.Sprintf("🔍 [Researcher Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
 			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
 	})
@@ -95,7 +88,6 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
 		}
-		syncWorkingDir(report)
 		return fmt.Sprintf("💻 [Coder Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
 			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
 	})
@@ -125,7 +117,6 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("tester subagent failed: %w", err)
 		}
-		syncWorkingDir(report)
 		return fmt.Sprintf("🧪 [Tester Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
 			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
 	})
@@ -155,7 +146,6 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("reviewer subagent failed: %w", err)
 		}
-		syncWorkingDir(report)
 		return fmt.Sprintf("🧐 [Reviewer Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
 			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
 	})
@@ -185,7 +175,6 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("documenter subagent failed: %w", err)
 		}
-		syncWorkingDir(report)
 		return fmt.Sprintf("📝 [Documenter Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
 			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
 	})
@@ -215,7 +204,6 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("presenter subagent failed: %w", err)
 		}
-		syncWorkingDir(report)
 		return fmt.Sprintf("📊 [Presenter Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
 			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
 	})
