@@ -57,11 +57,12 @@ func (s *Spinner) Start(message string) {
 // Stop erases the spinner line from terminal cleanly
 func (s *Spinner) Stop() {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if !s.running {
+		s.mu.Unlock()
 		return
 	}
 	s.running = false
 	close(s.stopChan)
+	s.mu.Unlock()
 	s.wg.Wait()
 }

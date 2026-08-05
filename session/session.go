@@ -221,6 +221,22 @@ func (m *Manager) LoadSession(nameOrID string) ([]ollama.Message, string, string
 
 // ExtractLastWorkingDir scans session events backwards to find the last valid working directory
 func ExtractLastWorkingDir(events []Event) string {
+	expandPath := func(d string) string {
+		d = strings.TrimSpace(d)
+		if strings.HasPrefix(d, "~") {
+			if home, err := os.UserHomeDir(); err == nil {
+				if d == "~" {
+					return home
+				}
+				if strings.HasPrefix(d, "~/") {
+					return filepath.Join(home, d[2:])
+				}
+				return filepath.Join(home, d[1:])
+			}
+		}
+		return d
+	}
+
 	for i := len(events) - 1; i >= 0; i-- {
 		evt := events[i]
 		content := evt.Content
@@ -229,7 +245,7 @@ func ExtractLastWorkingDir(events []Event) string {
 		if strings.Contains(content, "📌 [Workspace Directory Updated]:") {
 			parts := strings.SplitN(content, "📌 [Workspace Directory Updated]:", 2)
 			if len(parts) == 2 {
-				dir := strings.TrimSpace(parts[1])
+				dir := expandPath(parts[1])
 				if info, err := os.Stat(dir); err == nil && info.IsDir() {
 					return dir
 				}
@@ -241,7 +257,7 @@ func ExtractLastWorkingDir(events []Event) string {
 			start := strings.Index(content, "Working directory successfully changed to '") + len("Working directory successfully changed to '")
 			end := strings.Index(content[start:], "'")
 			if end != -1 {
-				dir := content[start : start+end]
+				dir := expandPath(content[start : start+end])
 				if info, err := os.Stat(dir); err == nil && info.IsDir() {
 					return dir
 				}
@@ -252,9 +268,9 @@ func ExtractLastWorkingDir(events []Event) string {
 		for _, tc := range evt.ToolCalls {
 			if tc.Function.Name == "cd" || tc.Function.Name == "change_directory" {
 				if p, ok := tc.Function.Arguments["path"].(string); ok && p != "" {
-					trimmed := strings.TrimSpace(p)
-					if info, err := os.Stat(trimmed); err == nil && info.IsDir() {
-						return trimmed
+					dir := expandPath(p)
+					if info, err := os.Stat(dir); err == nil && info.IsDir() {
+						return dir
 					}
 				}
 			}
