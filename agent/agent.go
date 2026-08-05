@@ -11,6 +11,7 @@ import (
 	"github.com/c86j224s/olli/config"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/session"
+	"github.com/c86j224s/olli/subagent"
 	"github.com/c86j224s/olli/tools"
 )
 
@@ -23,13 +24,13 @@ const (
 )
 
 type Callbacks struct {
-	OnThinkingStart            func()
-	OnThinkingToken            func(token string)
-	OnThinkingEnd              func()
-	OnContentToken             func(token string)
-	OnToolCall                 func(toolName string, args map[string]interface{}, result string, execErr error)
-	ConfirmToolCall            func(toolName string, args map[string]interface{}) bool
-	ConfirmToolCallWithAction  func(toolName string, args map[string]interface{}) (allowed bool, addWhitelist bool)
+	OnThinkingStart           func()
+	OnThinkingToken           func(token string)
+	OnThinkingEnd             func()
+	OnContentToken            func(token string)
+	OnToolCall                func(toolName string, args map[string]interface{}, result string, execErr error)
+	ConfirmToolCall           func(toolName string, args map[string]interface{}) bool
+	ConfirmToolCallWithAction func(toolName string, args map[string]interface{}) (allowed bool, addWhitelist bool)
 }
 
 type Agent struct {
@@ -50,7 +51,7 @@ type Agent struct {
 
 func New(client *ollama.Client, model string, systemPrompt string, sessMgr *session.Manager, cfg *config.Config) *Agent {
 	if systemPrompt == "" {
-		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering and Tool Calling capabilities. Stay focused on achieving active goals."
+		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering, Subagent Delegation, and Tool Calling capabilities. Stay focused on achieving active goals."
 	}
 
 	wd, err := os.Getwd()
@@ -78,6 +79,7 @@ func New(client *ollama.Client, model string, systemPrompt string, sessMgr *sess
 	}
 
 	ag.registerGoalTools()
+	ag.registerSubagentTools()
 
 	if sessMgr != nil && sessMgr.GetCurrentID() == "" {
 		sessMgr.CreateSession("auto", model)
@@ -133,6 +135,64 @@ func (a *Agent) registerGoalTools() {
 		prevGoal := a.activeGoal
 		a.ClearGoal()
 		return fmt.Sprintf("🎉 Goal '%s' marked as COMPLETED! Summary: %s", prevGoal, summary), nil
+	})
+}
+
+func (a *Agent) registerSubagentTools() {
+	// Tool: delegate_researcher
+	a.registry.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "delegate_researcher",
+			Description: "Delegate web search and web page research tasks to a specialized Web Researcher Subagent",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"task_description": {
+						Type:        "string",
+						Description: "Detailed research topic or web search task description",
+					},
+				},
+				Required: []string{"task_description"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		task, _ := args["task_description"].(string)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir)
+		report, err := runner.RunResearcher(task)
+		if err != nil {
+			return "", fmt.Errorf("researcher subagent failed: %w", err)
+		}
+		return fmt.Sprintf("🔍 [Researcher Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
+			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
+	})
+
+	// Tool: delegate_coder
+	a.registry.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "delegate_coder",
+			Description: "Delegate code inspection, file viewing, file editing, or grep search tasks to a specialized Coder Subagent",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"task_description": {
+						Type:        "string",
+						Description: "Detailed code modification or file inspection task description",
+					},
+				},
+				Required: []string{"task_description"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		task, _ := args["task_description"].(string)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir)
+		report, err := runner.RunCoder(task)
+		if err != nil {
+			return "", fmt.Errorf("coder subagent failed: %w", err)
+		}
+		return fmt.Sprintf("💻 [Coder Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
+			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
 	})
 }
 
