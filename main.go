@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/ergochat/readline"
 
@@ -222,11 +221,10 @@ func main() {
 		askCtx, cancel := context.WithCancel(context.Background())
 		doneChan := make(chan struct{})
 
-		cli.StartESCListener(cancel, doneChan)
+		cli.StartInterruptListener(cancel, doneChan)
 
 		_, err = ag.AskWithContext(askCtx, input, callbacks)
 		close(doneChan)
-		time.Sleep(10 * time.Millisecond) // Give time for terminal mode restoration
 		cancel()
 
 		if contentStarted {
@@ -235,7 +233,7 @@ func main() {
 
 		if err != nil {
 			if err == context.Canceled {
-				fmt.Printf("\n%s⚠️ [Interrupted]%s Generation canceled by ESC Key (or Ctrl+C).\n", cli.ColorYellow, cli.ColorReset)
+				fmt.Printf("\n%s⚠️ [Interrupted]%s Generation canceled by user (Ctrl+C).\n", cli.ColorYellow, cli.ColorReset)
 			} else {
 				fmt.Printf("\n%s[Error]%s %v\n", cli.ColorRed, cli.ColorReset, err)
 			}
