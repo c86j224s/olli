@@ -56,7 +56,7 @@ type Agent struct {
 
 func New(client *ollama.Client, model string, systemPrompt string, sessMgr *session.Manager, cfg *config.Config) *Agent {
 	if systemPrompt == "" {
-		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering and Subagent Delegation capabilities. Always delegate specialized tasks to Subagents (Researcher, Coder, Tester, Reviewer)."
+		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering and Subagent Delegation capabilities. Always delegate specialized tasks to Subagents (Researcher, Coder, Tester, Reviewer, Documenter, Presenter)."
 	}
 
 	wd, err := os.Getwd()
@@ -282,6 +282,64 @@ func (a *Agent) registerSubagentTools() {
 			return "", fmt.Errorf("reviewer subagent failed: %w", err)
 		}
 		return fmt.Sprintf("🧐 [Reviewer Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
+			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
+	})
+
+	// 5. delegate_documenter
+	a.registry.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "delegate_documenter",
+			Description: "[PREFERRED TOOL FOR MARKDOWN DOCUMENTATION] Delegate writing technical Markdown docs, READMEs, architecture specs, or manuals to a specialized Documenter Subagent",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"task_description": {
+						Type:        "string",
+						Description: "Detailed documentation writing task description",
+					},
+				},
+				Required: []string{"task_description"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		task, _ := args["task_description"].(string)
+		subCB := a.buildSubagentCallbacks()
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
+		report, err := runner.RunDocumenter(task)
+		if err != nil {
+			return "", fmt.Errorf("documenter subagent failed: %w", err)
+		}
+		return fmt.Sprintf("📝 [Documenter Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
+			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
+	})
+
+	// 6. delegate_presenter
+	a.registry.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "delegate_presenter",
+			Description: "[PREFERRED TOOL FOR INTERACTIVE HTML PPT SLIDES] Delegate creating interactive HTML PPT slide presentations from docs or specs to a specialized Presenter Subagent",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"task_description": {
+						Type:        "string",
+						Description: "Detailed PPT slide deck generation task description",
+					},
+				},
+				Required: []string{"task_description"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		task, _ := args["task_description"].(string)
+		subCB := a.buildSubagentCallbacks()
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
+		report, err := runner.RunPresenter(task)
+		if err != nil {
+			return "", fmt.Errorf("presenter subagent failed: %w", err)
+		}
+		return fmt.Sprintf("📊 [Presenter Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
 			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
 	})
 }
@@ -598,6 +656,8 @@ func (a *Agent) buildMessagesPayload() []ollama.Message {
 		"- For writing, editing, or refactoring code: Call 'delegate_coder(task_description)'.\n" +
 		"- For running tests (go test), build verification, or runtime testing: Call 'delegate_tester(task_description)'.\n" +
 		"- For static code review, code style checks, or architecture inspection: Call 'delegate_reviewer(task_description)'.\n" +
+		"- For technical Markdown documentation, READMEs, or manuals: Call 'delegate_documenter(task_description)'.\n" +
+		"- For creating interactive HTML PPT slide presentations: Call 'delegate_presenter(task_description)'.\n" +
 		"- For web searching or URL reading: Call 'delegate_researcher(task_description)'."
 
 	fullSystemPrompt += subagentProtocol
