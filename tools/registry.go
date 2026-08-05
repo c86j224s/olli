@@ -47,6 +47,19 @@ func (r *Registry) GetWorkspace() string {
 	return r.workspace
 }
 
+// ResolvePath resolves relative paths, tildes, or absolute paths against the active workspace
+func (r *Registry) ResolvePath(targetPath string) string {
+	trimmed := strings.TrimSpace(targetPath)
+	if trimmed == "" {
+		return r.workspace
+	}
+	trimmed = ExpandTilde(trimmed)
+	if filepath.IsAbs(trimmed) {
+		return trimmed
+	}
+	return filepath.Join(r.workspace, trimmed)
+}
+
 func (r *Registry) Register(tool ollama.Tool, handler ToolHandler) {
 	r.definitions = append(r.definitions, tool)
 	r.handlers[tool.Function.Name] = handler

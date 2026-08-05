@@ -32,11 +32,9 @@ func ExpandTilde(path string) string {
 	if strings.HasPrefix(trimmed, "~") && !strings.HasPrefix(trimmed, "~/") {
 		folderName := trimmed[1:]
 		targetPath := filepath.Join(homeDir, folderName)
-		// Check if folder exists in $HOME
 		if _, statErr := os.Stat(targetPath); statErr == nil {
 			return targetPath
 		}
-		// Fallback join
 		return targetPath
 	}
 
@@ -81,7 +79,7 @@ func IsWorkspaceLocationSafe(dir string) error {
 	return nil
 }
 
-// IsPathSafe verifies that a target path is safe (not OS system root) and accessible
+// IsPathSafe verifies that a target path is safe and resolves relative paths against allowedRootDir
 func IsPathSafe(targetPath string, allowedRootDir string) (string, error) {
 	if strings.TrimSpace(targetPath) == "" {
 		return "", fmt.Errorf("path cannot be empty")
@@ -89,6 +87,11 @@ func IsPathSafe(targetPath string, allowedRootDir string) (string, error) {
 
 	targetPath = ExpandTilde(targetPath)
 	allowedRootDir = ExpandTilde(allowedRootDir)
+
+	// If targetPath is relative, join it with allowedRootDir
+	if !filepath.IsAbs(targetPath) && allowedRootDir != "" {
+		targetPath = filepath.Join(allowedRootDir, targetPath)
+	}
 
 	// 1. Resolve target absolute path
 	absTarget, err := filepath.Abs(targetPath)
