@@ -17,14 +17,33 @@ import (
 
 const (
 	ColorReset   = "\033[0m"
+	ColorBold    = "\033[1m"
+	ColorDim     = "\033[2m"
+	ColorItalic  = "\033[3m"
 	ColorCyan    = "\033[36m"
 	ColorGreen   = "\033[32m"
 	ColorYellow  = "\033[33m"
 	ColorRed     = "\033[31m"
 	ColorMagenta = "\033[35m"
-	ColorBold    = "\033[1m"
-	ColorItalic  = "\033[3m"
 	ColorGray    = "\033[90m"
+
+	// Single-Hue Palette for Main Agent (Cyan Family)
+	MainBold   = "\033[1;36m"
+	MainNormal = "\033[0;36m"
+	MainDim    = "\033[2;36m"
+	MainItalic = "\033[3;36m"
+
+	// Single-Hue Palette for Researcher Subagent (Yellow/Amber Family)
+	ResBold   = "\033[1;33m"
+	ResNormal = "\033[0;33m"
+	ResDim    = "\033[2;33m"
+	ResItalic = "\033[3;33m"
+
+	// Single-Hue Palette for Coder Subagent (Magenta/Purple Family)
+	CoderBold   = "\033[1;35m"
+	CoderNormal = "\033[0;35m"
+	CoderDim    = "\033[2;35m"
+	CoderItalic = "\033[3;35m"
 )
 
 func main() {
@@ -150,7 +169,7 @@ func main() {
 
 		callbacks := agent.Callbacks{
 			OnThinkingStart: func() {
-				fmt.Printf("%s🧠 [Thinking]%s %s", ColorGray, ColorReset, ColorGray)
+				fmt.Printf("%s🧠 [Thinking]%s %s", MainItalic, ColorReset, ColorGray)
 			},
 			OnThinkingToken: func(token string) {
 				fmt.Print(token)
@@ -161,12 +180,12 @@ func main() {
 			OnContentToken: func(token string) {
 				if !contentStarted {
 					contentStarted = true
-					fmt.Printf("%s%sAgent (%s):%s\n", ColorBold, ColorGreen, ag.GetModel(), ColorReset)
+					fmt.Printf("%sAgent (%s):%s\n", ColorBold+ColorGreen, ag.GetModel(), ColorReset)
 				}
 				fmt.Print(token)
 			},
 			OnToolCall: func(toolName string, args map[string]interface{}, result string, execErr error) {
-				fmt.Printf("\n%s⚙️  [Main Agent Tool]%s %s%s%s(%s)\n", ColorMagenta, ColorReset, ColorBold, toolName, ColorReset, agent.FormatArgs(args))
+				fmt.Printf("\n%s⚙️  [Main Tool]%s %s%s%s(%s)\n", MainBold, ColorReset, ColorBold, toolName, ColorReset, agent.FormatArgs(args))
 				if execErr != nil {
 					fmt.Printf("%s   ❌ [Error/Rejection]%s %v\n", ColorRed, ColorReset, execErr)
 				} else {
@@ -200,7 +219,8 @@ func main() {
 			},
 			OnSubagentThinkingStart: func(subType string) {
 				subThinkingActive = true
-				fmt.Printf("   %s↳ 🧠 [%s Subagent Thinking]%s %s", ColorCyan, subType, ColorReset, ColorGray)
+				boldColor, italicColor := getSubagentPalette(subType)
+				fmt.Printf("   %s↳ 🧠 [%s Thinking]%s %s", boldColor, subType, ColorReset, italicColor)
 			},
 			OnSubagentThinkingToken: func(token string) {
 				fmt.Print(token)
@@ -212,7 +232,8 @@ func main() {
 				}
 			},
 			OnSubagentToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
-				fmt.Printf("   %s↳ ⚙️  [%s Subagent Tool Executed]%s %s%s%s(%s)\n", ColorYellow, subType, ColorReset, ColorBold, toolName, ColorReset, agent.FormatArgs(args))
+				boldColor, dimColor := getSubagentPalette(subType)
+				fmt.Printf("   %s↳ ⚙️  [%s Tool Executed]%s %s%s%s(%s)\n", boldColor, subType, ColorReset, ColorBold, toolName, ColorReset, agent.FormatArgs(args))
 				if execErr != nil {
 					fmt.Printf("   %s    ❌ [Error/Rejection]%s %v\n\n", ColorRed, ColorReset, execErr)
 				} else {
@@ -220,7 +241,7 @@ func main() {
 					if len(truncRes) > 150 {
 						truncRes = truncRes[:150] + "... [truncated]"
 					}
-					fmt.Printf("   %s    📥 [Output]%s %s\n\n", ColorGray, ColorReset, truncRes)
+					fmt.Printf("   %s    📥 [Output]%s %s\n\n", dimColor, ColorReset, truncRes)
 				}
 			},
 		}
@@ -239,19 +260,30 @@ func main() {
 	fmt.Printf("%sGoodbye! Session saved in %s. 👋%s\n", ColorYellow, sessMgr.GetCurrentPath(), ColorReset)
 }
 
+func getSubagentPalette(subType string) (boldColor string, secondaryColor string) {
+	switch strings.ToLower(subType) {
+	case "researcher":
+		return ResBold, ResItalic
+	case "coder":
+		return CoderBold, CoderItalic
+	default:
+		return ResBold, ResDim
+	}
+}
+
 func buildPrompt(ag *agent.Agent, sessMgr *session.Manager) string {
 	goalStatus := ""
 	if ag.IsGoalActive() {
 		goalStatus = " | 🎯 Goal Active"
 	}
-	return fmt.Sprintf("%s%sUser [%s | %s | Mode:%s%s]> %s", ColorBold, ColorCyan, ag.GetModel(), sessMgr.GetCurrentID(), ag.GetToolMode(), goalStatus, ColorReset)
+	return fmt.Sprintf("%sUser [%s | %s | Mode:%s%s]> %s", MainBold, ag.GetModel(), sessMgr.GetCurrentID(), ag.GetToolMode(), goalStatus, ColorReset)
 }
 
 func printBanner(ag *agent.Agent, models []string, sessionID string) {
 	registeredTools := ag.GetRegistry().GetDefinitions()
 
 	fmt.Println(strings.Repeat("─", 70))
-	fmt.Printf("%s%s  🤖 O.L.L.I. - Ollama-based Local LLM Interface  %s\n", ColorBold, ColorCyan, ColorReset)
+	fmt.Printf("%s  🤖 O.L.L.I. - Ollama-based Local LLM Interface  %s\n", MainBold, ColorReset)
 	fmt.Println(strings.Repeat("─", 70))
 	fmt.Printf("• %sActive Model:%s %s (%sContext: %d / 32K%s)\n", ColorBold, ColorReset, ag.GetModel(), ColorYellow, ag.GetNumCtx(), ColorReset)
 	fmt.Printf("• %sTool Mode:%s %s%s%s (switch via '/mode <auto|ask|accept-edit>')\n", ColorBold, ColorReset, ColorMagenta, ag.GetToolMode(), ColorReset)
