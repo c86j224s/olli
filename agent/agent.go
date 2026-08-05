@@ -6,12 +6,10 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/c86j224s/olli/config"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/session"
-	"github.com/c86j224s/olli/subagent"
 	"github.com/c86j224s/olli/tools"
 )
 
@@ -93,337 +91,27 @@ func New(client *ollama.Client, model string, systemPrompt string, sessMgr *sess
 	return ag
 }
 
-func (a *Agent) registerGoalTools() {
-	a.registry.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "set_active_goal",
-			Description: "Set or update the agent's active goal to stay focused on achieving a multi-step objective",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"goal_description": {
-						Type:        "string",
-						Description: "Description of the objective or goal to accomplish",
-					},
-				},
-				Required: []string{"goal_description"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		g, ok := args["goal_description"].(string)
-		if !ok || g == "" {
-			return "", fmt.Errorf("invalid goal description")
-		}
-		a.SetGoal(g)
-		return fmt.Sprintf("Active Goal set to: '%s'", g), nil
-	})
-
-	a.registry.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "complete_goal",
-			Description: "Mark the active goal as completed and clear the goal state after achieving all steps",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"completion_summary": {
-						Type:        "string",
-						Description: "Summary of achievements and completed goal results",
-					},
-				},
-				Required: []string{"completion_summary"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		summary, _ := args["completion_summary"].(string)
-		prevGoal := a.activeGoal
-		a.ClearGoal()
-		return fmt.Sprintf("🎉 Goal '%s' marked as COMPLETED! Summary: %s", prevGoal, summary), nil
-	})
-}
-
-func (a *Agent) buildSubagentCallbacks() subagent.SubagentCallbacks {
-	return subagent.SubagentCallbacks{
-		OnThinkingStart: func(subType string) {
-			if a.activeCB.OnSubagentThinkingStart != nil {
-				a.activeCB.OnSubagentThinkingStart(subType)
-			}
-		},
-		OnThinkingToken: func(token string) {
-			if a.activeCB.OnSubagentThinkingToken != nil {
-				a.activeCB.OnSubagentThinkingToken(token)
-			}
-		},
-		OnThinkingEnd: func() {
-			if a.activeCB.OnSubagentThinkingEnd != nil {
-				a.activeCB.OnSubagentThinkingEnd()
-			}
-		},
-		OnToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
-			if a.activeCB.OnSubagentToolCall != nil {
-				a.activeCB.OnSubagentToolCall(subType, toolName, args, result, execErr)
-			}
-		},
-	}
-}
-
-func (a *Agent) registerSubagentTools() {
-	// 1. delegate_researcher
-	a.registry.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "delegate_researcher",
-			Description: "[PREFERRED TOOL FOR WEB RESEARCH] Delegate web searching and web page reading to a specialized Web Researcher Subagent",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"task_description": {
-						Type:        "string",
-						Description: "Detailed research topic or web search task description",
-					},
-				},
-				Required: []string{"task_description"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		task, _ := args["task_description"].(string)
-		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunResearcher(task)
-		if err != nil {
-			return "", fmt.Errorf("researcher subagent failed: %w", err)
-		}
-		return fmt.Sprintf("🔍 [Researcher Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
-	})
-
-	// 2. delegate_coder
-	a.registry.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "delegate_coder",
-			Description: "[PREFERRED TOOL FOR CODE IMPLEMENTATION & FILE EDITING] Delegate code writing, editing, file creation, or refactoring to a specialized Coder Subagent",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"task_description": {
-						Type:        "string",
-						Description: "Detailed code modification or writing task description",
-					},
-				},
-				Required: []string{"task_description"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		task, _ := args["task_description"].(string)
-		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunCoder(task)
-		if err != nil {
-			return "", fmt.Errorf("coder subagent failed: %w", err)
-		}
-		return fmt.Sprintf("💻 [Coder Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
-	})
-
-	// 3. delegate_tester
-	a.registry.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "delegate_tester",
-			Description: "[PREFERRED TOOL FOR TESTING & BUILD VERIFICATION] Delegate dynamic build verification, test running (go test ./...), and runtime error checking to a specialized Tester Subagent",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"task_description": {
-						Type:        "string",
-						Description: "Detailed testing or build verification task description",
-					},
-				},
-				Required: []string{"task_description"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		task, _ := args["task_description"].(string)
-		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunTester(task)
-		if err != nil {
-			return "", fmt.Errorf("tester subagent failed: %w", err)
-		}
-		return fmt.Sprintf("🧪 [Tester Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
-	})
-
-	// 4. delegate_reviewer
-	a.registry.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "delegate_reviewer",
-			Description: "[PREFERRED TOOL FOR STATIC CODE REVIEW] Delegate static code analysis, code style review, readability checks, and edge-case code review to a specialized Reviewer Subagent",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"task_description": {
-						Type:        "string",
-						Description: "Detailed code review task description",
-					},
-				},
-				Required: []string{"task_description"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		task, _ := args["task_description"].(string)
-		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunReviewer(task)
-		if err != nil {
-			return "", fmt.Errorf("reviewer subagent failed: %w", err)
-		}
-		return fmt.Sprintf("🧐 [Reviewer Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
-	})
-
-	// 5. delegate_documenter
-	a.registry.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "delegate_documenter",
-			Description: "[PREFERRED TOOL FOR MARKDOWN DOCUMENTATION] Delegate writing technical Markdown docs, READMEs, architecture specs, or manuals to a specialized Documenter Subagent",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"task_description": {
-						Type:        "string",
-						Description: "Detailed documentation writing task description",
-					},
-				},
-				Required: []string{"task_description"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		task, _ := args["task_description"].(string)
-		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunDocumenter(task)
-		if err != nil {
-			return "", fmt.Errorf("documenter subagent failed: %w", err)
-		}
-		return fmt.Sprintf("📝 [Documenter Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
-	})
-
-	// 6. delegate_presenter
-	a.registry.Register(ollama.Tool{
-		Type: "function",
-		Function: ollama.FunctionDef{
-			Name:        "delegate_presenter",
-			Description: "[PREFERRED TOOL FOR INTERACTIVE HTML PPT SLIDES] Delegate creating interactive HTML PPT slide presentations from docs or specs to a specialized Presenter Subagent",
-			Parameters: ollama.FunctionParamSchema{
-				Type: "object",
-				Properties: map[string]ollama.FunctionParamProperty{
-					"task_description": {
-						Type:        "string",
-						Description: "Detailed PPT slide deck generation task description",
-					},
-				},
-				Required: []string{"task_description"},
-			},
-		},
-	}, func(args map[string]interface{}) (string, error) {
-		task, _ := args["task_description"].(string)
-		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunPresenter(task)
-		if err != nil {
-			return "", fmt.Errorf("presenter subagent failed: %w", err)
-		}
-		return fmt.Sprintf("📊 [Presenter Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
-	})
-}
-
-func (a *Agent) GetConfig() *config.Config {
-	return a.cfg
-}
-
-func (a *Agent) SetModel(model string) {
-	a.model = model
-}
-
-func (a *Agent) GetModel() string {
-	return a.model
-}
-
-func (a *Agent) SetNumCtx(n int) {
-	a.numCtx = n
-}
-
-func (a *Agent) GetNumCtx() int {
-	return a.numCtx
-}
-
-func (a *Agent) SetToolMode(mode ToolMode) {
-	a.toolMode = mode
-}
-
-func (a *Agent) GetToolMode() ToolMode {
-	return a.toolMode
-}
-
-func (a *Agent) SetCurrentDir(dir string) {
-	a.currentDir = dir
-}
-
-func (a *Agent) GetCurrentDir() string {
-	return a.currentDir
-}
-
-func (a *Agent) GetInitialDir() string {
-	return a.initialDir
-}
-
-func (a *Agent) SetGoal(goal string) {
-	a.activeGoal = strings.TrimSpace(goal)
-}
-
-func (a *Agent) ClearGoal() {
-	a.activeGoal = ""
-}
-
-func (a *Agent) GetGoal() string {
-	return a.activeGoal
-}
-
-func (a *Agent) IsGoalActive() bool {
-	return a.activeGoal != ""
-}
-
-func (a *Agent) SetSummary(sum string) {
-	a.summary = sum
-}
-
-func (a *Agent) GetSummary() string {
-	return a.summary
-}
+func (a *Agent) GetConfig() *config.Config { return a.cfg }
+func (a *Agent) SetModel(m string)        { a.model = m }
+func (a *Agent) GetModel() string         { return a.model }
+func (a *Agent) SetNumCtx(n int)          { a.numCtx = n }
+func (a *Agent) GetNumCtx() int           { return a.numCtx }
+func (a *Agent) SetToolMode(m ToolMode)   { a.toolMode = m }
+func (a *Agent) GetToolMode() ToolMode    { return a.toolMode }
+func (a *Agent) SetCurrentDir(d string)   { a.currentDir = d }
+func (a *Agent) GetCurrentDir() string    { return a.currentDir }
+func (a *Agent) GetInitialDir() string    { return a.initialDir }
+func (a *Agent) SetSummary(s string)      { a.summary = s }
+func (a *Agent) GetSummary() string       { return a.summary }
 
 func (a *Agent) ClearHistory() {
 	a.history = make([]ollama.Message, 0)
 	a.summary = "Conversation history cleared."
 }
 
-func (a *Agent) GetHistoryCount() int {
-	return len(a.history)
-}
-
-func (a *Agent) GetRegistry() *tools.Registry {
-	return a.registry
-}
-
-func (a *Agent) GetSessionManager() *session.Manager {
-	return a.sessMgr
-}
+func (a *Agent) GetHistoryCount() int          { return len(a.history) }
+func (a *Agent) GetRegistry() *tools.Registry  { return a.registry }
+func (a *Agent) GetSessionManager() *session.Manager { return a.sessMgr }
 
 func (a *Agent) ShouldRequirePermission(toolName string) bool {
 	switch a.toolMode {
@@ -456,43 +144,10 @@ func (a *Agent) LoadSession(nameOrID string) (string, error) {
 	return resolvedID, nil
 }
 
-func (a *Agent) AutoSummarize() (string, error) {
-	if len(a.history) < 2 {
-		return a.summary, nil
-	}
-
-	promptMsg := append(a.history, ollama.Message{
-		Role:    "user",
-		Content: "Summarize the key points, user preferences, and topics discussed in this conversation in 3 concise bullet points for long-term memory reference.",
-	})
-
-	req := ollama.ChatRequest{
-		Model:    a.model,
-		Messages: promptMsg,
-		Options: &ollama.Options{
-			NumCtx: 4096,
-		},
-	}
-
-	resp, err := a.client.ChatStreamFull(req, ollama.StreamCallbacks{})
-	if err != nil {
-		return "", err
-	}
-
-	summaryText := strings.TrimSpace(resp.Content)
-	if summaryText != "" {
-		a.summary = summaryText
-	}
-	return a.summary, nil
-}
-
 func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 	a.activeCB = cb
 
-	userMsg := ollama.Message{
-		Role:    "user",
-		Content: userInput,
-	}
+	userMsg := ollama.Message{Role: "user", Content: userInput}
 	a.history = append(a.history, userMsg)
 
 	if a.sessMgr != nil {
@@ -506,9 +161,7 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 			Model:    a.model,
 			Messages: a.buildMessagesPayload(),
 			Tools:    a.registry.GetDefinitions(),
-			Options: &ollama.Options{
-				NumCtx: a.numCtx,
-			},
+			Options:  &ollama.Options{NumCtx: a.numCtx},
 		}
 
 		thinkingActive := false
@@ -574,8 +227,7 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 			args := toolCall.Function.Arguments
 
 			if a.ShouldRequirePermission(toolName) {
-				allowed := false
-				addWhitelist := false
+				allowed, addWhitelist := false, false
 
 				if cb.ConfirmToolCallWithAction != nil {
 					allowed, addWhitelist = cb.ConfirmToolCallWithAction(toolName, args)
@@ -616,10 +268,7 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 				toolContent = fmt.Sprintf("Error executing tool %s: %v", toolName, execErr)
 			}
 
-			toolMsg := ollama.Message{
-				Role:    "tool",
-				Content: toolContent,
-			}
+			toolMsg := ollama.Message{Role: "tool", Content: toolContent}
 			a.history = append(a.history, toolMsg)
 			if a.sessMgr != nil {
 				a.sessMgr.AppendEvent(toolMsg)
@@ -645,48 +294,6 @@ func promptConsolePermissionAction(toolName string, args map[string]interface{})
 		return true, false
 	}
 	return false, false
-}
-
-func (a *Agent) buildMessagesPayload() []ollama.Message {
-	msgs := make([]ollama.Message, 0, len(a.history)+1)
-
-	fullSystemPrompt := a.systemPrompt
-
-	subagentProtocol := "\n\n🤖 [SUBAGENT DELEGATION PROTOCOL]:\n" +
-		"- For writing, editing, or refactoring code: Call 'delegate_coder(task_description)'.\n" +
-		"- For running tests (go test), build verification, or runtime testing: Call 'delegate_tester(task_description)'.\n" +
-		"- For static code review, code style checks, or architecture inspection: Call 'delegate_reviewer(task_description)'.\n" +
-		"- For technical Markdown documentation, READMEs, or manuals: Call 'delegate_documenter(task_description)'.\n" +
-		"- For creating interactive HTML PPT slide presentations: Call 'delegate_presenter(task_description)'.\n" +
-		"- For web searching or URL reading: Call 'delegate_researcher(task_description)'."
-
-	fullSystemPrompt += subagentProtocol
-
-	now := time.Now()
-	timeZone, _ := now.Zone()
-	envContext := fmt.Sprintf("\n\n🌐 [ENVIRONMENT & TEMPORAL CONTEXT]:\n- Current Local Time: %s (%s, %s)\n- Initial Session Directory: %s\n- Current Working Directory: %s",
-		now.Format("2006-01-02 15:04:05"),
-		timeZone,
-		now.Format("Monday"),
-		a.initialDir,
-		a.currentDir,
-	)
-	fullSystemPrompt += envContext
-
-	if a.IsGoalActive() {
-		fullSystemPrompt += fmt.Sprintf("\n\n🎯 [ACTIVE GOAL / MISSION STEERING]:\n\"%s\"\n\nCRITICAL INSTRUCTION: Stay focused on achieving this objective. Once completed, call 'complete_goal'.", a.activeGoal)
-	}
-
-	if a.summary != "" {
-		fullSystemPrompt += fmt.Sprintf("\n\n[Active Conversation Memory Summary]:\n%s\n\n[Memory Retrieval Guidance]:\nIf you need exact historical details, call 'search_session_history'.", a.summary)
-	}
-
-	msgs = append(msgs, ollama.Message{
-		Role:    "system",
-		Content: fullSystemPrompt,
-	})
-	msgs = append(msgs, a.history...)
-	return msgs
 }
 
 func FormatArgs(args map[string]interface{}) string {
