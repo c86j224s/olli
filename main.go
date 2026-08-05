@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -18,6 +19,9 @@ import (
 )
 
 func main() {
+	// Restore standard POSIX terminal termios settings (ONLCR) to fix staircase newline drifting
+	_ = exec.Command("stty", "sane").Run()
+
 	client := ollama.NewClient("http://localhost:11434")
 
 	models, err := client.ListModels()
@@ -107,7 +111,10 @@ func main() {
 		fmt.Printf("%s[Error]%s Failed to initialize readline: %v\n", cli.ColorRed, cli.ColorReset, err)
 		os.Exit(1)
 	}
-	defer rl.Close()
+	defer func() {
+		rl.Close()
+		_ = exec.Command("stty", "sane").Run()
+	}()
 
 	for {
 		rl.SetPrompt(cli.BuildPrompt(ag, sessMgr))
