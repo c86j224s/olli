@@ -168,8 +168,59 @@ func ListDir(dirPath string, workspace string) (string, error) {
 	return sb.String(), nil
 }
 
+// ParseCommandArgs extracts command string gracefully from various LLM argument schemas
+func ParseCommandArgs(args map[string]interface{}) string {
+	// Key variations LLMs might generate: "command", "cmd", "command_string", "args", "arguments"
+	possibleKeys := []string{"command", "cmd", "command_string", "args", "arguments"}
+
+	for _, k := range possibleKeys {
+		val, exists := args[k]
+		if !exists || val == nil {
+			continue
+		}
+
+		switch v := val.(type) {
+		case string:
+			trimmed := strings.TrimSpace(v)
+			if trimmed != "" {
+				return cleanCommandString(trimmed)
+			}
+		case []interface{}:
+			var parts []string
+			for _, elem := range v {
+				parts = append(parts, fmt.Sprintf("%v", elem))
+			}
+			joined := strings.TrimSpace(strings.Join(parts, " "))
+			if joined != "" {
+				return cleanCommandString(joined)
+			}
+		}
+	}
+
+	// Fallback if model passes arguments as a dict mapping like {"cmd": "ls", "0": "-la"}
+	if cmd, ok := args["command"].(string); ok {
+		return cleanCommandString(cmd)
+	}
+
+	return ""
+}
+
+func cleanCommandString(cmdStr string) string {
+	cmdStr = strings.TrimSpace(cmdStr)
+	// Remove outer matching quotes if LLM wrapped full command in quotes
+	if (strings.HasPrefix(cmdStr, `"`) && strings.HasSuffix(cmdStr, `"`)) ||
+		(strings.HasPrefix(cmdStr, `'`) && strings.HasSuffix(cmdStr, `'`)) {
+		cmdStr = strings.Trim(cmdStr, `"'`)
+	}
+	return strings.TrimSpace(cmdStr)
+}
+
 // ExecuteCommand runs terminal commands safely inside workspace
 func ExecuteCommand(cmdStr string, workspace string) (string, error) {
+	if cmdStr == "" {
+		return "", fmt.Errorf("empty terminal command received")
+	}
+
 	if err := ValidateCommandSafety(cmdStr, workspace); err != nil {
 		return "", fmt.Errorf("security block: %w", err)
 	}

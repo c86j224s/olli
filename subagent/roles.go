@@ -153,17 +153,20 @@ func (r *SubagentRunner) RunTester(task string) (*ResultReport, error) {
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "run_terminal_command",
-			Description: "Execute test or build terminal commands safely within workspace",
+			Description: "Execute test or build terminal commands safely within workspace (e.g. 'go test ./...')",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"command": {Type: "string", Description: "Terminal command to execute (e.g. go test ./...)"},
+					"command": {Type: "string", Description: "Full command string to execute (e.g. 'go test ./...')"},
 				},
 				Required: []string{"command"},
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		cmdStr, _ := args["command"].(string)
+		cmdStr := tools.ParseCommandArgs(args)
+		if cmdStr == "" {
+			return "", fmt.Errorf("missing or empty 'command' argument")
+		}
 		if err := tools.ValidateCommandSafety(cmdStr, r.workspace); err != nil {
 			return "", fmt.Errorf("security block: %w", err)
 		}
