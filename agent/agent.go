@@ -167,7 +167,7 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 		case <-ctx.Done():
 			cancelMsg := ollama.Message{
 				Role:    "system",
-				Content: "⚠️ Agent generation was interrupted by user (Ctrl+C).",
+				Content: "⚠️ Agent generation was interrupted by user (ESC Key).",
 			}
 			a.history = append(a.history, cancelMsg)
 			if a.sessMgr != nil {
@@ -215,7 +215,7 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 			if ctx.Err() == context.Canceled || err == context.Canceled {
 				cancelMsg := ollama.Message{
 					Role:    "system",
-					Content: "⚠️ Agent generation was interrupted by user (Ctrl+C).",
+					Content: "⚠️ Agent generation was interrupted by user (ESC Key).",
 				}
 				a.history = append(a.history, cancelMsg)
 				if a.sessMgr != nil {
@@ -257,7 +257,7 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 			if ctx.Err() == context.Canceled {
 				cancelMsg := ollama.Message{
 					Role:    "system",
-					Content: "⚠️ Agent generation was interrupted by user during tool execution (Ctrl+C).",
+					Content: "⚠️ Agent generation was interrupted by user during tool execution (ESC Key).",
 				}
 				a.history = append(a.history, cancelMsg)
 				if a.sessMgr != nil {

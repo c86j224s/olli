@@ -110,13 +110,13 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 	for turn := 0; turn < 5; turn++ {
 		select {
 		case <-ctx.Done():
-			logEvent("system", "⚠️ Subagent execution canceled by user interrupt (Ctrl+C)", nil)
+			logEvent("system", "⚠️ Subagent execution canceled by user interrupt (ESC Key)", nil)
 			return &ResultReport{
 				SubagentID:   subID,
 				Type:         subType,
 				Task:         task,
 				Status:       "INTERRUPTED",
-				Summary:      "⚠️ Subagent execution was interrupted by user.",
+				Summary:      "⚠️ Subagent execution was interrupted by user (ESC Key).",
 				JSONLFile:    jsonlPath,
 				ToolCallsRun: toolCallsRun,
 			}, nil
@@ -126,13 +126,13 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 		resp, err := r.client.ChatStreamFullWithContext(ctx, req, streamCB)
 		if err != nil {
 			if ctx.Err() == context.Canceled || err == context.Canceled {
-				logEvent("system", "⚠️ Subagent LLM stream canceled by user interrupt (Ctrl+C)", nil)
+				logEvent("system", "⚠️ Subagent LLM stream canceled by user interrupt (ESC Key)", nil)
 				return &ResultReport{
 					SubagentID:   subID,
 					Type:         subType,
 					Task:         task,
 					Status:       "INTERRUPTED",
-					Summary:      "⚠️ Subagent execution was interrupted by user.",
+					Summary:      "⚠️ Subagent execution was interrupted by user (ESC Key).",
 					JSONLFile:    jsonlPath,
 					ToolCallsRun: toolCallsRun,
 				}, nil
@@ -153,13 +153,13 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 
 			for _, tc := range resp.ToolCalls {
 				if ctx.Err() == context.Canceled {
-					logEvent("system", "⚠️ Subagent tool execution canceled by user interrupt (Ctrl+C)", nil)
+					logEvent("system", "⚠️ Subagent tool execution canceled by user interrupt (ESC Key)", nil)
 					return &ResultReport{
 						SubagentID:   subID,
 						Type:         subType,
 						Task:         task,
 						Status:       "INTERRUPTED",
-						Summary:      "⚠️ Subagent execution was interrupted by user.",
+						Summary:      "⚠️ Subagent execution was interrupted by user (ESC Key).",
 						JSONLFile:    jsonlPath,
 						ToolCallsRun: toolCallsRun,
 					}, nil
