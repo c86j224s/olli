@@ -142,6 +142,7 @@ func main() {
 		}
 
 		fmt.Println()
+		fmt.Printf("%s💬 User:%s %s\n\n", cli.ColorBold+cli.ColorCyan, cli.ColorReset, input)
 
 		contentStarted := false
 		subThinkingActive := false
