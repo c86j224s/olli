@@ -78,12 +78,17 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 	logEvent("system", sysPrompt, nil)
 	logEvent("user", task, nil)
 
+	numCtx := 32768
+	if r.cfg != nil && r.cfg.NumCtx > 0 {
+		numCtx = r.cfg.NumCtx
+	}
+
 	req := ollama.ChatRequest{
 		Model:    r.model,
 		Messages: messages,
 		Tools:    reg.GetDefinitions(),
 		Options: &ollama.Options{
-			NumCtx: 16384,
+			NumCtx: numCtx,
 		},
 	}
 

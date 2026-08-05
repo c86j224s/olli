@@ -70,11 +70,16 @@ func New(client *ollama.Client, model string, systemMsg string, sessMgr *session
 	reg := tools.NewRegistry()
 	reg.SetWorkspace(initialDir)
 
+	numCtx := 32768
+	if cfg != nil && cfg.NumCtx > 0 {
+		numCtx = cfg.NumCtx
+	}
+
 	ag := &Agent{
 		client:     client,
 		model:      model,
 		systemMsg:  systemMsg,
-		numCtx:     16384,
+		numCtx:     numCtx,
 		history:    make([]ollama.Message, 0),
 		toolMode:   ModeAuto,
 		summary:    "Session started.",
