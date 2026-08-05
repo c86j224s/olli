@@ -58,7 +58,6 @@ func EditFile(filePath string, targetContent string, replacementContent string, 
 
 	data, err := os.ReadFile(safePath)
 	if err != nil {
-		// If file doesn't exist, create it if replacement content is provided
 		if os.IsNotExist(err) && targetContent == "" {
 			if err := os.WriteFile(safePath, []byte(replacementContent), 0644); err != nil {
 				return "", fmt.Errorf("failed to create file '%s': %w", safePath, err)
@@ -220,12 +219,37 @@ func ExecuteCommand(cmdStr string, workspace string) (string, error) {
 
 // ExecuteCommandWithContext runs terminal command with cancellation context support to kill process on interrupt
 func ExecuteCommandWithContext(ctx context.Context, cmdStr string, workspace string) (string, error) {
+	output, _, err := ExecuteCommandWithWorkspace(ctx, cmdStr, workspace)
+	return output, err
+}
+
+// ExecuteCommandWithWorkspace executes command and returns updated workspace if 'cd' was invoked
+func ExecuteCommandWithWorkspace(ctx context.Context, cmdStr string, workspace string) (output string, newWorkspace string, err error) {
+	newWorkspace = workspace
 	if cmdStr == "" {
-		return "", fmt.Errorf("empty terminal command received")
+		return "", newWorkspace, fmt.Errorf("empty terminal command received")
 	}
 
 	if err := ValidateCommandSafety(cmdStr, workspace); err != nil {
-		return "", fmt.Errorf("security block: %w", err)
+		return "", newWorkspace, fmt.Errorf("security block: %w", err)
+	}
+
+	// If command contains 'cd', calculate resulting directory and update active workspace
+	trimmed := strings.TrimSpace(cmdStr)
+	if strings.HasPrefix(trimmed, "cd ") || strings.Contains(trimmed, " cd ") || strings.Contains(trimmed, ";cd ") || strings.Contains(trimmed, "&&cd ") {
+		cdCheckCmd := fmt.Sprintf("%s && pwd", trimmed)
+		checkCmd := exec.CommandContext(ctx, "bash", "-c", cdCheckCmd)
+		checkCmd.Dir = workspace
+		checkOut, checkErr := checkCmd.CombinedOutput()
+		if checkErr == nil {
+			lines := strings.Split(strings.TrimSpace(string(checkOut)), "\n")
+			if len(lines) > 0 {
+				lastLine := strings.TrimSpace(lines[len(lines)-1])
+				if safeDir, sErr := IsPathSafe(lastLine, workspace); sErr == nil {
+					newWorkspace = safeDir
+				}
+			}
+		}
 	}
 
 	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
@@ -235,14 +259,18 @@ func ExecuteCommandWithContext(ctx context.Context, cmdStr string, workspace str
 	outputStr := string(out)
 	if err != nil {
 		if ctx.Err() == context.Canceled {
-			return "", context.Canceled
+			return "", newWorkspace, context.Canceled
 		}
-		return fmt.Sprintf("Command exited with error: %v\nOutput:\n%s", err, outputStr), nil
+		return fmt.Sprintf("Command exited with error: %v\nOutput:\n%s", err, outputStr), newWorkspace, nil
 	}
 
 	if len(outputStr) > 4000 {
 		outputStr = outputStr[:4000] + "\n... [Output Truncated]"
 	}
 
-	return outputStr, nil
+	if newWorkspace != workspace {
+		outputStr = fmt.Sprintf("%s\n\n📌 [Workspace Directory Updated]: Now working in '%s'", strings.TrimSpace(outputStr), newWorkspace)
+	}
+
+	return outputStr, newWorkspace, nil
 }

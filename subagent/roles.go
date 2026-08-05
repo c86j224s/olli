@@ -163,11 +163,11 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "run_terminal_command",
-			Description: "Execute test or build terminal commands safely within workspace (e.g. 'go test ./...')",
+			Description: "Execute test or build terminal commands safely within workspace (e.g. 'go test ./...'). Supports 'cd <dir>' to switch working directory.",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"command": {Type: "string", Description: "Full command string to execute (e.g. 'go test ./...')"},
+					"command": {Type: "string", Description: "Full command string to execute (e.g. 'go test ./...' or 'cd ~/llm-pg')"},
 				},
 				Required: []string{"command"},
 			},
@@ -177,10 +177,11 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 		if cmdStr == "" {
 			return "", fmt.Errorf("missing or empty 'command' argument")
 		}
-		if err := tools.ValidateCommandSafety(cmdStr, r.workspace); err != nil {
-			return "", fmt.Errorf("security block: %w", err)
+		output, newWs, err := tools.ExecuteCommandWithWorkspace(ctx, cmdStr, r.workspace)
+		if newWs != r.workspace {
+			r.workspace = newWs
 		}
-		return tools.ExecuteCommandWithContext(ctx, cmdStr, r.workspace)
+		return output, err
 	})
 
 	reg.Register(ollama.Tool{

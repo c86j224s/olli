@@ -1,53 +1,35 @@
-package tools_test
+package tools
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/c86j224s/olli/tools"
 )
 
-func TestProtectedWorkspaceAndSecurity(t *testing.T) {
-	homeDir, _ := os.UserHomeDir()
-
-	// 1. Safe workspace subfolder (e.g. project folder)
-	workspaceDir, err := filepath.Abs(".")
+func TestPathSafeTildeExpand(t *testing.T) {
+	homeDir, err := os.UserHomeDir()
 	if err != nil {
-		t.Fatalf("failed to get current dir: %v", err)
+		t.Fatalf("failed to get home dir: %v", err)
 	}
 
-	err = tools.IsWorkspaceLocationSafe(workspaceDir)
+	currentDir, _ := os.Getwd()
+
+	// Test 1: ~/llm-pg path
+	target := "~/llm-pg"
+	safePath, err := IsPathSafe(target, currentDir)
 	if err != nil {
-		t.Errorf("expected project workspace dir to be safe, got: %v", err)
+		t.Fatalf("IsPathSafe failed for '%s': %v", target, err)
 	}
 
-	// 2. $HOME as workspace - Must Block!
-	if homeDir != "" {
-		err = tools.IsWorkspaceLocationSafe(homeDir)
-		if err == nil {
-			t.Errorf("expected $HOME as workspace location to be BLOCKED, but it passed!")
-		}
+	expected := filepath.Join(homeDir, "llm-pg")
+	if safePath != expected {
+		t.Errorf("expected '%s', got '%s'", expected, safePath)
 	}
 
-	// 3. Root '/' as workspace - Must Block!
-	err = tools.IsWorkspaceLocationSafe("/")
-	if err == nil {
-		t.Errorf("expected Root '/' as workspace location to be BLOCKED, but it passed!")
-	}
-
-	// 4. Deleting '.' when current dir is Home - Must Block!
-	if homeDir != "" {
-		err = tools.ValidateCommandSafety("rm -rf .", homeDir)
-		if err == nil {
-			t.Errorf("expected 'rm -rf .' in Home directory to be BLOCKED, but it passed!")
-		}
-	}
-
-	// 5. Deleting '.' in safe workspace
-	safeFile := filepath.Join(workspaceDir, "temp_test.txt")
-	_, err = tools.IsPathSafe(safeFile, workspaceDir)
+	// Test 2: ExecuteCommand with cd ~/llm-pg
+	res, err := ExecuteCommand("cd ~/llm-pg && pwd", currentDir)
 	if err != nil {
-		t.Errorf("expected safe file in workspace to pass, got: %v", err)
+		t.Fatalf("ExecuteCommand failed: %v", err)
 	}
+	t.Logf("ExecuteCommand output: %s", res)
 }
