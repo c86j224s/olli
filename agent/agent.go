@@ -51,7 +51,7 @@ type Agent struct {
 
 func New(client *ollama.Client, model string, systemPrompt string, sessMgr *session.Manager, cfg *config.Config) *Agent {
 	if systemPrompt == "" {
-		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering, Subagent Delegation, and Multi-Step Tool Chaining capabilities. Stay focused on achieving active goals."
+		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering and Subagent Delegation capabilities. Always delegate code investigation and web research to specialized subagents."
 	}
 
 	wd, err := os.Getwd()
@@ -143,7 +143,7 @@ func (a *Agent) registerSubagentTools() {
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_researcher",
-			Description: "Delegate web search and web page research tasks to a specialized Web Researcher Subagent",
+			Description: "[PREFERRED TOOL FOR WEB RESEARCH] Delegate web searching and web page reading to a specialized Web Researcher Subagent",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
@@ -170,7 +170,7 @@ func (a *Agent) registerSubagentTools() {
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_coder",
-			Description: "Delegate code inspection, file viewing, file editing, or grep search tasks to a specialized Coder Subagent",
+			Description: "[PREFERRED TOOL FOR CODEBASE & FILE INSPECTION] Delegate code inspection, file viewing, file editing, or searching codebase to a specialized Coder Subagent",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
@@ -349,7 +349,6 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 
 	var lastContent string
 
-	// Multi-step Tool Execution Loop (up to 10 iterations per turn)
 	for step := 0; step < 10; step++ {
 		req := ollama.ChatRequest{
 			Model:    a.model,
@@ -400,7 +399,6 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 
 		lastContent = assistantMsg.Content
 
-		// If no tool calls requested, record assistant message and complete turn
 		if len(assistantMsg.ToolCalls) == 0 {
 			finalAssMsg := ollama.Message{
 				Role:     "assistant",
@@ -414,13 +412,11 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 			return assistantMsg.Content, nil
 		}
 
-		// Tool calls present! Append assistant message with tool calls
 		a.history = append(a.history, *assistantMsg)
 		if a.sessMgr != nil {
 			a.sessMgr.AppendEvent(*assistantMsg)
 		}
 
-		// Execute all batch tool calls in this step
 		for _, toolCall := range assistantMsg.ToolCalls {
 			toolName := toolCall.Function.Name
 			args := toolCall.Function.Arguments
@@ -477,8 +473,6 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 				a.sessMgr.AppendEvent(toolMsg)
 			}
 		}
-
-		// Loop continues to next step to let LLM see tool results and decide next action!
 	}
 
 	return lastContent, nil
@@ -505,6 +499,13 @@ func (a *Agent) buildMessagesPayload() []ollama.Message {
 	msgs := make([]ollama.Message, 0, len(a.history)+1)
 
 	fullSystemPrompt := a.systemPrompt
+
+	// Inject explicit Subagent Delegation Protocol into System Prompt
+	subagentProtocol := "\n\n🤖 [SUBAGENT DELEGATION PROTOCOL]:\n" +
+		"- When asked to inspect code, search codebase files, edit files, or analyze project code, ALWAYS call 'delegate_coder(task_description)' instead of running manual terminal commands.\n" +
+		"- When asked to research topics, search the web, or read external URLs, ALWAYS call 'delegate_researcher(task_description)'."
+
+	fullSystemPrompt += subagentProtocol
 
 	now := time.Now()
 	timeZone, _ := now.Zone()
