@@ -8,6 +8,21 @@ import (
 	"strings"
 )
 
+// ExpandTilde resolves paths starting with "~" or "~/" to user home directory
+func ExpandTilde(path string) string {
+	trimmed := strings.TrimSpace(path)
+	if trimmed == "~" || strings.HasPrefix(trimmed, "~/") {
+		homeDir, err := os.UserHomeDir()
+		if err == nil && homeDir != "" {
+			if trimmed == "~" {
+				return homeDir
+			}
+			return filepath.Join(homeDir, trimmed[2:])
+		}
+	}
+	return trimmed
+}
+
 // ForbiddenBaseDirectories defines critical system & user directories
 // that must never be set as writable target workspaces or wiped out.
 func GetForbiddenBaseDirectories() []string {
@@ -41,6 +56,7 @@ func GetForbiddenBaseDirectories() []string {
 // IsWorkspaceLocationSafe checks if a directory is safe to be used as a writable workspace.
 // If the user launches the agent directly in $HOME or System Root /, write/delete operations are blocked.
 func IsWorkspaceLocationSafe(dir string) error {
+	dir = ExpandTilde(dir)
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return fmt.Errorf("invalid path: %w", err)
@@ -62,6 +78,9 @@ func IsPathSafe(targetPath string, allowedRootDir string) (string, error) {
 	if strings.TrimSpace(targetPath) == "" {
 		return "", fmt.Errorf("path cannot be empty")
 	}
+
+	targetPath = ExpandTilde(targetPath)
+	allowedRootDir = ExpandTilde(allowedRootDir)
 
 	// 1. Resolve target absolute path
 	absTarget, err := filepath.Abs(targetPath)
