@@ -121,6 +121,38 @@ func (a *Agent) registerDirectoryTools() {
 		a.SetCurrentDir(safeDir)
 		return fmt.Sprintf("Working directory successfully changed to '%s'", safeDir), nil
 	})
+
+	a.registry.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "get_agent_status",
+			Description: "Query active agent runtime status, initial launch directory, current working directory, session ID, active goal, and model settings",
+			Parameters: ollama.FunctionParamSchema{
+				Type:       "object",
+				Properties: map[string]ollama.FunctionParamProperty{},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		sessID := ""
+		sessPath := ""
+		if a.sessMgr != nil {
+			sessID = a.sessMgr.GetCurrentID()
+			sessPath = a.sessMgr.GetCurrentPath()
+		}
+
+		statusInfo := map[string]string{
+			"initial_launch_directory":  a.initialDir,
+			"current_working_directory": a.currentDir,
+			"active_model":             a.model,
+			"tool_mode":                string(a.toolMode),
+			"session_id":               sessID,
+			"session_file":             sessPath,
+			"active_goal":              a.activeGoal,
+			"num_ctx":                  fmt.Sprintf("%d", a.numCtx),
+		}
+		b, _ := json.MarshalIndent(statusInfo, "", "  ")
+		return string(b), nil
+	})
 }
 
 func (a *Agent) GetConfig() *config.Config { return a.cfg }

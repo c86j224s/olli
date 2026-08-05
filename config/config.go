@@ -33,6 +33,7 @@ func LoadConfig(filePath string) (*Config, error) {
 			"calculator",
 			"get_current_time",
 			"get_system_info",
+			"get_agent_status",
 			"search_session_history",
 			"run_terminal_command",
 			"cd",
@@ -64,7 +65,7 @@ func LoadConfig(filePath string) (*Config, error) {
 	cfg.filePath = absPath
 
 	// Ensure default safe tools exist in whitelist
-	for _, defaultTool := range []string{"cd", "change_directory", "run_terminal_command", "view_file", "list_dir", "grep_search"} {
+	for _, defaultTool := range []string{"cd", "change_directory", "run_terminal_command", "view_file", "list_dir", "grep_search", "get_agent_status"} {
 		if !cfg.IsWhitelisted(defaultTool) {
 			cfg.AddWhitelist(defaultTool)
 		}
