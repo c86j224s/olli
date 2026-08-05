@@ -25,11 +25,11 @@ func (a *Agent) buildMessagesPayload() []ollama.Message {
 
 	now := time.Now()
 	timeZone, _ := now.Zone()
-	envContext := fmt.Sprintf("\n\n🌐 [ENVIRONMENT & TEMPORAL CONTEXT]:\n- Current Local Time: %s (%s, %s)\n- Initial Session Directory: %s\n- Current Working Directory: %s",
+	envContext := fmt.Sprintf("\n\n🌐 [ENVIRONMENT & TEMPORAL CONTEXT]:\n- Current Local Time: %s (%s, %s)\n- Active Workspace Working Directory: %s\n(CRITICAL REQUIREMENT: All relative file paths, terminal commands, and tool calls operate strictly within this Active Workspace Working Directory: '%s')",
 		now.Format("2006-01-02 15:04:05"),
 		timeZone,
 		now.Format("Monday"),
-		a.initialDir,
+		a.currentDir,
 		a.currentDir,
 	)
 	fullSystemPrompt += envContext
@@ -63,19 +63,24 @@ func (a *Agent) AutoSummarize() (string, error) {
 	req := ollama.ChatRequest{
 		Model:    a.model,
 		Messages: promptMsg,
-		Options: &ollama.Options{
-			NumCtx: 4096,
+		Options:  &ollama.Options{NumCtx: a.numCtx},
+	}
+
+	var sb strings.Builder
+	streamCB := ollama.StreamCallbacks{
+		OnContent: func(token string) {
+			sb.WriteString(token)
 		},
 	}
 
-	resp, err := a.client.ChatStreamFull(req, ollama.StreamCallbacks{})
+	_, err := a.client.ChatStreamFull(req, streamCB)
 	if err != nil {
-		return "", err
+		return a.summary, err
 	}
 
-	summaryText := strings.TrimSpace(resp.Content)
-	if summaryText != "" {
-		a.summary = summaryText
+	summaryResult := strings.TrimSpace(sb.String())
+	if summaryResult != "" {
+		a.summary = summaryResult
 	}
 	return a.summary, nil
 }
