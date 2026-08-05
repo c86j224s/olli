@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -170,7 +171,6 @@ func ListDir(dirPath string, workspace string) (string, error) {
 
 // ParseCommandArgs extracts command string gracefully from various LLM argument schemas
 func ParseCommandArgs(args map[string]interface{}) string {
-	// Key variations LLMs might generate: "command", "cmd", "command_string", "args", "arguments"
 	possibleKeys := []string{"command", "cmd", "command_string", "args", "arguments"}
 
 	for _, k := range possibleKeys {
@@ -197,7 +197,6 @@ func ParseCommandArgs(args map[string]interface{}) string {
 		}
 	}
 
-	// Fallback if model passes arguments as a dict mapping like {"cmd": "ls", "0": "-la"}
 	if cmd, ok := args["command"].(string); ok {
 		return cleanCommandString(cmd)
 	}
@@ -207,7 +206,6 @@ func ParseCommandArgs(args map[string]interface{}) string {
 
 func cleanCommandString(cmdStr string) string {
 	cmdStr = strings.TrimSpace(cmdStr)
-	// Remove outer matching quotes if LLM wrapped full command in quotes
 	if (strings.HasPrefix(cmdStr, `"`) && strings.HasSuffix(cmdStr, `"`)) ||
 		(strings.HasPrefix(cmdStr, `'`) && strings.HasSuffix(cmdStr, `'`)) {
 		cmdStr = strings.Trim(cmdStr, `"'`)
@@ -217,6 +215,11 @@ func cleanCommandString(cmdStr string) string {
 
 // ExecuteCommand runs terminal commands safely inside workspace
 func ExecuteCommand(cmdStr string, workspace string) (string, error) {
+	return ExecuteCommandWithContext(context.Background(), cmdStr, workspace)
+}
+
+// ExecuteCommandWithContext runs terminal command with cancellation context support to kill process on interrupt
+func ExecuteCommandWithContext(ctx context.Context, cmdStr string, workspace string) (string, error) {
 	if cmdStr == "" {
 		return "", fmt.Errorf("empty terminal command received")
 	}
@@ -225,12 +228,15 @@ func ExecuteCommand(cmdStr string, workspace string) (string, error) {
 		return "", fmt.Errorf("security block: %w", err)
 	}
 
-	cmd := exec.Command("bash", "-c", cmdStr)
+	cmd := exec.CommandContext(ctx, "bash", "-c", cmdStr)
 	cmd.Dir = workspace
 
 	out, err := cmd.CombinedOutput()
 	outputStr := string(out)
 	if err != nil {
+		if ctx.Err() == context.Canceled {
+			return "", context.Canceled
+		}
 		return fmt.Sprintf("Command exited with error: %v\nOutput:\n%s", err, outputStr), nil
 	}
 

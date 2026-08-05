@@ -1,6 +1,7 @@
 package subagent
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -8,8 +9,11 @@ import (
 	"github.com/c86j224s/olli/tools"
 )
 
-// RunResearcher Task creates a dedicated Researcher subagent with web tools
 func (r *SubagentRunner) RunResearcher(task string) (*ResultReport, error) {
+	return r.RunResearcherWithContext(context.Background(), task)
+}
+
+func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_researcher_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Web Researcher Subagent. Your goal is to gather information using web search and reading web pages, then synthesize a clear, concise report."
 
@@ -50,11 +54,14 @@ func (r *SubagentRunner) RunResearcher(task string) (*ResultReport, error) {
 		return tools.ReadURLContent(u)
 	})
 
-	return r.executeSubagentLoop(subID, string(TypeResearcher), task, sysPrompt, reg)
+	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeResearcher), task, sysPrompt, reg)
 }
 
-// RunCoder Task creates a dedicated Coder subagent with file reading/editing tools
 func (r *SubagentRunner) RunCoder(task string) (*ResultReport, error) {
+	return r.RunCoderWithContext(context.Background(), task)
+}
+
+func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_coder_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, and perform edits or code refactoring as requested."
 
@@ -140,11 +147,14 @@ func (r *SubagentRunner) RunCoder(task string) (*ResultReport, error) {
 		return tools.ListDir(dp, r.workspace)
 	})
 
-	return r.executeSubagentLoop(subID, string(TypeCoder), task, sysPrompt, reg)
+	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeCoder), task, sysPrompt, reg)
 }
 
-// RunTester Task creates a dedicated Tester subagent to execute builds & tests
 func (r *SubagentRunner) RunTester(task string) (*ResultReport, error) {
+	return r.RunTesterWithContext(context.Background(), task)
+}
+
+func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_tester_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Software Tester Subagent. Your goal is to dynamically execute test commands (e.g. go test ./...), build scripts, and verify runtime correctness."
 
@@ -170,7 +180,7 @@ func (r *SubagentRunner) RunTester(task string) (*ResultReport, error) {
 		if err := tools.ValidateCommandSafety(cmdStr, r.workspace); err != nil {
 			return "", fmt.Errorf("security block: %w", err)
 		}
-		return tools.ExecuteCommand(cmdStr, r.workspace)
+		return tools.ExecuteCommandWithContext(ctx, cmdStr, r.workspace)
 	})
 
 	reg.Register(ollama.Tool{
@@ -195,11 +205,14 @@ func (r *SubagentRunner) RunTester(task string) (*ResultReport, error) {
 		return tools.ViewFile(fp, int(start), int(end), r.workspace)
 	})
 
-	return r.executeSubagentLoop(subID, string(TypeTester), task, sysPrompt, reg)
+	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeTester), task, sysPrompt, reg)
 }
 
-// RunReviewer Task creates a dedicated Reviewer subagent to perform static code reviews
 func (r *SubagentRunner) RunReviewer(task string) (*ResultReport, error) {
+	return r.RunReviewerWithContext(context.Background(), task)
+}
+
+func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_reviewer_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Code Reviewer Subagent. Your goal is to statically inspect code diffs, review code readability, check edge cases, and verify architectural alignment."
 
@@ -246,11 +259,14 @@ func (r *SubagentRunner) RunReviewer(task string) (*ResultReport, error) {
 		return tools.GrepSearch(q, sp, r.workspace)
 	})
 
-	return r.executeSubagentLoop(subID, string(TypeReviewer), task, sysPrompt, reg)
+	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeReviewer), task, sysPrompt, reg)
 }
 
-// RunDocumenter Task creates a dedicated Documenter subagent to write clean Markdown documentation
 func (r *SubagentRunner) RunDocumenter(task string) (*ResultReport, error) {
+	return r.RunDocumenterWithContext(context.Background(), task)
+}
+
+func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_documenter_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write well-structured Markdown documentation, READMEs, API specs, and technical manuals using edit_file."
 
@@ -316,11 +332,14 @@ func (r *SubagentRunner) RunDocumenter(task string) (*ResultReport, error) {
 		return tools.ListDir(dp, r.workspace)
 	})
 
-	return r.executeSubagentLoop(subID, string(TypeDocumenter), task, sysPrompt, reg)
+	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeDocumenter), task, sysPrompt, reg)
 }
 
-// RunPresenter Task creates a dedicated Presenter subagent to generate Interactive HTML PPT Slides
 func (r *SubagentRunner) RunPresenter(task string) (*ResultReport, error) {
+	return r.RunPresenterWithContext(context.Background(), task)
+}
+
+func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_presenter_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := `You are a specialized Presentation Designer Subagent. Your goal is to transform Markdown documents, technical specs, or meeting notes into a self-contained Interactive HTML PPT Slide presentation.
 The generated HTML file should feature:
@@ -374,5 +393,5 @@ Write the final standalone HTML file using edit_file.`
 		return tools.EditFile(fp, target, replacement, r.workspace)
 	})
 
-	return r.executeSubagentLoop(subID, string(TypePresenter), task, sysPrompt, reg)
+	return r.executeSubagentLoopWithContext(ctx, subID, string(TypePresenter), task, sysPrompt, reg)
 }

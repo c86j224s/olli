@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -82,7 +83,7 @@ func New(client *ollama.Client, model string, systemPrompt string, sessMgr *sess
 	}
 
 	ag.registerGoalTools()
-	ag.registerSubagentTools()
+	ag.registerSubagentToolsWithContext(context.Background())
 
 	if sessMgr != nil && sessMgr.GetCurrentID() == "" {
 		sessMgr.CreateSession("auto", model)
@@ -145,7 +146,12 @@ func (a *Agent) LoadSession(nameOrID string) (string, error) {
 }
 
 func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
+	return a.AskWithContext(context.Background(), userInput, cb)
+}
+
+func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbacks) (string, error) {
 	a.activeCB = cb
+	a.registerSubagentToolsWithContext(ctx)
 
 	userMsg := ollama.Message{Role: "user", Content: userInput}
 	a.history = append(a.history, userMsg)
@@ -157,6 +163,20 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 	var lastContent string
 
 	for step := 0; step < 10; step++ {
+		select {
+		case <-ctx.Done():
+			cancelMsg := ollama.Message{
+				Role:    "system",
+				Content: "⚠️ Agent generation was interrupted by user (Ctrl+C).",
+			}
+			a.history = append(a.history, cancelMsg)
+			if a.sessMgr != nil {
+				a.sessMgr.AppendEvent(cancelMsg)
+			}
+			return "", context.Canceled
+		default:
+		}
+
 		req := ollama.ChatRequest{
 			Model:    a.model,
 			Messages: a.buildMessagesPayload(),
@@ -190,8 +210,19 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 			},
 		}
 
-		assistantMsg, err := a.client.ChatStreamFull(req, streamCB)
+		assistantMsg, err := a.client.ChatStreamFullWithContext(ctx, req, streamCB)
 		if err != nil {
+			if ctx.Err() == context.Canceled || err == context.Canceled {
+				cancelMsg := ollama.Message{
+					Role:    "system",
+					Content: "⚠️ Agent generation was interrupted by user (Ctrl+C).",
+				}
+				a.history = append(a.history, cancelMsg)
+				if a.sessMgr != nil {
+					a.sessMgr.AppendEvent(cancelMsg)
+				}
+				return "", context.Canceled
+			}
 			return "", fmt.Errorf("chat stream failed: %w", err)
 		}
 
@@ -223,6 +254,18 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 		}
 
 		for _, toolCall := range assistantMsg.ToolCalls {
+			if ctx.Err() == context.Canceled {
+				cancelMsg := ollama.Message{
+					Role:    "system",
+					Content: "⚠️ Agent generation was interrupted by user during tool execution (Ctrl+C).",
+				}
+				a.history = append(a.history, cancelMsg)
+				if a.sessMgr != nil {
+					a.sessMgr.AppendEvent(cancelMsg)
+				}
+				return "", context.Canceled
+			}
+
 			toolName := toolCall.Function.Name
 			args := toolCall.Function.Arguments
 

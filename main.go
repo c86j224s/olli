@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -216,13 +217,20 @@ func main() {
 			},
 		}
 
-		_, err = ag.Ask(input, callbacks)
+		askCtx, cancel := context.WithCancel(context.Background())
+		_, err = ag.AskWithContext(askCtx, input, callbacks)
+		cancel()
+
 		if contentStarted {
 			fmt.Println()
 		}
 
 		if err != nil {
-			fmt.Printf("\n%s[Error]%s %v\n", cli.ColorRed, cli.ColorReset, err)
+			if err == context.Canceled {
+				fmt.Printf("\n%s⚠️ [Interrupted]%s Generation canceled by user (Ctrl+C).\n", cli.ColorYellow, cli.ColorReset)
+			} else {
+				fmt.Printf("\n%s[Error]%s %v\n", cli.ColorRed, cli.ColorReset, err)
+			}
 		}
 		fmt.Println()
 	}

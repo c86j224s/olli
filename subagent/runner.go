@@ -1,6 +1,7 @@
 package subagent
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -41,6 +42,10 @@ func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspac
 }
 
 func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task string, sysPrompt string, reg *tools.Registry) (*ResultReport, error) {
+	return r.executeSubagentLoopWithContext(context.Background(), subID, subType, task, sysPrompt, reg)
+}
+
+func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, subID string, subType string, task string, sysPrompt string, reg *tools.Registry) (*ResultReport, error) {
 	jsonlPath := filepath.Join(r.outputDir, subID+".jsonl")
 	jsonlFile, err := os.OpenFile(jsonlPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
@@ -103,8 +108,35 @@ func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task 
 	}
 
 	for turn := 0; turn < 5; turn++ {
-		resp, err := r.client.ChatStreamFull(req, streamCB)
+		select {
+		case <-ctx.Done():
+			logEvent("system", "⚠️ Subagent execution canceled by user interrupt (Ctrl+C)", nil)
+			return &ResultReport{
+				SubagentID:   subID,
+				Type:         subType,
+				Task:         task,
+				Status:       "INTERRUPTED",
+				Summary:      "⚠️ Subagent execution was interrupted by user.",
+				JSONLFile:    jsonlPath,
+				ToolCallsRun: toolCallsRun,
+			}, nil
+		default:
+		}
+
+		resp, err := r.client.ChatStreamFullWithContext(ctx, req, streamCB)
 		if err != nil {
+			if ctx.Err() == context.Canceled || err == context.Canceled {
+				logEvent("system", "⚠️ Subagent LLM stream canceled by user interrupt (Ctrl+C)", nil)
+				return &ResultReport{
+					SubagentID:   subID,
+					Type:         subType,
+					Task:         task,
+					Status:       "INTERRUPTED",
+					Summary:      "⚠️ Subagent execution was interrupted by user.",
+					JSONLFile:    jsonlPath,
+					ToolCallsRun: toolCallsRun,
+				}, nil
+			}
 			return nil, fmt.Errorf("subagent LLM stream failed: %w", err)
 		}
 
@@ -120,6 +152,19 @@ func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task 
 			logEvent("assistant", resp.Content, resp.ToolCalls)
 
 			for _, tc := range resp.ToolCalls {
+				if ctx.Err() == context.Canceled {
+					logEvent("system", "⚠️ Subagent tool execution canceled by user interrupt (Ctrl+C)", nil)
+					return &ResultReport{
+						SubagentID:   subID,
+						Type:         subType,
+						Task:         task,
+						Status:       "INTERRUPTED",
+						Summary:      "⚠️ Subagent execution was interrupted by user.",
+						JSONLFile:    jsonlPath,
+						ToolCallsRun: toolCallsRun,
+					}, nil
+				}
+
 				toolCallsRun++
 				toolRes, tErr := reg.Execute(tc.Function.Name, tc.Function.Arguments)
 				resContent := toolRes

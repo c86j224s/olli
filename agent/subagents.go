@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/c86j224s/olli/ollama"
@@ -32,7 +33,7 @@ func (a *Agent) buildSubagentCallbacks() subagent.SubagentCallbacks {
 	}
 }
 
-func (a *Agent) registerSubagentTools() {
+func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 	// 1. delegate_researcher
 	a.registry.Register(ollama.Tool{
 		Type: "function",
@@ -54,7 +55,7 @@ func (a *Agent) registerSubagentTools() {
 		task, _ := args["task_description"].(string)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunResearcher(task)
+		report, err := runner.RunResearcherWithContext(ctx, task)
 		if err != nil {
 			return "", fmt.Errorf("researcher subagent failed: %w", err)
 		}
@@ -83,7 +84,7 @@ func (a *Agent) registerSubagentTools() {
 		task, _ := args["task_description"].(string)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunCoder(task)
+		report, err := runner.RunCoderWithContext(ctx, task)
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
 		}
@@ -112,7 +113,7 @@ func (a *Agent) registerSubagentTools() {
 		task, _ := args["task_description"].(string)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunTester(task)
+		report, err := runner.RunTesterWithContext(ctx, task)
 		if err != nil {
 			return "", fmt.Errorf("tester subagent failed: %w", err)
 		}
@@ -141,7 +142,7 @@ func (a *Agent) registerSubagentTools() {
 		task, _ := args["task_description"].(string)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunReviewer(task)
+		report, err := runner.RunReviewerWithContext(ctx, task)
 		if err != nil {
 			return "", fmt.Errorf("reviewer subagent failed: %w", err)
 		}
@@ -170,7 +171,7 @@ func (a *Agent) registerSubagentTools() {
 		task, _ := args["task_description"].(string)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunDocumenter(task)
+		report, err := runner.RunDocumenterWithContext(ctx, task)
 		if err != nil {
 			return "", fmt.Errorf("documenter subagent failed: %w", err)
 		}
@@ -199,7 +200,7 @@ func (a *Agent) registerSubagentTools() {
 		task, _ := args["task_description"].(string)
 		subCB := a.buildSubagentCallbacks()
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, subCB)
-		report, err := runner.RunPresenter(task)
+		report, err := runner.RunPresenterWithContext(ctx, task)
 		if err != nil {
 			return "", fmt.Errorf("presenter subagent failed: %w", err)
 		}

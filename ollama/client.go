@@ -3,6 +3,7 @@ package ollama
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -128,6 +129,10 @@ func (c *Client) ListModels() ([]string, error) {
 }
 
 func (c *Client) ChatStreamFull(req ChatRequest, cb StreamCallbacks) (*Message, error) {
+	return c.ChatStreamFullWithContext(context.Background(), req, cb)
+}
+
+func (c *Client) ChatStreamFullWithContext(ctx context.Context, req ChatRequest, cb StreamCallbacks) (*Message, error) {
 	req.Stream = true
 
 	bodyBytes, err := json.Marshal(req)
@@ -135,7 +140,7 @@ func (c *Client) ChatStreamFull(req ChatRequest, cb StreamCallbacks) (*Message, 
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequest("POST", c.BaseURL+"/api/chat", bytes.NewReader(bodyBytes))
+	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.BaseURL+"/api/chat", bytes.NewReader(bodyBytes))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create http request: %w", err)
 	}
@@ -143,6 +148,9 @@ func (c *Client) ChatStreamFull(req ChatRequest, cb StreamCallbacks) (*Message, 
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
+		if ctx.Err() == context.Canceled || strings.Contains(err.Error(), "context canceled") {
+			return nil, context.Canceled
+		}
 		if strings.Contains(err.Error(), "context deadline exceeded") {
 			return nil, fmt.Errorf("LLM stream request timed out (context deadline exceeded)")
 		}
@@ -162,11 +170,20 @@ func (c *Client) ChatStreamFull(req ChatRequest, cb StreamCallbacks) (*Message, 
 	var lastToolCalls []ToolCall
 
 	for {
+		select {
+		case <-ctx.Done():
+			return nil, context.Canceled
+		default:
+		}
+
 		line, err := reader.ReadBytes('\n')
 		if err == io.EOF {
 			break
 		}
 		if err != nil {
+			if ctx.Err() == context.Canceled {
+				return nil, context.Canceled
+			}
 			return nil, fmt.Errorf("error reading stream chunk: %w", err)
 		}
 
