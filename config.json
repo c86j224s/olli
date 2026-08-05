@@ -1,0 +1,11 @@
+{
+  "default_mode": "accept-edit",
+  "num_ctx": 32768,
+  "whitelist_tools": [
+    "calculator",
+    "get_current_time",
+    "get_system_info",
+    "search_session_history",
+    "run_terminal_command"
+  ]
+}

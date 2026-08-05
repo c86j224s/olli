@@ -51,7 +51,7 @@ type Agent struct {
 
 func New(client *ollama.Client, model string, systemPrompt string, sessMgr *session.Manager, cfg *config.Config) *Agent {
 	if systemPrompt == "" {
-		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering, Subagent Delegation, and Tool Calling capabilities. Stay focused on achieving active goals."
+		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering, Subagent Delegation, and Multi-Step Tool Chaining capabilities. Stay focused on achieving active goals."
 	}
 
 	wd, err := os.Getwd()
@@ -139,7 +139,6 @@ func (a *Agent) registerGoalTools() {
 }
 
 func (a *Agent) registerSubagentTools() {
-	// Tool: delegate_researcher
 	a.registry.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
@@ -167,7 +166,6 @@ func (a *Agent) registerSubagentTools() {
 			report.Task, report.Status, report.Summary, report.JSONLFile, report.ToolCallsRun), nil
 	})
 
-	// Tool: delegate_coder
 	a.registry.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
@@ -349,59 +347,80 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 		a.sessMgr.AppendEvent(userMsg)
 	}
 
-	req := ollama.ChatRequest{
-		Model:    a.model,
-		Messages: a.buildMessagesPayload(),
-		Tools:    a.registry.GetDefinitions(),
-		Options: &ollama.Options{
-			NumCtx: a.numCtx,
-		},
-	}
+	var lastContent string
 
-	thinkingActive := false
-	streamCB := ollama.StreamCallbacks{
-		OnThinking: func(token string) {
-			if !thinkingActive {
-				thinkingActive = true
-				if cb.OnThinkingStart != nil {
-					cb.OnThinkingStart()
-				}
-			}
-			if cb.OnThinkingToken != nil {
-				cb.OnThinkingToken(token)
-			}
-		},
-		OnContent: func(token string) {
-			if thinkingActive {
-				thinkingActive = false
-				if cb.OnThinkingEnd != nil {
-					cb.OnThinkingEnd()
-				}
-			}
-			if cb.OnContentToken != nil {
-				cb.OnContentToken(token)
-			}
-		},
-	}
-
-	assistantMsg, err := a.client.ChatStreamFull(req, streamCB)
-	if err != nil {
-		return "", fmt.Errorf("chat stream failed: %w", err)
-	}
-
-	if thinkingActive {
-		thinkingActive = false
-		if cb.OnThinkingEnd != nil {
-			cb.OnThinkingEnd()
+	// Multi-step Tool Execution Loop (up to 10 iterations per turn)
+	for step := 0; step < 10; step++ {
+		req := ollama.ChatRequest{
+			Model:    a.model,
+			Messages: a.buildMessagesPayload(),
+			Tools:    a.registry.GetDefinitions(),
+			Options: &ollama.Options{
+				NumCtx: a.numCtx,
+			},
 		}
-	}
 
-	if len(assistantMsg.ToolCalls) > 0 {
+		thinkingActive := false
+		streamCB := ollama.StreamCallbacks{
+			OnThinking: func(token string) {
+				if !thinkingActive {
+					thinkingActive = true
+					if cb.OnThinkingStart != nil {
+						cb.OnThinkingStart()
+					}
+				}
+				if cb.OnThinkingToken != nil {
+					cb.OnThinkingToken(token)
+				}
+			},
+			OnContent: func(token string) {
+				if thinkingActive {
+					thinkingActive = false
+					if cb.OnThinkingEnd != nil {
+						cb.OnThinkingEnd()
+					}
+				}
+				if cb.OnContentToken != nil {
+					cb.OnContentToken(token)
+				}
+			},
+		}
+
+		assistantMsg, err := a.client.ChatStreamFull(req, streamCB)
+		if err != nil {
+			return "", fmt.Errorf("chat stream failed: %w", err)
+		}
+
+		if thinkingActive {
+			thinkingActive = false
+			if cb.OnThinkingEnd != nil {
+				cb.OnThinkingEnd()
+			}
+		}
+
+		lastContent = assistantMsg.Content
+
+		// If no tool calls requested, record assistant message and complete turn
+		if len(assistantMsg.ToolCalls) == 0 {
+			finalAssMsg := ollama.Message{
+				Role:     "assistant",
+				Content:  strings.TrimSpace(assistantMsg.Content),
+				Thinking: assistantMsg.Thinking,
+			}
+			a.history = append(a.history, finalAssMsg)
+			if a.sessMgr != nil {
+				a.sessMgr.AppendEvent(finalAssMsg)
+			}
+			return assistantMsg.Content, nil
+		}
+
+		// Tool calls present! Append assistant message with tool calls
 		a.history = append(a.history, *assistantMsg)
 		if a.sessMgr != nil {
 			a.sessMgr.AppendEvent(*assistantMsg)
 		}
 
+		// Execute all batch tool calls in this step
 		for _, toolCall := range assistantMsg.ToolCalls {
 			toolName := toolCall.Function.Name
 			args := toolCall.Function.Arguments
@@ -459,75 +478,10 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 			}
 		}
 
-		followUpReq := ollama.ChatRequest{
-			Model:    a.model,
-			Messages: a.buildMessagesPayload(),
-			Options: &ollama.Options{
-				NumCtx: a.numCtx,
-			},
-		}
-
-		finalThinkingActive := false
-		followUpCB := ollama.StreamCallbacks{
-			OnThinking: func(token string) {
-				if !finalThinkingActive {
-					finalThinkingActive = true
-					if cb.OnThinkingStart != nil {
-						cb.OnThinkingStart()
-					}
-				}
-				if cb.OnThinkingToken != nil {
-					cb.OnThinkingToken(token)
-				}
-			},
-			OnContent: func(token string) {
-				if finalThinkingActive {
-					finalThinkingActive = false
-					if cb.OnThinkingEnd != nil {
-						cb.OnThinkingEnd()
-					}
-				}
-				if cb.OnContentToken != nil {
-					cb.OnContentToken(token)
-				}
-			},
-		}
-
-		finalMsg, err := a.client.ChatStreamFull(followUpReq, followUpCB)
-		if err != nil {
-			return "", fmt.Errorf("followup stream failed: %w", err)
-		}
-
-		if finalThinkingActive {
-			if cb.OnThinkingEnd != nil {
-				cb.OnThinkingEnd()
-			}
-		}
-
-		finalAssMsg := ollama.Message{
-			Role:     "assistant",
-			Content:  strings.TrimSpace(finalMsg.Content),
-			Thinking: finalMsg.Thinking,
-		}
-		a.history = append(a.history, finalAssMsg)
-		if a.sessMgr != nil {
-			a.sessMgr.AppendEvent(finalAssMsg)
-		}
-
-		return finalMsg.Content, nil
+		// Loop continues to next step to let LLM see tool results and decide next action!
 	}
 
-	finalAssMsg := ollama.Message{
-		Role:     "assistant",
-		Content:  strings.TrimSpace(assistantMsg.Content),
-		Thinking: assistantMsg.Thinking,
-	}
-	a.history = append(a.history, finalAssMsg)
-	if a.sessMgr != nil {
-		a.sessMgr.AppendEvent(finalAssMsg)
-	}
-
-	return assistantMsg.Content, nil
+	return lastContent, nil
 }
 
 func promptConsolePermissionAction(toolName string, args map[string]interface{}) (allowed bool, addWhitelist bool) {
