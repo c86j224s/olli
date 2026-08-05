@@ -34,6 +34,12 @@ func LoadConfig(filePath string) (*Config, error) {
 			"get_current_time",
 			"get_system_info",
 			"search_session_history",
+			"run_terminal_command",
+			"cd",
+			"change_directory",
+			"view_file",
+			"list_dir",
+			"grep_search",
 		},
 		filePath: absPath,
 	}
@@ -56,25 +62,20 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 
 	cfg.filePath = absPath
-	return cfg, nil
-}
 
-func (c *Config) Save() error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config: %w", err)
+	// Ensure default safe tools exist in whitelist
+	for _, defaultTool := range []string{"cd", "change_directory", "run_terminal_command", "view_file", "list_dir", "grep_search"} {
+		if !cfg.IsWhitelisted(defaultTool) {
+			cfg.AddWhitelist(defaultTool)
+		}
 	}
 
-	return os.WriteFile(c.filePath, data, 0644)
+	return cfg, nil
 }
 
 func (c *Config) IsWhitelisted(toolName string) bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
 	for _, t := range c.WhitelistTools {
 		if t == toolName {
 			return true
@@ -85,40 +86,58 @@ func (c *Config) IsWhitelisted(toolName string) bool {
 
 func (c *Config) AddWhitelist(toolName string) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if toolName == "" {
+		return fmt.Errorf("tool name cannot be empty")
+	}
+
 	for _, t := range c.WhitelistTools {
 		if t == toolName {
-			c.mu.Unlock()
-			return nil // Already whitelisted
+			return nil // already whitelisted
 		}
 	}
-	c.WhitelistTools = append(c.WhitelistTools, toolName)
-	c.mu.Unlock()
 
-	return c.Save()
+	c.WhitelistTools = append(c.WhitelistTools, toolName)
+	return c.saveUnlocked()
 }
 
 func (c *Config) RemoveWhitelist(toolName string) error {
 	c.mu.Lock()
-	newList := make([]string, 0, len(c.WhitelistTools))
+	defer c.mu.Unlock()
+
+	newTools := make([]string, 0, len(c.WhitelistTools))
 	found := false
 	for _, t := range c.WhitelistTools {
 		if t == toolName {
 			found = true
 			continue
 		}
-		newList = append(newList, t)
+		newTools = append(newTools, t)
 	}
-	if found {
-		c.WhitelistTools = newList
-	}
-	c.mu.Unlock()
 
-	if found {
-		return c.Save()
+	if !found {
+		return fmt.Errorf("tool '%s' is not in whitelist", toolName)
 	}
-	return nil
+
+	c.WhitelistTools = newTools
+	return c.saveUnlocked()
 }
 
-func (c *Config) GetFilePath() string {
-	return c.filePath
+func (c *Config) Save() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.saveUnlocked()
+}
+
+func (c *Config) saveUnlocked() error {
+	data, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal config: %w", err)
+	}
+
+	if err := os.WriteFile(c.filePath, data, 0644); err != nil {
+		return fmt.Errorf("failed to write config file: %w", err)
+	}
+	return nil
 }

@@ -6,6 +6,11 @@
     "get_current_time",
     "get_system_info",
     "search_session_history",
-    "run_terminal_command"
+    "run_terminal_command",
+    "cd",
+    "change_directory",
+    "view_file",
+    "list_dir",
+    "grep_search"
   ]
 }

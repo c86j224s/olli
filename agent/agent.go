@@ -83,6 +83,7 @@ func New(client *ollama.Client, model string, systemPrompt string, sessMgr *sess
 	}
 
 	ag.registerGoalTools()
+	ag.registerDirectoryTools()
 	ag.registerSubagentToolsWithContext(context.Background())
 
 	if sessMgr != nil && sessMgr.GetCurrentID() == "" {
@@ -90,6 +91,36 @@ func New(client *ollama.Client, model string, systemPrompt string, sessMgr *sess
 	}
 
 	return ag
+}
+
+func (a *Agent) registerDirectoryTools() {
+	a.registry.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "cd",
+			Description: "Change active working directory to target project path",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"path": {Type: "string", Description: "Target directory path (e.g. ~/llm-pg)"},
+				},
+				Required: []string{"path"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		targetDir := tools.ParseCommandArgs(args)
+		if targetDir == "" {
+			if p, ok := args["path"].(string); ok {
+				targetDir = p
+			}
+		}
+		safeDir, err := tools.IsPathSafe(targetDir, a.GetCurrentDir())
+		if err != nil {
+			return "", err
+		}
+		a.SetCurrentDir(safeDir)
+		return fmt.Sprintf("Working directory successfully changed to '%s'", safeDir), nil
+	})
 }
 
 func (a *Agent) GetConfig() *config.Config { return a.cfg }
