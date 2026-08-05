@@ -6,145 +6,119 @@ import (
 
 	"github.com/c86j224s/olli/agent"
 	"github.com/c86j224s/olli/ollama"
-	"github.com/c86j224s/olli/tools"
 )
 
-func HandleCommand(cmd string, ag *agent.Agent, client *ollama.Client, availableModels []string) bool {
-	parts := strings.Fields(cmd)
+func HandleCommand(cmdStr string, ag *agent.Agent, client *ollama.Client, models []string) bool {
+	parts := strings.Fields(cmdStr)
+	if len(parts) == 0 {
+		return false
+	}
+
 	command := parts[0]
+	args := parts[1:]
 
 	switch command {
 	case "/exit", "/quit":
 		return true
 
 	case "/help":
-		fmt.Println("\nAvailable Commands:")
-		fmt.Println("  /cd <path>           - Jump to another project working directory")
-		fmt.Println("  /mode <auto|ask|accept-edit> - Change Tool Execution Mode:")
-		fmt.Println("                                   • auto        : Run ALL tools automatically without prompt")
-		fmt.Println("                                   • ask         : Prompt user for ALL tool executions (y/N/a)")
-		fmt.Println("                                   • accept-edit : Auto-run tools in config.json whitelist, prompt for others")
-		fmt.Println("  /config whitelist     - List whitelisted tools in config.json")
-		fmt.Println("  /config allow <tool>  - Add a tool to config.json whitelist for auto execution")
-		fmt.Println("  /config deny <tool>   - Remove a tool from whitelist (require permission)")
-		fmt.Println("  /goal set <text>      - Set active goal for agent steering")
-		fmt.Println("  /goal clear           - Clear active goal")
-		fmt.Println("  /goal status          - Show active goal status")
-		fmt.Println("  /session list         - List all saved JSONL session files")
-		fmt.Println("  /session new [name]   - Start a new session with custom name")
-		fmt.Println("  /session load <name>  - Resume an existing session by name or ID")
-		fmt.Println("  /session rename <name>- Rename active session")
-		fmt.Println("  /summary              - View current conversation memory summary")
-		fmt.Println("  /summarize            - Trigger LLM auto-summarization of history")
-		fmt.Println("  /numctx [size]        - Show or change context window size")
-		fmt.Println("  /tools                - List all registered agent tools")
-		fmt.Println("  /models               - List all available local Ollama models")
-		fmt.Println("  /model <name>         - Switch active model")
-		fmt.Println("  /clear                - Clear in-memory conversation history")
-		fmt.Println("  /exit                 - Quit the agent")
-		fmt.Println()
+		printHelp()
 
 	case "/cd":
-		if len(parts) < 2 {
-			fmt.Printf("%sCurrent Working Directory: %s\nUsage: /cd <target_directory_path>%s\n\n", ColorYellow, ag.GetCurrentDir(), ColorReset)
+		if len(args) == 0 {
+			fmt.Printf("%sUsage: /cd <directory_path>%s\n\n", ColorYellow, ColorReset)
 			return false
 		}
-		targetDir := parts[1]
-		safeDir, err := tools.IsPathSafe(targetDir, ag.GetCurrentDir())
+		target := strings.Join(args, " ")
+		res, err := ag.GetRegistry().Execute("cd", map[string]interface{}{"path": target})
 		if err != nil {
-			fmt.Printf("%s[Security Block]%s Cannot change directory to '%s': %v\n\n", ColorRed, ColorReset, targetDir, err)
+			fmt.Printf("%s[Error]%s %v\n\n", ColorRed, ColorReset, err)
+		} else {
+			fmt.Printf("%s[Workspace]%s %s\n\n", ColorGreen, ColorReset, res)
+		}
+
+	case "/summary", "/summarize":
+		fmt.Printf("\n📜 %sMemory Summary:%s\n%s\n\n", ColorBold, ColorReset, ag.GetSummary())
+
+	case "/numctx":
+		if len(args) == 0 {
+			fmt.Printf("\n⚙️ Current NumCtx (Context Window Size): %s%d%s tokens\n\n", ColorBold, ag.GetNumCtx(), ColorReset)
 			return false
 		}
-		ag.SetCurrentDir(safeDir)
-		fmt.Printf("%s[Agent]%s Working directory changed to: %s%s%s\n\n", ColorGreen, ColorReset, ColorBold, safeDir, ColorReset)
+		var val int
+		_, err := fmt.Sscanf(args[0], "%d", &val)
+		if err != nil || val <= 0 {
+			fmt.Printf("%s[Error]%s Invalid token size: %s. Must be a positive integer.\n\n", ColorRed, ColorReset, args[0])
+			return false
+		}
+		ag.SetNumCtx(val)
+		fmt.Printf("%s[Config]%s Updated NumCtx to %s%d%s tokens.\n\n", ColorGreen, ColorReset, ColorBold, val, ColorReset)
 
 	case "/mode":
-		if len(parts) < 2 {
-			fmt.Printf("%sCurrent Tool Mode: %s%s%s. Available: auto, ask, accept-edit%s\n\n", ColorYellow, ColorBold, ag.GetToolMode(), ColorYellow, ColorReset)
+		if len(args) == 0 {
+			fmt.Printf("\n⚙️ Current Tool Mode: %s%s%s\nAvailable modes: auto, ask, accept-edit\n\n", ColorBold, ag.GetToolMode(), ColorReset)
 			return false
 		}
-		targetMode := agent.ToolMode(strings.ToLower(parts[1]))
-		switch targetMode {
-		case agent.ModeAuto, agent.ModeAsk, agent.ModeAcceptEdit:
-			ag.SetToolMode(targetMode)
-			fmt.Printf("%s[Agent]%s Tool Execution Mode switched to: %s%s%s\n\n", ColorGreen, ColorReset, ColorBold, targetMode, ColorReset)
-		default:
-			fmt.Printf("%sInvalid mode '%s'. Available: auto, ask, accept-edit%s\n\n", ColorRed, parts[1], ColorReset)
+		mode := agent.ToolMode(args[0])
+		if mode != agent.ModeAuto && mode != agent.ModeAsk && mode != agent.ModeAcceptEdit {
+			fmt.Printf("%s[Error]%s Invalid mode '%s'. Available modes: auto, ask, accept-edit\n\n", ColorRed, ColorReset, args[0])
+			return false
 		}
+		ag.SetToolMode(mode)
+		fmt.Printf("%s[Config]%s Tool execution mode set to: %s%s%s\n\n", ColorGreen, ColorReset, ColorBold, mode, ColorReset)
 
 	case "/config":
-		handleConfigSubcommands(parts[1:], ag)
+		handleConfigSubcommands(args, ag)
 
 	case "/goal":
-		handleGoalSubcommands(parts[1:], ag)
-
-	case "/session", "/sessions":
-		handleSessionSubcommands(parts[1:], ag)
-
-	case "/summary":
-		fmt.Printf("\n🧠 %sActive Conversation Memory Summary:%s\n%s\n\n", ColorBold, ColorReset, ag.GetSummary())
-
-	case "/summarize":
-		fmt.Printf("%s[Agent]%s Generating conversation summary using LLM...\n", ColorYellow, ColorReset)
-		summary, err := ag.AutoSummarize()
-		if err != nil {
-			fmt.Printf("%s[Error]%s Failed to summarize: %v\n\n", ColorRed, ColorReset, err)
-		} else {
-			fmt.Printf("%s[Agent]%s Memory summary updated:\n%s%s%s\n\n", ColorGreen, ColorReset, ColorItalic, summary, ColorReset)
-		}
+		handleGoalSubcommands(args, ag)
 
 	case "/tools":
-		toolsList := ag.GetRegistry().GetDefinitions()
-		fmt.Printf("\n🛠️  Registered Agent Tools (%d):\n", len(toolsList))
-		for _, t := range toolsList {
+		fmt.Printf("\n🛠️ Registered Tools (%d):\n", len(ag.GetRegistry().GetDefinitions()))
+		for _, t := range ag.GetRegistry().GetDefinitions() {
 			fmt.Printf("  • %s%s%s: %s\n", ColorBold, t.Function.Name, ColorReset, t.Function.Description)
 		}
 		fmt.Println()
 
 	case "/models":
-		models, err := client.ListModels()
-		if err != nil {
-			fmt.Printf("%s[Error]%s %v\n", ColorRed, ColorReset, err)
-		} else {
-			fmt.Printf("\nAvailable Local Models:\n")
-			for _, m := range models {
-				active := ""
-				if m == ag.GetModel() {
-					active = fmt.Sprintf(" %s(active)%s", ColorGreen, ColorReset)
-				}
-				fmt.Printf("  - %s%s\n", m, active)
+		fmt.Printf("\n📦 Available Ollama Models (%d):\n", len(models))
+		for _, m := range models {
+			current := ""
+			if m == ag.GetModel() {
+				current = fmt.Sprintf(" %s(active)%s", ColorGreen, ColorReset)
 			}
-			fmt.Println()
+			fmt.Printf("  • %s%s\n", m, current)
 		}
+		fmt.Println()
 
 	case "/model":
-		if len(parts) < 2 {
-			fmt.Printf("%sUsage: /model <model_name>%s\n\n", ColorYellow, ColorReset)
+		if len(args) == 0 {
+			fmt.Printf("\n🤖 Active Model: %s%s%s\n\n", ColorBold, ag.GetModel(), ColorReset)
 			return false
 		}
-		targetModel := parts[1]
+		targetModel := args[0]
+		found := false
+		for _, m := range models {
+			if m == targetModel {
+				found = true
+				break
+			}
+		}
+		if !found {
+			fmt.Printf("%s[Warning]%s Model '%s' not listed in local Ollama models. Setting anyway...\n", ColorYellow, ColorReset, targetModel)
+		}
 		ag.SetModel(targetModel)
-		fmt.Printf("%s[Agent]%s Model switched to: %s%s%s\n\n", ColorGreen, ColorReset, ColorBold, targetModel, ColorReset)
+		fmt.Printf("%s[Config]%s Active model switched to: %s%s%s\n\n", ColorGreen, ColorReset, ColorBold, targetModel, ColorReset)
 
-	case "/numctx":
-		if len(parts) < 2 {
-			fmt.Printf("%sCurrent num_ctx: %d tokens. Usage: /numctx <size_in_tokens> (e.g. /numctx 16384)%s\n\n", ColorYellow, ag.GetNumCtx(), ColorReset)
-			return false
-		}
-		var val int
-		if _, err := fmt.Sscanf(parts[1], "%d", &val); err != nil || val <= 0 {
-			fmt.Printf("%sInvalid num_ctx value '%s'.%s\n\n", ColorRed, parts[1], ColorReset)
-			return false
-		}
-		ag.SetNumCtx(val)
-		fmt.Printf("%s[Agent]%s Context window (num_ctx) set to: %s%d tokens%s\n\n", ColorGreen, ColorReset, ColorBold, val, ColorReset)
+	case "/session":
+		handleSessionSubcommands(args, ag)
 
 	case "/clear":
 		ag.ClearHistory()
-		fmt.Printf("%s[Agent]%s In-memory conversation history cleared.\n\n", ColorGreen, ColorReset)
+		fmt.Printf("%s[Agent]%s Context history cleared.\n\n", ColorYellow, ColorReset)
 
 	default:
-		fmt.Printf("%sUnknown command '%s'. Type /help for assistance.%s\n\n", ColorYellow, command, ColorReset)
+		fmt.Printf("%sUnknown command '%s'. Type '/help' for assistance.%s\n\n", ColorYellow, command, ColorReset)
 	}
 
 	return false
@@ -284,7 +258,8 @@ func handleSessionSubcommands(args []string, ag *agent.Agent) {
 			fmt.Printf("%s[Error]%s Failed to load session '%s': %v\n\n", ColorRed, ColorReset, targetQuery, err)
 			return
 		}
-		fmt.Printf("%s[Session]%s Successfully loaded session: %s%s%s (%d messages restored into memory)\n\n", ColorGreen, ColorReset, ColorBold, resolvedID, ColorReset, ag.GetHistoryCount())
+		fmt.Printf("%s[Session]%s Successfully loaded session: %s%s%s (%d messages restored)\n", ColorGreen, ColorReset, ColorBold, resolvedID, ColorReset, ag.GetHistoryCount())
+		fmt.Printf("   📂 %sRestored Working Directory:%s %s\n\n", ColorBold, ColorReset, ag.GetCurrentDir())
 
 	case "rename":
 		if len(args) < 2 {
@@ -310,6 +285,7 @@ func handleSessionSubcommands(args []string, ag *agent.Agent) {
 		fmt.Printf("\n📌 Current Active Session:\n")
 		fmt.Printf("  • ID/Name: %s%s%s\n", ColorBold, mgr.GetCurrentID(), ColorReset)
 		fmt.Printf("  • File: %s\n", mgr.GetCurrentPath())
+		fmt.Printf("  • Working Directory: %s%s%s\n", ColorBold, ag.GetCurrentDir(), ColorReset)
 		fmt.Printf("  • Memory Messages: %d\n\n", ag.GetHistoryCount())
 
 	case "delete":
@@ -318,14 +294,32 @@ func handleSessionSubcommands(args []string, ag *agent.Agent) {
 			return
 		}
 		targetID := args[1]
-		err := mgr.DeleteSession(targetID)
+		resID, err := mgr.DeleteSession(targetID)
 		if err != nil {
 			fmt.Printf("%s[Error]%s %v\n\n", ColorRed, ColorReset, err)
 			return
 		}
-		fmt.Printf("%s[Session]%s Session '%s' deleted.\n\n", ColorGreen, ColorReset, targetID)
+		fmt.Printf("%s[Session]%s Session '%s' deleted.\n\n", ColorGreen, ColorReset, resID)
 
 	default:
 		fmt.Printf("%sUnknown session subcommand '%s'. Type /help for assistance.%s\n\n", ColorYellow, sub, ColorReset)
 	}
+}
+
+func printHelp() {
+	fmt.Printf("\n📖 %sOllama Toy Agent Help Guide%s\n", ColorBold, ColorReset)
+	fmt.Println("Commands:")
+	fmt.Println("  /cd <dir>                   : Change active workspace working directory")
+	fmt.Println("  /mode [auto|ask|accept-edit]: View or change tool execution mode")
+	fmt.Println("  /config [whitelist|allow|deny]: Manage auto-approved tool whitelist")
+	fmt.Println("  /goal [set|clear|status]    : Manage goal steering")
+	fmt.Println("  /session [list|new|load|rename|current|delete]: Manage persistent sessions")
+	fmt.Println("  /summary                    : View agent conversation memory summary")
+	fmt.Println("  /numctx [tokens]            : View or update context window size")
+	fmt.Println("  /tools                      : View registered tools")
+	fmt.Println("  /models                     : List available Ollama models")
+	fmt.Println("  /model <name>               : Switch active Ollama model")
+	fmt.Println("  /clear                      : Clear conversation context")
+	fmt.Println("  /exit, /quit                : Exit agent")
+	fmt.Println()
 }

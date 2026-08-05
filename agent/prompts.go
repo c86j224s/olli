@@ -2,7 +2,6 @@ package agent
 
 import (
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/c86j224s/olli/ollama"
@@ -11,7 +10,7 @@ import (
 func (a *Agent) buildMessagesPayload() []ollama.Message {
 	msgs := make([]ollama.Message, 0, len(a.history)+1)
 
-	fullSystemPrompt := a.systemPrompt
+	fullSystemPrompt := a.systemMsg
 
 	subagentProtocol := "\n\n🤖 [SUBAGENT DELEGATION PROTOCOL]:\n" +
 		"- For writing, editing, or refactoring code: Call 'delegate_coder(task_description)'.\n" +
@@ -38,49 +37,18 @@ func (a *Agent) buildMessagesPayload() []ollama.Message {
 		fullSystemPrompt += fmt.Sprintf("\n\n🎯 [ACTIVE GOAL / MISSION STEERING]:\n\"%s\"\n\nCRITICAL INSTRUCTION: Stay focused on achieving this objective. Once completed, call 'complete_goal'.", a.activeGoal)
 	}
 
-	if a.summary != "" {
-		fullSystemPrompt += fmt.Sprintf("\n\n[Active Conversation Memory Summary]:\n%s\n\n[Memory Retrieval Guidance]:\nIf you need exact historical details, call 'search_session_history'.", a.summary)
-	}
-
 	msgs = append(msgs, ollama.Message{
 		Role:    "system",
 		Content: fullSystemPrompt,
 	})
+
+	if a.summary != "" && len(a.history) > 10 {
+		msgs = append(msgs, ollama.Message{
+			Role:    "system",
+			Content: fmt.Sprintf("📜 [Active Conversation Summary]: %s", a.summary),
+		})
+	}
+
 	msgs = append(msgs, a.history...)
 	return msgs
-}
-
-func (a *Agent) AutoSummarize() (string, error) {
-	if len(a.history) < 2 {
-		return a.summary, nil
-	}
-
-	promptMsg := append(a.history, ollama.Message{
-		Role:    "user",
-		Content: "Summarize the key points, user preferences, and topics discussed in this conversation in 3 concise bullet points for long-term memory reference.",
-	})
-
-	req := ollama.ChatRequest{
-		Model:    a.model,
-		Messages: promptMsg,
-		Options:  &ollama.Options{NumCtx: a.numCtx},
-	}
-
-	var sb strings.Builder
-	streamCB := ollama.StreamCallbacks{
-		OnContent: func(token string) {
-			sb.WriteString(token)
-		},
-	}
-
-	_, err := a.client.ChatStreamFull(req, streamCB)
-	if err != nil {
-		return a.summary, err
-	}
-
-	summaryResult := strings.TrimSpace(sb.String())
-	if summaryResult != "" {
-		a.summary = summaryResult
-	}
-	return a.summary, nil
 }

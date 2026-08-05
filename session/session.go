@@ -157,20 +157,20 @@ func (m *Manager) FindSession(query string) (string, []string, error) {
 	return "", nil, fmt.Errorf("no session found matching '%s'", query)
 }
 
-// LoadSession resolves query (ID or name/alias) and loads messages into memory
-func (m *Manager) LoadSession(nameOrID string) ([]ollama.Message, string, error) {
+// LoadSession resolves query (ID or name/alias) and loads messages and last working directory into memory
+func (m *Manager) LoadSession(nameOrID string) ([]ollama.Message, string, string, error) {
 	resolvedID, matches, err := m.FindSession(nameOrID)
 	if err != nil {
 		if len(matches) > 0 {
-			return nil, "", fmt.Errorf("multiple session matches found for '%s': %s", nameOrID, strings.Join(matches, ", "))
+			return nil, "", "", fmt.Errorf("multiple session matches found for '%s': %s", nameOrID, strings.Join(matches, ", "))
 		}
-		return nil, "", err
+		return nil, "", "", err
 	}
 
 	filePath := filepath.Join(m.sessionsDir, resolvedID+".jsonl")
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, "", fmt.Errorf("session file '%s' not found: %w", resolvedID, err)
+		return nil, "", "", fmt.Errorf("session file '%s' not found: %w", resolvedID, err)
 	}
 	defer file.Close()
 
@@ -179,6 +179,7 @@ func (m *Manager) LoadSession(nameOrID string) ([]ollama.Message, string, error)
 	}
 
 	var messages []ollama.Message
+	var events []Event
 	scanner := bufio.NewScanner(file)
 
 	for scanner.Scan() {
@@ -192,6 +193,7 @@ func (m *Manager) LoadSession(nameOrID string) ([]ollama.Message, string, error)
 			continue
 		}
 
+		events = append(events, evt)
 		messages = append(messages, ollama.Message{
 			Role:      evt.Role,
 			Content:   evt.Content,
@@ -201,18 +203,64 @@ func (m *Manager) LoadSession(nameOrID string) ([]ollama.Message, string, error)
 	}
 
 	if err := scanner.Err(); err != nil {
-		return nil, "", fmt.Errorf("error reading session file: %w", err)
+		return nil, "", "", fmt.Errorf("error reading session file: %w", err)
 	}
 
 	appendFile, err := os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return nil, "", fmt.Errorf("failed to open session for append: %w", err)
+		return nil, "", "", fmt.Errorf("failed to open session for append: %w", err)
 	}
 
 	m.currentID = resolvedID
 	m.currentFile = appendFile
 
-	return messages, resolvedID, nil
+	lastDir := ExtractLastWorkingDir(events)
+
+	return messages, resolvedID, lastDir, nil
+}
+
+// ExtractLastWorkingDir scans session events backwards to find the last valid working directory
+func ExtractLastWorkingDir(events []Event) string {
+	for i := len(events) - 1; i >= 0; i-- {
+		evt := events[i]
+		content := evt.Content
+
+		// 1. Explicit system marker: 📌 [Workspace Directory Updated]: /path/to/dir
+		if strings.Contains(content, "📌 [Workspace Directory Updated]:") {
+			parts := strings.SplitN(content, "📌 [Workspace Directory Updated]:", 2)
+			if len(parts) == 2 {
+				dir := strings.TrimSpace(parts[1])
+				if info, err := os.Stat(dir); err == nil && info.IsDir() {
+					return dir
+				}
+			}
+		}
+
+		// 2. CD tool output marker: Working directory successfully changed to '/path/to/dir'
+		if strings.Contains(content, "Working directory successfully changed to '") {
+			start := strings.Index(content, "Working directory successfully changed to '") + len("Working directory successfully changed to '")
+			end := strings.Index(content[start:], "'")
+			if end != -1 {
+				dir := content[start : start+end]
+				if info, err := os.Stat(dir); err == nil && info.IsDir() {
+					return dir
+				}
+			}
+		}
+
+		// 3. Tool calls with CD arguments
+		for _, tc := range evt.ToolCalls {
+			if tc.Function.Name == "cd" || tc.Function.Name == "change_directory" {
+				if p, ok := tc.Function.Arguments["path"].(string); ok && p != "" {
+					trimmed := strings.TrimSpace(p)
+					if info, err := os.Stat(trimmed); err == nil && info.IsDir() {
+						return trimmed
+					}
+				}
+			}
+		}
+	}
+	return ""
 }
 
 // RenameSession renames an existing session file (or active session if targetID is empty or current)
@@ -261,74 +309,85 @@ func (m *Manager) RenameSession(oldQuery string, newName string) (string, error)
 	return newName, nil
 }
 
+// DeleteSession deletes a session by ID or query name
+func (m *Manager) DeleteSession(query string) (string, error) {
+	resolvedID, _, err := m.FindSession(query)
+	if err != nil {
+		return "", err
+	}
+
+	if resolvedID == m.currentID {
+		return "", fmt.Errorf("cannot delete currently active session '%s'. Switch to another session first", resolvedID)
+	}
+
+	filePath := filepath.Join(m.sessionsDir, resolvedID+".jsonl")
+	if err := os.Remove(filePath); err != nil {
+		return "", fmt.Errorf("failed to delete session file: %w", err)
+	}
+
+	return resolvedID, nil
+}
+
+// ListSessions returns a slice of SessionInfo sorted by updated_at descending
 func (m *Manager) ListSessions() ([]SessionInfo, error) {
-	files, err := os.ReadDir(m.sessionsDir)
+	entries, err := os.ReadDir(m.sessionsDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read sessions dir: %w", err)
 	}
 
-	var list []SessionInfo
-	for _, f := range files {
-		if f.IsDir() || !strings.HasSuffix(f.Name(), ".jsonl") {
+	var sessions []SessionInfo
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
 		}
 
-		id := strings.TrimSuffix(f.Name(), ".jsonl")
-		path := filepath.Join(m.sessionsDir, f.Name())
-
-		info, err := f.Info()
+		filePath := filepath.Join(m.sessionsDir, entry.Name())
+		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
 
-		msgCount := countJSONLLines(path)
+		id := strings.TrimSuffix(entry.Name(), ".jsonl")
+		msgCount, lastModel := m.countMessagesAndModel(filePath)
 
-		list = append(list, SessionInfo{
+		sessions = append(sessions, SessionInfo{
 			ID:           id,
-			FilePath:     path,
+			FilePath:     filePath,
 			CreatedAt:    info.ModTime(),
 			UpdatedAt:    info.ModTime(),
 			MessageCount: msgCount,
+			LastModel:    lastModel,
 		})
 	}
 
-	sort.Slice(list, func(i, j int) bool {
-		return list[i].UpdatedAt.After(list[j].UpdatedAt)
+	sort.Slice(sessions, func(i, j int) bool {
+		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
 	})
 
-	return list, nil
+	return sessions, nil
 }
 
-func (m *Manager) DeleteSession(query string) error {
-	resolvedID, _, err := m.FindSession(query)
-	if err != nil {
-		return err
-	}
-
-	filePath := filepath.Join(m.sessionsDir, resolvedID+".jsonl")
-	if resolvedID == m.currentID {
-		if m.currentFile != nil {
-			m.currentFile.Close()
-			m.currentFile = nil
-		}
-		m.currentID = ""
-	}
-	return os.Remove(filePath)
-}
-
-func countJSONLLines(path string) int {
+func (m *Manager) countMessagesAndModel(path string) (int, string) {
 	file, err := os.Open(path)
 	if err != nil {
-		return 0
+		return 0, ""
 	}
 	defer file.Close()
 
-	count := 0
 	scanner := bufio.NewScanner(file)
+	count := 0
+	lastModel := ""
+
 	for scanner.Scan() {
-		if len(strings.TrimSpace(scanner.Text())) > 0 {
-			count++
+		count++
+		line := scanner.Bytes()
+		var evt Event
+		if err := json.Unmarshal(line, &evt); err == nil {
+			if evt.Role == "assistant" && evt.Content != "" {
+				lastModel = "active"
+			}
 		}
 	}
-	return count
+
+	return count, lastModel
 }

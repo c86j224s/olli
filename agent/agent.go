@@ -1,12 +1,10 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/c86j224s/olli/config"
 	"github.com/c86j224s/olli/ollama"
@@ -28,8 +26,7 @@ type Callbacks struct {
 	OnThinkingEnd             func()
 	OnContentToken            func(token string)
 	OnToolCall                func(toolName string, args map[string]interface{}, result string, execErr error)
-	ConfirmToolCall           func(toolName string, args map[string]interface{}) bool
-	ConfirmToolCallWithAction func(toolName string, args map[string]interface{}) (allowed bool, addWhitelist bool)
+	ConfirmToolCallWithAction func(toolName string, args map[string]interface{}) (bool, bool)
 	OnSubagentThinkingStart   func(subType string)
 	OnSubagentThinkingToken   func(token string)
 	OnSubagentThinkingEnd     func()
@@ -37,116 +34,169 @@ type Callbacks struct {
 }
 
 type Agent struct {
-	client       *ollama.Client
-	model        string
-	numCtx       int
-	toolMode     ToolMode
-	cfg          *config.Config
-	systemPrompt string
-	summary      string
-	activeGoal   string
-	initialDir   string
-	currentDir   string
-	history      []ollama.Message
-	registry     *tools.Registry
-	sessMgr      *session.Manager
-	activeCB     Callbacks
+	client     *ollama.Client
+	model      string
+	systemMsg  string
+	numCtx     int
+	history    []ollama.Message
+	toolMode   ToolMode
+	summary    string
+	activeGoal string
+	initialDir string
+	currentDir string
+	registry   *tools.Registry
+	sessMgr    *session.Manager
+	cfg        *config.Config
+	activeCB   Callbacks
 }
 
-func New(client *ollama.Client, model string, systemPrompt string, sessMgr *session.Manager, cfg *config.Config) *Agent {
-	if systemPrompt == "" {
-		systemPrompt = "You are an intelligent AI assistant equipped with Goal Steering and Subagent Delegation capabilities. Always delegate specialized tasks to Subagents (Researcher, Coder, Tester, Reviewer, Documenter, Presenter)."
+func FormatArgs(args map[string]interface{}) string {
+	if len(args) == 0 {
+		return "{}"
 	}
-
-	wd, err := os.Getwd()
+	b, err := json.Marshal(args)
 	if err != nil {
-		wd = "."
+		return "{}"
+	}
+	return string(b)
+}
+
+func New(client *ollama.Client, model string, systemMsg string, sessMgr *session.Manager, cfg *config.Config) *Agent {
+	initialDir, err := os.Getwd()
+	if err != nil {
+		initialDir = "."
 	}
 
-	if cfg == nil {
-		cfg, _ = config.LoadConfig("./config.json")
-	}
+	reg := tools.NewRegistry()
+	reg.SetWorkspace(initialDir)
 
 	ag := &Agent{
-		client:       client,
-		model:        model,
-		numCtx:       cfg.NumCtx,
-		toolMode:     ToolMode(cfg.DefaultMode),
-		cfg:          cfg,
-		systemPrompt: systemPrompt,
-		summary:      "Conversation just started.",
-		initialDir:   wd,
-		currentDir:   wd,
-		history:      make([]ollama.Message, 0),
-		registry:     tools.NewRegistry(),
-		sessMgr:      sessMgr,
+		client:     client,
+		model:      model,
+		systemMsg:  systemMsg,
+		numCtx:     16384,
+		history:    make([]ollama.Message, 0),
+		toolMode:   ModeAuto,
+		summary:    "Session started.",
+		activeGoal: "",
+		initialDir: initialDir,
+		currentDir: initialDir,
+		registry:   reg,
+		sessMgr:    sessMgr,
+		cfg:        cfg,
 	}
 
-	ag.registerGoalTools()
-	ag.registerDirectoryTools()
-	ag.registerSubagentToolsWithContext(context.Background())
+	ag.registerBuiltinTools()
 
-	if sessMgr != nil && sessMgr.GetCurrentID() == "" {
-		sessMgr.CreateSession("auto", model)
+	if sessMgr != nil {
+		sessInfo, err := sessMgr.CreateSession("", model)
+		if err == nil {
+			ag.summary = fmt.Sprintf("Session '%s' created.", sessInfo.ID)
+			sessMgr.AppendEvent(ollama.Message{
+				Role:    "system",
+				Content: fmt.Sprintf("📌 [Workspace Directory Initialized]: %s", initialDir),
+			})
+		}
 	}
 
 	return ag
 }
 
-func (a *Agent) registerDirectoryTools() {
+func (a *Agent) registerBuiltinTools() {
+	// Register CD tool
 	a.registry.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "cd",
-			Description: "Change active working directory to target project path",
+			Description: "Change active workspace working directory",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"path": {Type: "string", Description: "Target directory path (e.g. ~/llm-pg)"},
+					"path": {
+						Type:        "string",
+						Description: "Target directory path to navigate into (e.g. '~/llm-pg', '..', '/Users/allthatcode')",
+					},
 				},
 				Required: []string{"path"},
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		targetDir := tools.ParseCommandArgs(args)
-		if targetDir == "" {
-			if p, ok := args["path"].(string); ok {
-				targetDir = p
-			}
+		path, _ := args["path"].(string)
+		resolvedPath := a.registry.ResolvePath(path)
+
+		if err := tools.IsWorkspaceLocationSafe(resolvedPath); err != nil {
+			return "", fmt.Errorf("permission denied: directory '%s' is not allowed: %w", resolvedPath, err)
 		}
-		safeDir, err := tools.IsPathSafe(targetDir, a.GetCurrentDir())
-		if err != nil {
-			return "", err
+
+		info, err := os.Stat(resolvedPath)
+		if err != nil || !info.IsDir() {
+			return "", fmt.Errorf("directory '%s' does not exist or is not a directory", resolvedPath)
 		}
-		a.SetCurrentDir(safeDir)
-		return fmt.Sprintf("Working directory successfully changed to '%s'", safeDir), nil
+
+		a.SetCurrentDir(resolvedPath)
+		return fmt.Sprintf("Working directory successfully changed to '%s'", resolvedPath), nil
 	})
 
+	// Also alias change_directory
+	a.registry.Register(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "change_directory",
+			Description: "Alias for cd tool to change active working directory",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"path": {
+						Type:        "string",
+						Description: "Target directory path",
+					},
+				},
+				Required: []string{"path"},
+			},
+		},
+	}, func(args map[string]interface{}) (string, error) {
+		path, _ := args["path"].(string)
+		resolvedPath := a.registry.ResolvePath(path)
+
+		if err := tools.IsWorkspaceLocationSafe(resolvedPath); err != nil {
+			return "", fmt.Errorf("permission denied: directory '%s' is not allowed: %w", resolvedPath, err)
+		}
+
+		info, err := os.Stat(resolvedPath)
+		if err != nil || !info.IsDir() {
+			return "", fmt.Errorf("directory '%s' does not exist or is not a directory", resolvedPath)
+		}
+
+		a.SetCurrentDir(resolvedPath)
+		return fmt.Sprintf("Working directory successfully changed to '%s'", resolvedPath), nil
+	})
+
+	// Register get_agent_status tool
 	a.registry.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "get_agent_status",
-			Description: "Query active agent runtime status, initial launch directory, current working directory, session ID, active goal, and model settings",
+			Description: "Get current agent status, session info, launch directory, working directory, and tool mode",
 			Parameters: ollama.FunctionParamSchema{
 				Type:       "object",
 				Properties: map[string]ollama.FunctionParamProperty{},
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		sessID := ""
-		sessPath := ""
+		sessID := "none"
+		sessFile := "none"
 		if a.sessMgr != nil {
 			sessID = a.sessMgr.GetCurrentID()
-			sessPath = a.sessMgr.GetCurrentPath()
+			sessFile = a.sessMgr.GetCurrentPath()
 		}
 
 		statusInfo := map[string]string{
-			"initial_launch_directory":  a.initialDir,
+			"initial_launch_directory": a.initialDir,
 			"current_working_directory": a.currentDir,
-			"active_model":             a.model,
-			"tool_mode":                string(a.toolMode),
-			"session_id":               sessID,
-			"session_file":             sessPath,
+			"active_model":              a.model,
+			"tool_mode":                 string(a.toolMode),
+			"session_id":                sessID,
+			"session_file":              sessFile,
 			"active_goal":              a.activeGoal,
 			"num_ctx":                  fmt.Sprintf("%d", a.numCtx),
 		}
@@ -167,6 +217,12 @@ func (a *Agent) SetCurrentDir(d string) {
 	a.currentDir = d
 	if a.registry != nil {
 		a.registry.SetWorkspace(d)
+	}
+	if a.sessMgr != nil {
+		a.sessMgr.AppendEvent(ollama.Message{
+			Role:    "system",
+			Content: fmt.Sprintf("📌 [Workspace Directory Updated]: %s", d),
+		})
 	}
 }
 
@@ -205,13 +261,21 @@ func (a *Agent) LoadSession(nameOrID string) (string, error) {
 		return "", fmt.Errorf("session manager not initialized")
 	}
 
-	messages, resolvedID, err := a.sessMgr.LoadSession(nameOrID)
+	messages, resolvedID, lastDir, err := a.sessMgr.LoadSession(nameOrID)
 	if err != nil {
 		return "", err
 	}
 
 	a.history = messages
-	a.summary = fmt.Sprintf("Loaded session '%s' with %d messages.", resolvedID, len(messages))
+	if lastDir != "" {
+		a.currentDir = lastDir
+		if a.registry != nil {
+			a.registry.SetWorkspace(lastDir)
+		}
+		a.summary = fmt.Sprintf("Loaded session '%s' with %d messages. Restored active working directory: %s", resolvedID, len(messages), lastDir)
+	} else {
+		a.summary = fmt.Sprintf("Loaded session '%s' with %d messages.", resolvedID, len(messages))
+	}
 	return resolvedID, nil
 }
 
@@ -251,36 +315,24 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 			Model:    a.model,
 			Messages: a.buildMessagesPayload(),
 			Tools:    a.registry.GetDefinitions(),
-			Options:  &ollama.Options{NumCtx: a.numCtx},
+			Options: &ollama.Options{
+				NumCtx: a.numCtx,
+			},
 		}
 
-		thinkingActive := false
-		streamCB := ollama.StreamCallbacks{
+		resp, err := a.client.ChatStreamFullWithContext(ctx, req, ollama.StreamCallbacks{
 			OnThinking: func(token string) {
-				if !thinkingActive {
-					thinkingActive = true
-					if cb.OnThinkingStart != nil {
-						cb.OnThinkingStart()
-					}
-				}
-				if cb.OnThinkingToken != nil {
+				if step == 0 && cb.OnThinkingToken != nil {
 					cb.OnThinkingToken(token)
 				}
 			},
 			OnContent: func(token string) {
-				if thinkingActive {
-					thinkingActive = false
-					if cb.OnThinkingEnd != nil {
-						cb.OnThinkingEnd()
-					}
-				}
 				if cb.OnContentToken != nil {
 					cb.OnContentToken(token)
 				}
 			},
-		}
+		})
 
-		assistantMsg, err := a.client.ChatStreamFullWithContext(ctx, req, streamCB)
 		if err != nil {
 			if ctx.Err() == context.Canceled || err == context.Canceled {
 				cancelMsg := ollama.Message{
@@ -293,126 +345,67 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 				}
 				return "", context.Canceled
 			}
-			return "", fmt.Errorf("chat stream failed: %w", err)
+			return "", err
 		}
 
-		if thinkingActive {
-			thinkingActive = false
-			if cb.OnThinkingEnd != nil {
-				cb.OnThinkingEnd()
-			}
-		}
-
-		lastContent = assistantMsg.Content
-
-		if len(assistantMsg.ToolCalls) == 0 {
-			finalAssMsg := ollama.Message{
-				Role:     "assistant",
-				Content:  strings.TrimSpace(assistantMsg.Content),
-				Thinking: assistantMsg.Thinking,
-			}
-			a.history = append(a.history, finalAssMsg)
+		if len(resp.ToolCalls) > 0 {
+			a.history = append(a.history, *resp)
 			if a.sessMgr != nil {
-				a.sessMgr.AppendEvent(finalAssMsg)
-			}
-			return assistantMsg.Content, nil
-		}
-
-		a.history = append(a.history, *assistantMsg)
-		if a.sessMgr != nil {
-			a.sessMgr.AppendEvent(*assistantMsg)
-		}
-
-		for _, toolCall := range assistantMsg.ToolCalls {
-			if ctx.Err() == context.Canceled {
-				cancelMsg := ollama.Message{
-					Role:    "system",
-					Content: "⚠️ Agent generation was interrupted by user during tool execution (ESC Key).",
-				}
-				a.history = append(a.history, cancelMsg)
-				if a.sessMgr != nil {
-					a.sessMgr.AppendEvent(cancelMsg)
-				}
-				return "", context.Canceled
+				a.sessMgr.AppendEvent(*resp)
 			}
 
-			toolName := toolCall.Function.Name
-			args := toolCall.Function.Arguments
+			for _, tc := range resp.ToolCalls {
+				if ctx.Err() == context.Canceled {
+					return "", context.Canceled
+				}
 
-			if a.ShouldRequirePermission(toolName) {
-				allowed, addWhitelist := false, false
+				var toolRes string
+				var tErr error
 
-				if cb.ConfirmToolCallWithAction != nil {
-					allowed, addWhitelist = cb.ConfirmToolCallWithAction(toolName, args)
-				} else if cb.ConfirmToolCall != nil {
-					allowed = cb.ConfirmToolCall(toolName, args)
+				if a.ShouldRequirePermission(tc.Function.Name) {
+					if cb.ConfirmToolCallWithAction != nil {
+						allowed, always := cb.ConfirmToolCallWithAction(tc.Function.Name, tc.Function.Arguments)
+						if always && a.cfg != nil {
+							_ = a.cfg.AddWhitelist(tc.Function.Name)
+							_ = a.cfg.Save()
+						}
+						if !allowed {
+							tErr = fmt.Errorf("user denied execution of tool '%s'", tc.Function.Name)
+						} else {
+							toolRes, tErr = a.registry.Execute(tc.Function.Name, tc.Function.Arguments)
+						}
+					} else {
+						tErr = fmt.Errorf("permission check required for '%s' but no prompt callback set", tc.Function.Name)
+					}
 				} else {
-					allowed, addWhitelist = promptConsolePermissionAction(toolName, args)
+					toolRes, tErr = a.registry.Execute(tc.Function.Name, tc.Function.Arguments)
 				}
 
-				if addWhitelist && a.cfg != nil {
-					a.cfg.AddWhitelist(toolName)
+				if cb.OnToolCall != nil {
+					cb.OnToolCall(tc.Function.Name, tc.Function.Arguments, toolRes, tErr)
 				}
 
-				if !allowed {
-					toolMsg := ollama.Message{
-						Role:    "tool",
-						Content: fmt.Sprintf("Tool execution for '%s' was REJECTED by user.", toolName),
-					}
-					a.history = append(a.history, toolMsg)
-					if a.sessMgr != nil {
-						a.sessMgr.AppendEvent(toolMsg)
-					}
-					if cb.OnToolCall != nil {
-						cb.OnToolCall(toolName, args, "Tool execution rejected by user.", fmt.Errorf("permission denied by user"))
-					}
-					continue
+				resContent := toolRes
+				if tErr != nil {
+					resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)
+				}
+
+				toolMsg := ollama.Message{Role: "tool", Content: resContent}
+				a.history = append(a.history, toolMsg)
+				if a.sessMgr != nil {
+					a.sessMgr.AppendEvent(toolMsg)
 				}
 			}
-
-			result, execErr := a.registry.Execute(toolName, args)
-
-			if cb.OnToolCall != nil {
-				cb.OnToolCall(toolName, args, result, execErr)
-			}
-
-			toolContent := result
-			if execErr != nil {
-				toolContent = fmt.Sprintf("Error executing tool %s: %v", toolName, execErr)
-			}
-
-			toolMsg := ollama.Message{Role: "tool", Content: toolContent}
-			a.history = append(a.history, toolMsg)
-			if a.sessMgr != nil {
-				a.sessMgr.AppendEvent(toolMsg)
-			}
+			continue
 		}
+
+		lastContent = resp.Content
+		a.history = append(a.history, ollama.Message{Role: "assistant", Content: lastContent})
+		if a.sessMgr != nil {
+			a.sessMgr.AppendEvent(ollama.Message{Role: "assistant", Content: lastContent})
+		}
+		break
 	}
 
 	return lastContent, nil
-}
-
-func promptConsolePermissionAction(toolName string, args map[string]interface{}) (allowed bool, addWhitelist bool) {
-	fmt.Printf("\n❓ [Permission Required] Tool '%s'(%s).\n", toolName, FormatArgs(args))
-	fmt.Print("   Options: [y] Yes (once)  |  [a] Always (add to whitelist)  |  [n] No (deny)\n")
-	fmt.Print("   Choice [y/a/N]: ")
-	reader := bufio.NewReader(os.Stdin)
-	ans, _ := reader.ReadString('\n')
-	ans = strings.TrimSpace(strings.ToLower(ans))
-
-	if ans == "a" || ans == "always" {
-		return true, true
-	}
-	if ans == "y" || ans == "yes" {
-		return true, false
-	}
-	return false, false
-}
-
-func FormatArgs(args map[string]interface{}) string {
-	b, err := json.Marshal(args)
-	if err != nil {
-		return fmt.Sprintf("%v", args)
-	}
-	return string(b)
 }
