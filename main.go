@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ergochat/readline"
 
@@ -225,6 +226,7 @@ func main() {
 
 		_, err = ag.AskWithContext(askCtx, input, callbacks)
 		close(doneChan)
+		time.Sleep(10 * time.Millisecond) // Give time for terminal mode restoration
 		cancel()
 
 		if contentStarted {
