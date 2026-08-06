@@ -56,6 +56,13 @@ func (a *Agent) getSessionFilePath() string {
 	return ""
 }
 
+func (a *Agent) getWorkspaceRoot() string {
+	if a.registry != nil {
+		return a.registry.GetWorkspaceRoot()
+	}
+	return a.initialDir
+}
+
 func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 	// 1. delegate_researcher
 	a.registry.Register(ollama.Tool{
@@ -78,7 +85,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunResearcherWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("researcher subagent failed: %w", err)
@@ -108,7 +115,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunCoderWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
@@ -138,7 +145,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunTesterWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("tester subagent failed: %w", err)
@@ -168,7 +175,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunReviewerWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("reviewer subagent failed: %w", err)
@@ -198,7 +205,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunDocumenterWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("documenter subagent failed: %w", err)
@@ -228,7 +235,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunPresenterWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("presenter subagent failed: %w", err)

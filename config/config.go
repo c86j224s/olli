@@ -27,7 +27,7 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 
 	cfg := &Config{
-		DefaultMode: "accept-edit",
+		DefaultMode: "ask",
 		NumCtx:      32768,
 		WhitelistTools: []string{
 			"calculator",
@@ -35,9 +35,6 @@ func LoadConfig(filePath string) (*Config, error) {
 			"get_system_info",
 			"get_agent_status",
 			"search_session_history",
-			"run_terminal_command",
-			"cd",
-			"change_directory",
 			"view_file",
 			"list_dir",
 			"grep_search",
@@ -63,15 +60,25 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 
 	cfg.filePath = absPath
+	cfg.DefaultMode = safeDefaultMode(cfg.DefaultMode)
 
 	// Ensure default safe tools exist in whitelist
-	for _, defaultTool := range []string{"cd", "change_directory", "run_terminal_command", "view_file", "list_dir", "grep_search", "get_agent_status"} {
+	for _, defaultTool := range []string{"view_file", "list_dir", "grep_search", "get_agent_status"} {
 		if !cfg.IsWhitelisted(defaultTool) {
 			cfg.AddWhitelist(defaultTool)
 		}
 	}
 
 	return cfg, nil
+}
+
+func safeDefaultMode(mode string) string {
+	switch mode {
+	case "ask", "accept-edit", "auto":
+		return mode
+	default:
+		return "ask"
+	}
 }
 
 func (c *Config) IsWhitelisted(toolName string) bool {

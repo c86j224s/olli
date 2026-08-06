@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -14,10 +15,10 @@ import (
 )
 
 type Event struct {
-	Timestamp string           `json:"timestamp"`
-	Role      string           `json:"role"`
-	Content   string           `json:"content,omitempty"`
-	Thinking  string           `json:"thinking,omitempty"`
+	Timestamp string            `json:"timestamp"`
+	Role      string            `json:"role"`
+	Content   string            `json:"content,omitempty"`
+	Thinking  string            `json:"thinking,omitempty"`
 	ToolCalls []ollama.ToolCall `json:"tool_calls,omitempty"`
 }
 
@@ -31,37 +32,53 @@ type SessionInfo struct {
 }
 
 type Manager struct {
-	sessionsDir string
-	currentID   string
-	currentFile *os.File
-	lastModel   string
+	sessionsDir   string
+	workspaceRoot string
+	currentID     string
+	currentFile   *os.File
+	lastModel     string
 }
 
-func NewManager(dir string) (*Manager, error) {
+var sessionIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
+
+func NewManager(dir string, allowedRootDir ...string) (*Manager, error) {
 	if dir == "" {
 		dir = "./sessions"
 	}
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create sessions dir: %w", err)
+	rootDir := ""
+	if len(allowedRootDir) > 0 {
+		rootDir = strings.TrimSpace(allowedRootDir[0])
+	}
+
+	sessionsDir, workspaceRoot, err := prepareSessionsDir(dir, rootDir)
+	if err != nil {
+		return nil, err
 	}
 	return &Manager{
-		sessionsDir: dir,
+		sessionsDir:   sessionsDir,
+		workspaceRoot: workspaceRoot,
 	}, nil
 }
 
 func (m *Manager) CreateSession(name string, initialModel string) (*SessionInfo, error) {
+	timestamp := time.Now().Format("20060102-150405")
+	id := fmt.Sprintf("session_%s", timestamp)
+	if name != "" {
+		id = strings.TrimSpace(name)
+	}
+
+	filePath, err := m.sessionPath(id)
+	if err != nil {
+		return nil, err
+	}
+	if err := rejectSessionSymlink(filePath); err != nil {
+		return nil, err
+	}
+
 	if m.currentFile != nil {
 		m.currentFile.Close()
 	}
 
-	timestamp := time.Now().Format("20060102-150405")
-	id := fmt.Sprintf("session_%s", timestamp)
-	if name != "" {
-		sanitized := strings.ReplaceAll(name, " ", "_")
-		id = sanitized
-	}
-
-	filePath := filepath.Join(m.sessionsDir, id+".jsonl")
 	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session file: %w", err)
@@ -125,6 +142,9 @@ func (m *Manager) FindSession(query string) (string, []string, error) {
 	if query == "" {
 		return "", nil, fmt.Errorf("empty session search query")
 	}
+	if strings.ContainsAny(query, `/\`) || strings.Contains(query, "..") {
+		return "", nil, fmt.Errorf("invalid session search query")
+	}
 
 	sessions, err := m.ListSessions()
 	if err != nil {
@@ -167,7 +187,13 @@ func (m *Manager) LoadSession(nameOrID string) ([]ollama.Message, string, string
 		return nil, "", "", err
 	}
 
-	filePath := filepath.Join(m.sessionsDir, resolvedID+".jsonl")
+	filePath, err := m.sessionPath(resolvedID)
+	if err != nil {
+		return nil, "", "", err
+	}
+	if err := rejectSessionSymlink(filePath); err != nil {
+		return nil, "", "", err
+	}
 	file, err := os.Open(filePath)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("session file '%s' not found: %w", resolvedID, err)
@@ -206,6 +232,9 @@ func (m *Manager) LoadSession(nameOrID string) ([]ollama.Message, string, string
 		return nil, "", "", fmt.Errorf("error reading session file: %w", err)
 	}
 
+	if err := rejectSessionSymlink(filePath); err != nil {
+		return nil, "", "", err
+	}
 	appendFile, err := os.OpenFile(filePath, os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, "", "", fmt.Errorf("failed to open session for append: %w", err)
@@ -239,36 +268,16 @@ func ExtractLastWorkingDir(events []Event) string {
 
 	for i := len(events) - 1; i >= 0; i-- {
 		evt := events[i]
+		if evt.Role != "system" {
+			continue
+		}
 		content := evt.Content
 
-		// 1. Explicit system marker: 📌 [Workspace Directory Updated]: /path/to/dir
-		if strings.Contains(content, "📌 [Workspace Directory Updated]:") {
-			parts := strings.SplitN(content, "📌 [Workspace Directory Updated]:", 2)
-			if len(parts) == 2 {
-				dir := expandPath(parts[1])
-				if info, err := os.Stat(dir); err == nil && info.IsDir() {
-					return dir
-				}
-			}
-		}
-
-		// 2. CD tool output marker: Working directory successfully changed to '/path/to/dir'
-		if strings.Contains(content, "Working directory successfully changed to '") {
-			start := strings.Index(content, "Working directory successfully changed to '") + len("Working directory successfully changed to '")
-			end := strings.Index(content[start:], "'")
-			if end != -1 {
-				dir := expandPath(content[start : start+end])
-				if info, err := os.Stat(dir); err == nil && info.IsDir() {
-					return dir
-				}
-			}
-		}
-
-		// 3. Tool calls with CD arguments
-		for _, tc := range evt.ToolCalls {
-			if tc.Function.Name == "cd" || tc.Function.Name == "change_directory" {
-				if p, ok := tc.Function.Arguments["path"].(string); ok && p != "" {
-					dir := expandPath(p)
+		for _, marker := range []string{"📌 [Workspace Directory Updated]:", "📌 [Workspace Directory Initialized]:"} {
+			if strings.Contains(content, marker) {
+				parts := strings.SplitN(content, marker, 2)
+				if len(parts) == 2 {
+					dir := expandPath(parts[1])
 					if info, err := os.Stat(dir); err == nil && info.IsDir() {
 						return dir
 					}
@@ -281,9 +290,9 @@ func ExtractLastWorkingDir(events []Event) string {
 
 // RenameSession renames an existing session file (or active session if targetID is empty or current)
 func (m *Manager) RenameSession(oldQuery string, newName string) (string, error) {
-	newName = strings.TrimSpace(strings.ReplaceAll(newName, " ", "_"))
-	if newName == "" {
-		return "", fmt.Errorf("new session name cannot be empty")
+	newName = strings.TrimSpace(newName)
+	if err := validateSessionID(newName); err != nil {
+		return "", fmt.Errorf("invalid new session name: %w", err)
 	}
 
 	targetID := oldQuery
@@ -296,8 +305,20 @@ func (m *Manager) RenameSession(oldQuery string, newName string) (string, error)
 		return "", err
 	}
 
-	oldPath := filepath.Join(m.sessionsDir, resolvedID+".jsonl")
-	newPath := filepath.Join(m.sessionsDir, newName+".jsonl")
+	oldPath, err := m.sessionPath(resolvedID)
+	if err != nil {
+		return "", err
+	}
+	newPath, err := m.sessionPath(newName)
+	if err != nil {
+		return "", err
+	}
+	if err := rejectSessionSymlink(oldPath); err != nil {
+		return "", err
+	}
+	if err := rejectSessionSymlink(newPath); err != nil {
+		return "", err
+	}
 
 	if _, err := os.Stat(newPath); err == nil && resolvedID != newName {
 		return "", fmt.Errorf("session with name '%s' already exists", newName)
@@ -336,7 +357,13 @@ func (m *Manager) DeleteSession(query string) (string, error) {
 		return "", fmt.Errorf("cannot delete currently active session '%s'. Switch to another session first", resolvedID)
 	}
 
-	filePath := filepath.Join(m.sessionsDir, resolvedID+".jsonl")
+	filePath, err := m.sessionPath(resolvedID)
+	if err != nil {
+		return "", err
+	}
+	if err := rejectSessionSymlink(filePath); err != nil {
+		return "", err
+	}
 	if err := os.Remove(filePath); err != nil {
 		return "", fmt.Errorf("failed to delete session file: %w", err)
 	}
@@ -346,6 +373,9 @@ func (m *Manager) DeleteSession(query string) (string, error) {
 
 // ListSessions returns a slice of SessionInfo sorted by updated_at descending
 func (m *Manager) ListSessions() ([]SessionInfo, error) {
+	if err := m.ensureSessionsDirSafe(); err != nil {
+		return nil, err
+	}
 	entries, err := os.ReadDir(m.sessionsDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read sessions dir: %w", err)
@@ -356,14 +386,23 @@ func (m *Manager) ListSessions() ([]SessionInfo, error) {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".jsonl") {
 			continue
 		}
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
 
-		filePath := filepath.Join(m.sessionsDir, entry.Name())
+		id := strings.TrimSuffix(entry.Name(), ".jsonl")
+		if err := validateSessionID(id); err != nil {
+			continue
+		}
+		filePath, err := m.sessionPath(id)
+		if err != nil {
+			continue
+		}
 		info, err := entry.Info()
 		if err != nil {
 			continue
 		}
 
-		id := strings.TrimSuffix(entry.Name(), ".jsonl")
 		msgCount, lastModel := m.countMessagesAndModel(filePath)
 
 		sessions = append(sessions, SessionInfo{
@@ -381,6 +420,235 @@ func (m *Manager) ListSessions() ([]SessionInfo, error) {
 	})
 
 	return sessions, nil
+}
+
+func validateSessionID(id string) error {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return fmt.Errorf("session ID cannot be empty")
+	}
+	if id == "." || strings.Contains(id, "..") {
+		return fmt.Errorf("session ID cannot contain path traversal")
+	}
+	if strings.ContainsAny(id, `/\`) {
+		return fmt.Errorf("session ID cannot contain path separators")
+	}
+	if !sessionIDPattern.MatchString(id) {
+		return fmt.Errorf("session ID must match [A-Za-z0-9._-]+")
+	}
+	if filepath.Base(id) != id {
+		return fmt.Errorf("session ID must be a basename")
+	}
+	return nil
+}
+
+func (m *Manager) sessionPath(id string) (string, error) {
+	if err := m.ensureSessionsDirSafe(); err != nil {
+		return "", err
+	}
+	if err := validateSessionID(id); err != nil {
+		return "", err
+	}
+	filename := id + ".jsonl"
+	if filepath.Base(filename) != filename {
+		return "", fmt.Errorf("invalid session filename")
+	}
+	targetPath := filepath.Join(m.sessionsDir, filename)
+	rel, err := filepath.Rel(m.sessionsDir, targetPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid session path: %w", err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return "", fmt.Errorf("session path escapes sessions directory")
+	}
+	return targetPath, nil
+}
+
+func prepareSessionsDir(dir string, rootDir string) (string, string, error) {
+	dir = expandSessionPath(strings.TrimSpace(dir))
+	if dir == "" {
+		return "", "", fmt.Errorf("sessions dir cannot be empty")
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid sessions dir: %w", err)
+	}
+	absDir = filepath.Clean(absDir)
+
+	if info, err := os.Lstat(absDir); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return "", "", fmt.Errorf("security block: sessions dir '%s' is a symlink and is not allowed", absDir)
+	} else if err != nil && !os.IsNotExist(err) {
+		return "", "", fmt.Errorf("failed to inspect sessions dir: %w", err)
+	}
+
+	root := rootDir
+	if root == "" {
+		root = absDir
+	}
+	root = expandSessionPath(root)
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid workspace root for sessions dir: %w", err)
+	}
+	absRoot = filepath.Clean(absRoot)
+	if _, err := os.Stat(absRoot); os.IsNotExist(err) && rootDir == "" {
+		if err := os.MkdirAll(absRoot, 0755); err != nil {
+			return "", "", fmt.Errorf("failed to create sessions dir: %w", err)
+		}
+	} else if err != nil {
+		return "", "", fmt.Errorf("workspace root for sessions dir is not readable: %w", err)
+	}
+
+	evalRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("workspace root for sessions dir must be resolvable: %w", err)
+	}
+	rootInfo, err := os.Stat(evalRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("workspace root for sessions dir cannot be read: %w", err)
+	}
+	if !rootInfo.IsDir() {
+		return "", "", fmt.Errorf("workspace root for sessions dir is not a directory")
+	}
+	evalRoot = filepath.Clean(evalRoot)
+
+	canonicalDir, err := sessionCanonicalizeNearestExisting(absDir)
+	if err != nil {
+		return "", "", fmt.Errorf("sessions dir cannot be resolved safely: %w", err)
+	}
+	if err := sessionEnsureContained(canonicalDir, evalRoot); err != nil {
+		return "", "", fmt.Errorf("security block: sessions dir rejected: %w", err)
+	}
+	if err := os.MkdirAll(canonicalDir, 0755); err != nil {
+		return "", "", fmt.Errorf("failed to create sessions dir: %w", err)
+	}
+	if info, err := os.Lstat(canonicalDir); err != nil {
+		return "", "", fmt.Errorf("failed to inspect sessions dir: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return "", "", fmt.Errorf("security block: sessions dir '%s' is a symlink and is not allowed", canonicalDir)
+	}
+	evalDir, err := filepath.EvalSymlinks(canonicalDir)
+	if err != nil {
+		return "", "", fmt.Errorf("sessions dir must be resolvable: %w", err)
+	}
+	dirInfo, err := os.Stat(evalDir)
+	if err != nil {
+		return "", "", fmt.Errorf("sessions dir cannot be read: %w", err)
+	}
+	if !dirInfo.IsDir() {
+		return "", "", fmt.Errorf("sessions dir '%s' is not a directory", evalDir)
+	}
+	evalDir = filepath.Clean(evalDir)
+	if err := sessionEnsureContained(evalDir, evalRoot); err != nil {
+		return "", "", fmt.Errorf("security block: sessions dir rejected: %w", err)
+	}
+
+	return evalDir, evalRoot, nil
+}
+
+func (m *Manager) ensureSessionsDirSafe() error {
+	if strings.TrimSpace(m.sessionsDir) == "" {
+		return fmt.Errorf("sessions dir is not configured")
+	}
+	info, err := os.Lstat(m.sessionsDir)
+	if err != nil {
+		return fmt.Errorf("failed to inspect sessions dir: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("security block: sessions dir '%s' is a symlink and is not allowed", m.sessionsDir)
+	}
+	evalDir, err := filepath.EvalSymlinks(m.sessionsDir)
+	if err != nil {
+		return fmt.Errorf("sessions dir must be resolvable: %w", err)
+	}
+	stat, err := os.Stat(evalDir)
+	if err != nil {
+		return fmt.Errorf("sessions dir cannot be read: %w", err)
+	}
+	if !stat.IsDir() {
+		return fmt.Errorf("sessions dir '%s' is not a directory", evalDir)
+	}
+	if m.workspaceRoot != "" {
+		if err := sessionEnsureContained(filepath.Clean(evalDir), filepath.Clean(m.workspaceRoot)); err != nil {
+			return fmt.Errorf("security block: sessions dir rejected: %w", err)
+		}
+	}
+	return nil
+}
+
+func expandSessionPath(path string) string {
+	if strings.HasPrefix(path, "~") {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			if path == "~" {
+				return home
+			}
+			if strings.HasPrefix(path, "~/") {
+				return filepath.Join(home, path[2:])
+			}
+		}
+	}
+	return path
+}
+
+func sessionCanonicalizeNearestExisting(targetPath string) (string, error) {
+	targetPath = filepath.Clean(targetPath)
+	if evalPath, err := filepath.EvalSymlinks(targetPath); err == nil {
+		return filepath.Clean(evalPath), nil
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+
+	parent := targetPath
+	var missingParts []string
+	for {
+		nextParent := filepath.Dir(parent)
+		if nextParent == parent {
+			return "", fmt.Errorf("target path has no resolvable parent: %s", targetPath)
+		}
+		missingParts = append([]string{filepath.Base(parent)}, missingParts...)
+		parent = nextParent
+
+		evalParent, err := filepath.EvalSymlinks(parent)
+		if err == nil {
+			info, statErr := os.Stat(evalParent)
+			if statErr != nil {
+				return "", statErr
+			}
+			if !info.IsDir() {
+				return "", fmt.Errorf("parent '%s' is not a directory", evalParent)
+			}
+			parts := append([]string{evalParent}, missingParts...)
+			return filepath.Clean(filepath.Join(parts...)), nil
+		}
+		if !os.IsNotExist(err) {
+			return "", err
+		}
+	}
+}
+
+func sessionEnsureContained(target string, root string) error {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(target))
+	if err != nil {
+		return fmt.Errorf("cannot compare path '%s' with root '%s': %w", target, root, err)
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+		return fmt.Errorf("path '%s' escapes root '%s'", target, root)
+	}
+	return nil
+}
+
+func rejectSessionSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("failed to inspect session file: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("session file '%s' is a symlink and is not allowed", path)
+	}
+	return nil
 }
 
 func (m *Manager) countMessagesAndModel(path string) (int, string) {

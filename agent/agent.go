@@ -78,11 +78,16 @@ func New(client *ollama.Client, model string, systemMsg string, sessMgr *session
 	}
 
 	reg := tools.NewRegistry()
+	reg.SetWorkspaceRoot(initialDir)
 	reg.SetWorkspace(initialDir)
 
 	numCtx := 32768
 	if cfg != nil && cfg.NumCtx > 0 {
 		numCtx = cfg.NumCtx
+	}
+	toolMode := ModeAsk
+	if cfg != nil {
+		toolMode = normalizeToolMode(cfg.DefaultMode)
 	}
 
 	ag := &Agent{
@@ -91,7 +96,7 @@ func New(client *ollama.Client, model string, systemMsg string, sessMgr *session
 		systemMsg:  systemMsg,
 		numCtx:     numCtx,
 		history:    make([]ollama.Message, 0),
-		toolMode:   ModeAuto,
+		toolMode:   toolMode,
 		summary:    "Session started.",
 		activeGoal: "",
 		initialDir: initialDir,
@@ -137,7 +142,10 @@ func (a *Agent) registerBuiltinTools() {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		path, _ := args["path"].(string)
-		resolvedPath := a.registry.ResolvePath(path)
+		resolvedPath, err := a.registry.ResolvePathSafe(path)
+		if err != nil {
+			return "", fmt.Errorf("permission denied: directory rejected: %w", err)
+		}
 
 		if err := tools.IsWorkspaceLocationSafe(resolvedPath); err != nil {
 			return "", fmt.Errorf("permission denied: directory '%s' is not allowed: %w", resolvedPath, err)
@@ -171,7 +179,10 @@ func (a *Agent) registerBuiltinTools() {
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		path, _ := args["path"].(string)
-		resolvedPath := a.registry.ResolvePath(path)
+		resolvedPath, err := a.registry.ResolvePathSafe(path)
+		if err != nil {
+			return "", fmt.Errorf("permission denied: directory rejected: %w", err)
+		}
 
 		if err := tools.IsWorkspaceLocationSafe(resolvedPath); err != nil {
 			return "", fmt.Errorf("permission denied: directory '%s' is not allowed: %w", resolvedPath, err)
@@ -206,15 +217,15 @@ func (a *Agent) registerBuiltinTools() {
 		}
 
 		statusInfo := map[string]string{
-			"initial_launch_directory": a.initialDir,
+			"initial_launch_directory":  a.initialDir,
 			"current_working_directory": a.currentDir,
 			"active_model":              a.model,
 			"tool_mode":                 string(a.toolMode),
 			"session_id":                sessID,
 			"session_file":              sessFile,
-			"active_goal":              a.activeGoal,
-			"num_ctx":                  fmt.Sprintf("%d", a.numCtx),
-			"last_prompt_tokens":       fmt.Sprintf("%d", a.lastPromptEvalCount),
+			"active_goal":               a.activeGoal,
+			"num_ctx":                   fmt.Sprintf("%d", a.numCtx),
+			"last_prompt_tokens":        fmt.Sprintf("%d", a.lastPromptEvalCount),
 		}
 		b, _ := json.MarshalIndent(statusInfo, "", "  ")
 		return string(b), nil
@@ -222,15 +233,22 @@ func (a *Agent) registerBuiltinTools() {
 }
 
 func (a *Agent) GetConfig() *config.Config   { return a.cfg }
-func (a *Agent) SetModel(m string)          { a.model = m }
-func (a *Agent) GetModel() string           { return a.model }
-func (a *Agent) SetNumCtx(n int)            { a.numCtx = n }
-func (a *Agent) GetNumCtx() int             { return a.numCtx }
-func (a *Agent) SetToolMode(m ToolMode)     { a.toolMode = m }
-func (a *Agent) GetToolMode() ToolMode      { return a.toolMode }
+func (a *Agent) SetModel(m string)           { a.model = m }
+func (a *Agent) GetModel() string            { return a.model }
+func (a *Agent) SetNumCtx(n int)             { a.numCtx = n }
+func (a *Agent) GetNumCtx() int              { return a.numCtx }
+func (a *Agent) SetToolMode(m ToolMode)      { a.toolMode = m }
+func (a *Agent) GetToolMode() ToolMode       { return a.toolMode }
 func (a *Agent) GetLastPromptEvalCount() int { return a.lastPromptEvalCount }
 
 func (a *Agent) SetCurrentDir(d string) {
+	if a.registry != nil {
+		if safeDir, err := tools.IsPathSafeFrom(d, a.registry.GetWorkspace(), a.registry.GetWorkspaceRoot()); err == nil {
+			d = safeDir
+		} else {
+			return
+		}
+	}
 	a.currentDir = d
 	if a.registry != nil {
 		a.registry.SetWorkspace(d)
@@ -253,11 +271,14 @@ func (a *Agent) ClearHistory() {
 	a.summary = "Conversation history cleared."
 }
 
-func (a *Agent) GetHistoryCount() int          { return len(a.history) }
-func (a *Agent) GetRegistry() *tools.Registry  { return a.registry }
+func (a *Agent) GetHistoryCount() int                { return len(a.history) }
+func (a *Agent) GetRegistry() *tools.Registry        { return a.registry }
 func (a *Agent) GetSessionManager() *session.Manager { return a.sessMgr }
 
 func (a *Agent) ShouldRequirePermission(toolName string) bool {
+	if isSensitiveTool(toolName) {
+		return true
+	}
 	switch a.toolMode {
 	case ModeAuto:
 		return false
@@ -270,6 +291,29 @@ func (a *Agent) ShouldRequirePermission(toolName string) bool {
 		return true
 	default:
 		return true
+	}
+}
+
+func normalizeToolMode(mode string) ToolMode {
+	switch ToolMode(strings.TrimSpace(mode)) {
+	case ModeAuto:
+		return ModeAuto
+	case ModeAcceptEdit:
+		return ModeAcceptEdit
+	case ModeAsk:
+		return ModeAsk
+	default:
+		return ModeAsk
+	}
+}
+
+func isSensitiveTool(toolName string) bool {
+	switch toolName {
+	case "run_terminal_command", "cd", "change_directory",
+		"delegate_coder", "delegate_tester", "delegate_documenter", "delegate_presenter":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -340,11 +384,19 @@ func (a *Agent) LoadSession(nameOrID string) (string, error) {
 
 	a.history = messages
 	if lastDir != "" {
-		a.currentDir = lastDir
+		root := a.initialDir
 		if a.registry != nil {
-			a.registry.SetWorkspace(lastDir)
+			root = a.registry.GetWorkspaceRoot()
 		}
-		a.summary = fmt.Sprintf("Loaded session '%s' with %d messages. Restored active working directory: %s", resolvedID, len(messages), lastDir)
+		if safeDir, safeErr := tools.IsPathSafeFrom(lastDir, a.initialDir, root); safeErr == nil {
+			a.currentDir = safeDir
+			if a.registry != nil {
+				a.registry.SetWorkspace(safeDir)
+			}
+			a.summary = fmt.Sprintf("Loaded session '%s' with %d messages. Restored active working directory: %s", resolvedID, len(messages), safeDir)
+		} else {
+			a.summary = fmt.Sprintf("Loaded session '%s' with %d messages. Ignored unsafe restored working directory: %s", resolvedID, len(messages), lastDir)
+		}
 	} else {
 		a.summary = fmt.Sprintf("Loaded session '%s' with %d messages.", resolvedID, len(messages))
 	}

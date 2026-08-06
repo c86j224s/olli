@@ -3,6 +3,7 @@ package subagent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	"github.com/c86j224s/olli/ollama"
@@ -17,9 +18,7 @@ func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task stri
 	subID := fmt.Sprintf("subagent_researcher_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Web Researcher Subagent. Your goal is to gather information using web search, URL content reading, subagent report inspection, and past session log retrieval, then synthesize a clear report."
 
-	reg := tools.NewRegistry()
-	reg.SetWorkspace(r.workspace)
-	reg.SetSessionFile(r.sessionFile)
+	reg := r.newRoleRegistry()
 
 	reg.Register(ollama.Tool{
 		Type: "function",
@@ -74,9 +73,9 @@ func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task stri
 		q, _ := args["query"].(string)
 		targetPath := reg.GetSessionFile()
 		if targetPath == "" {
-			targetPath = "./sessions"
+			targetPath = filepath.Join(reg.GetWorkspaceRoot(), "sessions")
 		}
-		matches, err := tools.SearchSessionLogs(targetPath, q)
+		matches, err := tools.SearchSessionLogs(targetPath, q, reg.GetWorkspaceRoot())
 		if err != nil {
 			return "", err
 		}
@@ -97,7 +96,7 @@ func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task stri
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		return tools.ListSubagentReports(reg.GetWorkspace())
+		return tools.ListSubagentReports(reg.GetWorkspaceRoot(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -115,7 +114,7 @@ func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task stri
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		rf, _ := args["report_filename"].(string)
-		return tools.ViewSubagentReport(reg.GetWorkspace(), rf)
+		return tools.ViewSubagentReport(reg.GetWorkspaceRoot(), rf, reg.GetWorkspaceRoot())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeResearcher), task, sysPrompt, reg)
@@ -129,9 +128,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 	subID := fmt.Sprintf("subagent_coder_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, query session history and past subagent investigation reports, and perform targeted edits, middle insertions ('insert_content'), incremental appends ('append_file'), or code refactoring as requested."
 
-	reg := tools.NewRegistry()
-	reg.SetWorkspace(r.workspace)
-	reg.SetSessionFile(r.sessionFile)
+	reg := r.newRoleRegistry()
 
 	reg.Register(ollama.Tool{
 		Type: "function",
@@ -152,7 +149,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		fp, _ := args["file_path"].(string)
 		start, _ := args["start_line"].(float64)
 		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
+		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -174,7 +171,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		fp, _ := args["file_path"].(string)
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
-		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+		return tools.EditFile(fp, target, replacement, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -198,7 +195,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		ac, _ := args["anchor_content"].(string)
 		pos, _ := args["insert_position"].(string)
 		nc, _ := args["new_content"].(string)
-		return tools.InsertContent(fp, ac, pos, nc, reg.GetWorkspace())
+		return tools.InsertContent(fp, ac, pos, nc, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -218,7 +215,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 	}, func(args map[string]interface{}) (string, error) {
 		fp, _ := args["file_path"].(string)
 		ac, _ := args["append_content"].(string)
-		return tools.AppendFile(fp, ac, reg.GetWorkspace())
+		return tools.AppendFile(fp, ac, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -238,7 +235,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 	}, func(args map[string]interface{}) (string, error) {
 		q, _ := args["query"].(string)
 		sp, _ := args["search_path"].(string)
-		return tools.GrepSearch(q, sp, reg.GetWorkspace())
+		return tools.GrepSearch(q, sp, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -255,7 +252,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		dp, _ := args["dir_path"].(string)
-		return tools.ListDir(dp, reg.GetWorkspace())
+		return tools.ListDir(dp, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -275,9 +272,9 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		q, _ := args["query"].(string)
 		targetPath := reg.GetSessionFile()
 		if targetPath == "" {
-			targetPath = "./sessions"
+			targetPath = filepath.Join(reg.GetWorkspaceRoot(), "sessions")
 		}
-		matches, err := tools.SearchSessionLogs(targetPath, q)
+		matches, err := tools.SearchSessionLogs(targetPath, q, reg.GetWorkspaceRoot())
 		if err != nil {
 			return "", err
 		}
@@ -298,7 +295,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		return tools.ListSubagentReports(reg.GetWorkspace())
+		return tools.ListSubagentReports(reg.GetWorkspaceRoot(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -316,7 +313,7 @@ func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		rf, _ := args["report_filename"].(string)
-		return tools.ViewSubagentReport(reg.GetWorkspace(), rf)
+		return tools.ViewSubagentReport(reg.GetWorkspaceRoot(), rf, reg.GetWorkspaceRoot())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeCoder), task, sysPrompt, reg)
@@ -330,9 +327,7 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 	subID := fmt.Sprintf("subagent_tester_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Software Tester Subagent. Your goal is to dynamically execute test commands (e.g. go test ./...), build scripts, query session history, and verify runtime correctness."
 
-	reg := tools.NewRegistry()
-	reg.SetWorkspace(r.workspace)
-	reg.SetSessionFile(r.sessionFile)
+	reg := r.newRoleRegistry()
 
 	reg.Register(ollama.Tool{
 		Type: "function",
@@ -352,7 +347,7 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 		if cmdStr == "" {
 			return "", fmt.Errorf("missing or empty 'command' argument")
 		}
-		output, newWs, err := tools.ExecuteCommandWithWorkspace(ctx, cmdStr, reg.GetWorkspace())
+		output, newWs, err := tools.ExecuteCommandWithWorkspace(ctx, cmdStr, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 		if newWs != reg.GetWorkspace() {
 			reg.SetWorkspace(newWs)
 		}
@@ -378,7 +373,7 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 		fp, _ := args["file_path"].(string)
 		start, _ := args["start_line"].(float64)
 		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
+		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -398,9 +393,9 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 		q, _ := args["query"].(string)
 		targetPath := reg.GetSessionFile()
 		if targetPath == "" {
-			targetPath = "./sessions"
+			targetPath = filepath.Join(reg.GetWorkspaceRoot(), "sessions")
 		}
-		matches, err := tools.SearchSessionLogs(targetPath, q)
+		matches, err := tools.SearchSessionLogs(targetPath, q, reg.GetWorkspaceRoot())
 		if err != nil {
 			return "", err
 		}
@@ -421,9 +416,7 @@ func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string
 	subID := fmt.Sprintf("subagent_reviewer_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Code Reviewer Subagent. Your goal is to inspect code style, security vulnerabilities, edge cases, session history, and architectural clean code principles."
 
-	reg := tools.NewRegistry()
-	reg.SetWorkspace(r.workspace)
-	reg.SetSessionFile(r.sessionFile)
+	reg := r.newRoleRegistry()
 
 	reg.Register(ollama.Tool{
 		Type: "function",
@@ -444,7 +437,7 @@ func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string
 		fp, _ := args["file_path"].(string)
 		start, _ := args["start_line"].(float64)
 		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
+		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -464,7 +457,7 @@ func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string
 	}, func(args map[string]interface{}) (string, error) {
 		q, _ := args["query"].(string)
 		sp, _ := args["search_path"].(string)
-		return tools.GrepSearch(q, sp, reg.GetWorkspace())
+		return tools.GrepSearch(q, sp, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -484,9 +477,9 @@ func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string
 		q, _ := args["query"].(string)
 		targetPath := reg.GetSessionFile()
 		if targetPath == "" {
-			targetPath = "./sessions"
+			targetPath = filepath.Join(reg.GetWorkspaceRoot(), "sessions")
 		}
-		matches, err := tools.SearchSessionLogs(targetPath, q)
+		matches, err := tools.SearchSessionLogs(targetPath, q, reg.GetWorkspaceRoot())
 		if err != nil {
 			return "", err
 		}
@@ -507,9 +500,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 	subID := fmt.Sprintf("subagent_documenter_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, and READMEs. FLEXIBLE EDITING INSTRUCTION: You can view specific line ranges with 'view_file(path, start, end)', replace targeted sections with 'edit_file(path, target_content, replacement_content)', insert new sections in the middle with 'insert_content(path, anchor_content, insert_position, new_content)', or append new sections to the end with 'append_file(path, append_content)'. Before writing, inspect subagent investigation findings ('list_subagent_reports' / 'view_subagent_report'), active session history ('search_session_history'), and real source code."
 
-	reg := tools.NewRegistry()
-	reg.SetWorkspace(r.workspace)
-	reg.SetSessionFile(r.sessionFile)
+	reg := r.newRoleRegistry()
 
 	reg.Register(ollama.Tool{
 		Type: "function",
@@ -522,7 +513,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		return tools.ListSubagentReports(reg.GetWorkspace())
+		return tools.ListSubagentReports(reg.GetWorkspaceRoot(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -540,7 +531,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		rf, _ := args["report_filename"].(string)
-		return tools.ViewSubagentReport(reg.GetWorkspace(), rf)
+		return tools.ViewSubagentReport(reg.GetWorkspaceRoot(), rf, reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -560,9 +551,9 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		q, _ := args["query"].(string)
 		targetPath := reg.GetSessionFile()
 		if targetPath == "" {
-			targetPath = "./sessions"
+			targetPath = filepath.Join(reg.GetWorkspaceRoot(), "sessions")
 		}
-		matches, err := tools.SearchSessionLogs(targetPath, q)
+		matches, err := tools.SearchSessionLogs(targetPath, q, reg.GetWorkspaceRoot())
 		if err != nil {
 			return "", err
 		}
@@ -586,7 +577,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		dp, _ := args["dir_path"].(string)
-		return tools.ListDir(dp, reg.GetWorkspace())
+		return tools.ListDir(dp, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -608,7 +599,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		fp, _ := args["file_path"].(string)
 		start, _ := args["start_line"].(float64)
 		end, _ := args["end_line"].(float64)
-		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace())
+		return tools.ViewFile(fp, int(start), int(end), reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -628,7 +619,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 	}, func(args map[string]interface{}) (string, error) {
 		q, _ := args["query"].(string)
 		sp, _ := args["search_path"].(string)
-		return tools.GrepSearch(q, sp, reg.GetWorkspace())
+		return tools.GrepSearch(q, sp, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -650,7 +641,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		fp, _ := args["file_path"].(string)
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
-		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+		return tools.EditFile(fp, target, replacement, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -674,7 +665,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 		ac, _ := args["anchor_content"].(string)
 		pos, _ := args["insert_position"].(string)
 		nc, _ := args["new_content"].(string)
-		return tools.InsertContent(fp, ac, pos, nc, reg.GetWorkspace())
+		return tools.InsertContent(fp, ac, pos, nc, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -694,7 +685,7 @@ func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task stri
 	}, func(args map[string]interface{}) (string, error) {
 		fp, _ := args["file_path"].(string)
 		ac, _ := args["append_content"].(string)
-		return tools.AppendFile(fp, ac, reg.GetWorkspace())
+		return tools.AppendFile(fp, ac, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypeDocumenter), task, sysPrompt, reg)
@@ -708,9 +699,7 @@ func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task strin
 	subID := fmt.Sprintf("subagent_presenter_%s", time.Now().Format("20060102_150405"))
 	sysPrompt := "You are a specialized Presenter Subagent. Your goal is to generate interactive HTML presentation slides with modern CSS glassmorphism, animations, and query session logs for content."
 
-	reg := tools.NewRegistry()
-	reg.SetWorkspace(r.workspace)
-	reg.SetSessionFile(r.sessionFile)
+	reg := r.newRoleRegistry()
 
 	reg.Register(ollama.Tool{
 		Type: "function",
@@ -731,7 +720,7 @@ func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task strin
 		fp, _ := args["file_path"].(string)
 		target, _ := args["target_content"].(string)
 		replacement, _ := args["replacement_content"].(string)
-		return tools.EditFile(fp, target, replacement, reg.GetWorkspace())
+		return tools.EditFile(fp, target, replacement, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{
@@ -751,9 +740,9 @@ func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task strin
 		q, _ := args["query"].(string)
 		targetPath := reg.GetSessionFile()
 		if targetPath == "" {
-			targetPath = "./sessions"
+			targetPath = filepath.Join(reg.GetWorkspaceRoot(), "sessions")
 		}
-		matches, err := tools.SearchSessionLogs(targetPath, q)
+		matches, err := tools.SearchSessionLogs(targetPath, q, reg.GetWorkspaceRoot())
 		if err != nil {
 			return "", err
 		}

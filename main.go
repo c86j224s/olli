@@ -44,7 +44,13 @@ func main() {
 		}
 	}
 
-	sessMgr, err := session.NewManager("./sessions")
+	workspaceRoot, err := os.Getwd()
+	if err != nil {
+		fmt.Printf("%s[Error]%s Failed to resolve workspace root: %v\n", cli.ColorRed, cli.ColorReset, err)
+		os.Exit(1)
+	}
+
+	sessMgr, err := session.NewManager("./sessions", workspaceRoot)
 	if err != nil {
 		fmt.Printf("%s[Error]%s Failed to initialize session manager: %v\n", cli.ColorRed, cli.ColorReset, err)
 		os.Exit(1)

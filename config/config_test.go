@@ -24,6 +24,14 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	if !cfg.IsWhitelisted("calculator") {
 		t.Errorf("expected calculator to be whitelisted by default")
 	}
+	if cfg.DefaultMode != "ask" {
+		t.Fatalf("expected default mode ask, got %s", cfg.DefaultMode)
+	}
+	for _, highRisk := range []string{"run_terminal_command", "cd", "change_directory"} {
+		if cfg.IsWhitelisted(highRisk) {
+			t.Fatalf("expected high-risk tool %s not to be whitelisted by default", highRisk)
+		}
+	}
 
 	// Add new tool to whitelist
 	if err := cfg.AddWhitelist("run_terminal_command"); err != nil {
@@ -49,5 +57,21 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	}
 	if cfg.IsWhitelisted("run_terminal_command") {
 		t.Errorf("expected run_terminal_command to be removed from whitelist")
+	}
+}
+
+func TestConfigInvalidDefaultModeFallsBackToAsk(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"default_mode":"invalid","num_ctx":4096,"whitelist_tools":["calculator"]}`), 0600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if cfg.DefaultMode != "ask" {
+		t.Fatalf("expected invalid default mode to fall back to ask, got %s", cfg.DefaultMode)
 	}
 }

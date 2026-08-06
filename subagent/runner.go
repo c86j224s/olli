@@ -16,30 +16,49 @@ import (
 )
 
 type SubagentRunner struct {
-	client      *ollama.Client
-	model       string
-	cfg         *config.Config
-	outputDir   string
-	workspace   string
-	sessionFile string
-	callbacks   SubagentCallbacks
+	client        *ollama.Client
+	model         string
+	cfg           *config.Config
+	outputDir     string
+	workspace     string
+	workspaceRoot string
+	sessionFile   string
+	callbacks     SubagentCallbacks
 }
 
-func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string, sessionFile string, callbacks SubagentCallbacks) *SubagentRunner {
+func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string, sessionFile string, callbacks SubagentCallbacks, workspaceRootArg ...string) *SubagentRunner {
 	if workspace == "" {
 		workspace = "."
 	}
-	outDir := filepath.Join(workspace, "sessions", "subagents")
-	os.MkdirAll(outDir, 0755)
+	workspaceRoot := workspace
+	if len(workspaceRootArg) > 0 && strings.TrimSpace(workspaceRootArg[0]) != "" {
+		workspaceRoot = workspaceRootArg[0]
+	}
+
+	if safeRoot, err := tools.IsPathSafeFrom(".", workspaceRoot, workspaceRoot); err == nil {
+		workspaceRoot = safeRoot
+	}
+	if safeWorkspace, err := tools.IsPathSafeFrom(".", workspace, workspaceRoot); err == nil {
+		workspace = safeWorkspace
+	} else {
+		workspace = workspaceRoot
+	}
+	outDir, err := tools.IsPathSafeFrom(filepath.Join("sessions", "subagents"), workspace, workspaceRoot)
+	if err == nil {
+		_ = os.MkdirAll(outDir, 0755)
+	} else {
+		outDir = ""
+	}
 
 	return &SubagentRunner{
-		client:      client,
-		model:       model,
-		cfg:         cfg,
-		outputDir:   outDir,
-		workspace:   workspace,
-		sessionFile: sessionFile,
-		callbacks:   callbacks,
+		client:        client,
+		model:         model,
+		cfg:           cfg,
+		outputDir:     outDir,
+		workspace:     workspace,
+		workspaceRoot: workspaceRoot,
+		sessionFile:   sessionFile,
+		callbacks:     callbacks,
 	}
 }
 
@@ -47,11 +66,26 @@ func (r *SubagentRunner) GetSessionFile() string {
 	return r.sessionFile
 }
 
+func (r *SubagentRunner) GetWorkspaceRoot() string {
+	return r.workspaceRoot
+}
+
+func (r *SubagentRunner) newRoleRegistry() *tools.Registry {
+	reg := tools.NewEmptyRegistry()
+	reg.SetWorkspaceRoot(r.workspaceRoot)
+	reg.SetWorkspace(r.workspace)
+	reg.SetSessionFile(r.sessionFile)
+	return reg
+}
+
 func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task string, sysPrompt string, reg *tools.Registry) (*ResultReport, error) {
 	return r.executeSubagentLoopWithContext(context.Background(), subID, subType, task, sysPrompt, reg)
 }
 
 func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, subID string, subType string, task string, sysPrompt string, reg *tools.Registry) (*ResultReport, error) {
+	if r.outputDir == "" {
+		return nil, fmt.Errorf("subagent output directory is not safely contained within the workspace root")
+	}
 	jsonlPath := filepath.Join(r.outputDir, subID+".jsonl")
 	jsonlFile, err := os.OpenFile(jsonlPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {

@@ -18,24 +18,30 @@ import (
 type ToolHandler func(args map[string]interface{}) (string, error)
 
 type Registry struct {
-	definitions []ollama.Tool
-	handlers    map[string]ToolHandler
-	workspace   string
-	sessionFile string
+	definitions   []ollama.Tool
+	handlers      map[string]ToolHandler
+	workspace     string
+	workspaceRoot string
+	sessionFile   string
 }
 
 func NewRegistry() *Registry {
+	r := NewEmptyRegistry()
+	r.registerDefaultTools()
+	return r
+}
+
+func NewEmptyRegistry() *Registry {
 	wd, err := os.Getwd()
 	if err != nil {
 		wd = "."
 	}
-	r := &Registry{
-		definitions: make([]ollama.Tool, 0),
-		handlers:    make(map[string]ToolHandler),
-		workspace:   wd,
+	return &Registry{
+		definitions:   make([]ollama.Tool, 0),
+		handlers:      make(map[string]ToolHandler),
+		workspace:     wd,
+		workspaceRoot: wd,
 	}
-	r.registerDefaultTools()
-	return r
 }
 
 func (r *Registry) SetWorkspace(ws string) {
@@ -46,6 +52,19 @@ func (r *Registry) SetWorkspace(ws string) {
 
 func (r *Registry) GetWorkspace() string {
 	return r.workspace
+}
+
+func (r *Registry) SetWorkspaceRoot(root string) {
+	if root != "" {
+		r.workspaceRoot = root
+	}
+}
+
+func (r *Registry) GetWorkspaceRoot() string {
+	if r.workspaceRoot == "" {
+		return r.workspace
+	}
+	return r.workspaceRoot
 }
 
 func (r *Registry) SetSessionFile(sf string) {
@@ -67,6 +86,10 @@ func (r *Registry) ResolvePath(targetPath string) string {
 		return trimmed
 	}
 	return filepath.Join(r.workspace, trimmed)
+}
+
+func (r *Registry) ResolvePathSafe(targetPath string) (string, error) {
+	return IsPathSafeFrom(targetPath, r.workspace, r.GetWorkspaceRoot())
 }
 
 func (r *Registry) Register(tool ollama.Tool, handler ToolHandler) {
@@ -178,7 +201,7 @@ func (r *Registry) registerDefaultTools() {
 			return "", fmt.Errorf("invalid command argument")
 		}
 
-		output, newWs, err := ExecuteCommandWithWorkspace(context.Background(), cmdStr, r.workspace)
+		output, newWs, err := ExecuteCommandWithWorkspace(context.Background(), cmdStr, r.workspace, r.GetWorkspaceRoot())
 		if newWs != r.workspace {
 			r.workspace = newWs
 		}
@@ -210,10 +233,10 @@ func (r *Registry) registerDefaultTools() {
 
 		targetFile := r.sessionFile
 		if targetFile == "" {
-			targetFile = "./sessions"
+			targetFile = filepath.Join(r.GetWorkspaceRoot(), "sessions")
 		}
 
-		matches, err := SearchSessionLogs(targetFile, query)
+		matches, err := SearchSessionLogs(targetFile, query, r.GetWorkspaceRoot())
 		if err != nil {
 			return "", err
 		}
@@ -278,20 +301,47 @@ func evalMathExpr(expr string) (string, error) {
 }
 
 // SearchSessionLogs searches either a single .jsonl session file or entire sessions directory
-func SearchSessionLogs(targetPath string, query string) ([]string, error) {
+func SearchSessionLogs(targetPath string, query string, allowedRootDir ...string) ([]string, error) {
 	if targetPath == "" {
-		targetPath = "./sessions"
+		return nil, fmt.Errorf("session log target path required")
 	}
 
-	info, err := os.Stat(targetPath)
+	root := workspaceRootFor(filepath.Dir(targetPath), allowedRootDir...)
+	safeTarget, err := IsPathSafeFrom(targetPath, root, root)
+	if err != nil {
+		return nil, fmt.Errorf("security block: session log path rejected: %w", err)
+	}
+
+	lstat, err := os.Lstat(safeTarget)
 	if os.IsNotExist(err) {
 		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to inspect session log target: %w", err)
+	}
+	if lstat.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("security block: session log target symlink is not allowed")
+	}
+
+	info, err := os.Stat(safeTarget)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to stat session log target: %w", err)
 	}
 
 	queryLower := strings.ToLower(query)
 	var results []string
 
 	searchFile := func(filePath string) {
+		if _, err := IsPathSafeFrom(filePath, root, root); err != nil {
+			return
+		}
+		lstat, err := os.Lstat(filePath)
+		if err != nil || lstat.Mode()&os.ModeSymlink != 0 {
+			return
+		}
 		file, err := os.Open(filePath)
 		if err != nil {
 			return
@@ -318,15 +368,15 @@ func SearchSessionLogs(targetPath string, query string) ([]string, error) {
 	}
 
 	if !info.IsDir() {
-		searchFile(targetPath)
+		searchFile(safeTarget)
 		return results, nil
 	}
 
-	_ = filepath.Walk(targetPath, func(path string, info os.FileInfo, err error) error {
+	_ = filepath.Walk(safeTarget, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() || !strings.HasSuffix(path, ".jsonl") {
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !strings.HasSuffix(path, ".jsonl") {
 			return nil
 		}
 		searchFile(path)
@@ -340,10 +390,18 @@ func SearchSessionLogs(targetPath string, query string) ([]string, error) {
 }
 
 // ListSubagentReports lists all past subagent research, code analysis, testing, or review logs saved in workspace
-func ListSubagentReports(workspace string) (string, error) {
-	subDir := filepath.Join(workspace, "sessions", "subagents")
-	if _, err := os.Stat(subDir); os.IsNotExist(err) {
+func ListSubagentReports(workspace string, allowedRootDir ...string) (string, error) {
+	root := workspaceRootFor(workspace, allowedRootDir...)
+	subDir, err := IsPathSafeFrom(filepath.Join("sessions", "subagents"), workspace, root)
+	if err != nil {
+		return "", fmt.Errorf("security block: subagent report directory rejected: %w", err)
+	}
+	if lstat, err := os.Lstat(subDir); os.IsNotExist(err) {
 		return "No subagent investigation reports found in sessions/subagents.", nil
+	} else if err != nil {
+		return "", fmt.Errorf("failed to inspect subagent logs directory: %w", err)
+	} else if lstat.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("security block: subagent logs directory symlink is not allowed")
 	}
 
 	entries, err := os.ReadDir(subDir)
@@ -353,6 +411,9 @@ func ListSubagentReports(workspace string) (string, error) {
 
 	var reports []string
 	for _, entry := range entries {
+		if entry.Type()&os.ModeSymlink != 0 {
+			continue
+		}
 		if !entry.IsDir() && strings.HasSuffix(entry.Name(), ".jsonl") {
 			reports = append(reports, fmt.Sprintf("  • %s", entry.Name()))
 		}
@@ -366,7 +427,7 @@ func ListSubagentReports(workspace string) (string, error) {
 }
 
 // ViewSubagentReport reads and summarizes a specific subagent report JSONL log
-func ViewSubagentReport(workspace string, reportFilename string) (string, error) {
+func ViewSubagentReport(workspace string, reportFilename string, allowedRootDir ...string) (string, error) {
 	reportFilename = strings.TrimSpace(reportFilename)
 	if reportFilename == "" {
 		return "", fmt.Errorf("report filename required")
@@ -376,8 +437,20 @@ func ViewSubagentReport(workspace string, reportFilename string) (string, error)
 		reportFilename += ".jsonl"
 	}
 
-	subDir := filepath.Join(workspace, "sessions", "subagents")
-	targetPath := filepath.Join(subDir, filepath.Base(reportFilename))
+	root := workspaceRootFor(workspace, allowedRootDir...)
+	subDir, err := IsPathSafeFrom(filepath.Join("sessions", "subagents"), workspace, root)
+	if err != nil {
+		return "", fmt.Errorf("security block: subagent report directory rejected: %w", err)
+	}
+	targetPath, err := IsPathSafeFrom(filepath.Base(reportFilename), subDir, root)
+	if err != nil {
+		return "", fmt.Errorf("security block: subagent report path rejected: %w", err)
+	}
+	if lstat, err := os.Lstat(targetPath); err != nil {
+		return "", fmt.Errorf("failed to inspect subagent report '%s': %w", targetPath, err)
+	} else if lstat.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("security block: subagent report symlink is not allowed")
+	}
 
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
