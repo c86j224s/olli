@@ -7,7 +7,7 @@
     "get_system_info",
     "get_agent_status",
     "search_session_history",
-    "run_terminal_command",
+    "execute_action",
     "cd",
     "change_directory",
     "view_file",

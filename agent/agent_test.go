@@ -31,8 +31,8 @@ func TestApprovedToolStillBlocksDangerousCommands(t *testing.T) {
 	cfgPath := filepath.Join(tempDir, "config.json")
 	cfg, _ := config.LoadConfig(cfgPath)
 
-	// Whitelist run_terminal_command explicitly
-	cfg.AddWhitelist("run_terminal_command")
+	// Whitelist execute_action explicitly
+	cfg.AddWhitelist("execute_action")
 
 	sessMgr, _ := session.NewManager(tempDir)
 	client := ollama.NewClient("http://localhost:11434")
@@ -43,21 +43,23 @@ func TestApprovedToolStillBlocksDangerousCommands(t *testing.T) {
 
 	reg := ag.GetRegistry()
 
-	// Use the temporary workspace as the target so a future regression cannot
-	// accidentally delete the user's home directory while proving the guard path.
-	dangerousCommands := []string{
-		`rm -rf "$PWD"`,
-		`echo ok | rm -rf "$PWD"`,
+	// Unapproved action or malicious target must be blocked
+	unapprovedActions := []string{
+		"unapproved_action",
+		"rm",
 	}
 
-	for _, command := range dangerousCommands {
-		_, execErr := reg.Execute("run_terminal_command", map[string]interface{}{"command": command})
+	for _, action := range unapprovedActions {
+		_, execErr := reg.Execute("execute_action", map[string]interface{}{"action": action})
 		if execErr == nil {
-			t.Fatalf("expected dangerous command %q to be BLOCKED by security guard, but it executed", command)
+			t.Fatalf("expected unapproved action %q to be BLOCKED, but it executed", action)
 		}
-		if !strings.Contains(execErr.Error(), "SECURITY BLOCK") {
-			t.Fatalf("expected security block for %q, got: %v", command, execErr)
-		}
+	}
+
+	// Shell metacharacters in target must be blocked
+	_, execErr := reg.Execute("execute_action", map[string]interface{}{"action": "go_test", "target": "pkg; rm -rf ." })
+	if execErr == nil || !strings.Contains(execErr.Error(), "security block") {
+		t.Fatalf("expected security block for shell metacharacters in target, got: %v", execErr)
 	}
 }
 
@@ -91,16 +93,16 @@ func TestSensitiveToolsRequirePermissionEvenWhenWhitelisted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load config: %v", err)
 	}
-	if err := cfg.AddWhitelist("run_terminal_command"); err != nil {
-		t.Fatalf("failed to whitelist terminal: %v", err)
+	if err := cfg.AddWhitelist("execute_action"); err != nil {
+		t.Fatalf("failed to whitelist action execution: %v", err)
 	}
 
 	client := ollama.NewClient("http://localhost:11434")
 	ag := agent.New(client, "qwen3.5:0.8b", "Test prompt", nil, cfg)
 	ag.SetToolMode(agent.ModeAuto)
 
-	if !ag.ShouldRequirePermission("run_terminal_command") {
-		t.Fatal("expected terminal tool to require permission even in auto mode")
+	if !ag.ShouldRequirePermission("execute_action") {
+		t.Fatal("expected execute_action to require permission even in auto mode")
 	}
 	if !ag.ShouldRequirePermission("delegate_coder") {
 		t.Fatal("expected mutation-capable delegate to require permission")

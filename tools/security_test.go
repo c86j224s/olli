@@ -230,6 +230,65 @@ func TestExecuteCommandWithWorkspaceBlocksUnsafeCommands(t *testing.T) {
 	}
 }
 
+func TestExecuteActionWithWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+
+	// 1. Test help action
+	helpAll, err := ExecuteActionWithWorkspace(context.Background(), "help", "", 0, 0, workspace, workspace)
+	if err != nil || !strings.Contains(helpAll, "Available Pre-Approved Actions") {
+		t.Fatalf("help action failed: %v, output: %s", err, helpAll)
+	}
+
+	helpCat, err := ExecuteActionWithWorkspace(context.Background(), "help", "cat", 0, 0, workspace, workspace)
+	if err != nil || !strings.Contains(helpCat, "Action: cat") {
+		t.Fatalf("help cat action failed: %v, output: %s", err, helpCat)
+	}
+
+	// 2. Test cat action with line slicing
+	testFile := filepath.Join(workspace, "sample.txt")
+	content := "line 1\nline 2\nline 3\nline 4\nline 5\n"
+	if err := os.WriteFile(testFile, []byte(content), 0600); err != nil {
+		t.Fatalf("failed to write test file: %v", err)
+	}
+
+	catOutput, err := ExecuteActionWithWorkspace(context.Background(), "cat", "sample.txt", 2, 4, workspace, workspace)
+	if err != nil {
+		t.Fatalf("cat action failed: %v", err)
+	}
+	if !strings.Contains(catOutput, "line 2") || !strings.Contains(catOutput, "line 4") || strings.Contains(catOutput, "line 1") {
+		t.Fatalf("unexpected cat line slicing output: %s", catOutput)
+	}
+
+	// 3. Test ls and pwd actions
+	lsOutput, err := ExecuteActionWithWorkspace(context.Background(), "ls", "", 0, 0, workspace, workspace)
+	if err != nil || !strings.Contains(lsOutput, "sample.txt") {
+		t.Fatalf("ls action failed: %v, output: %s", err, lsOutput)
+	}
+
+	pwdOutput, err := ExecuteActionWithWorkspace(context.Background(), "pwd", "", 0, 0, workspace, workspace)
+	if err != nil || !strings.Contains(pwdOutput, "Current Workspace") {
+		t.Fatalf("pwd action failed: %v, output: %s", err, pwdOutput)
+	}
+
+	// 4. Test grep action
+	grepOutput, err := ExecuteActionWithWorkspace(context.Background(), "grep", "line 3", 0, 0, workspace, workspace)
+	if err != nil || !strings.Contains(grepOutput, "line 3") {
+		t.Fatalf("grep action failed: %v, output: %s", err, grepOutput)
+	}
+
+	// 5. Test unapproved action rejection
+	_, err = ExecuteActionWithWorkspace(context.Background(), "unapproved", "", 0, 0, workspace, workspace)
+	if err == nil {
+		t.Fatal("expected unapproved action to fail")
+	}
+
+	// 6. Test shell metacharacters rejection in target
+	_, err = ExecuteActionWithWorkspace(context.Background(), "go_test", "./...; rm -rf .", 0, 0, workspace, workspace)
+	if err == nil || !strings.Contains(err.Error(), "security block") {
+		t.Fatalf("expected target metacharacter injection to be blocked, got: %v", err)
+	}
+}
+
 func TestSandboxEnvDropsCommandHelperVariables(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("PATH", filepath.Join(root, "badbin"))

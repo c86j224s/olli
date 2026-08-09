@@ -27,19 +27,19 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	if cfg.DefaultMode != "ask" {
 		t.Fatalf("expected default mode ask, got %s", cfg.DefaultMode)
 	}
-	for _, highRisk := range []string{"run_terminal_command", "cd", "change_directory"} {
+	for _, highRisk := range []string{"execute_action", "cd", "change_directory"} {
 		if cfg.IsWhitelisted(highRisk) {
 			t.Fatalf("expected high-risk tool %s not to be whitelisted by default", highRisk)
 		}
 	}
 
 	// Add new tool to whitelist
-	if err := cfg.AddWhitelist("run_terminal_command"); err != nil {
+	if err := cfg.AddWhitelist("execute_action"); err != nil {
 		t.Fatalf("failed to add whitelist: %v", err)
 	}
 
-	if !cfg.IsWhitelisted("run_terminal_command") {
-		t.Errorf("expected run_terminal_command to be whitelisted after add")
+	if !cfg.IsWhitelisted("execute_action") {
+		t.Errorf("expected execute_action to be whitelisted after add")
 	}
 
 	// Reload config from file to test persistence
@@ -47,16 +47,16 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to reload config: %v", err)
 	}
-	if !reloaded.IsWhitelisted("run_terminal_command") {
-		t.Errorf("expected reloaded config to retain run_terminal_command in whitelist")
+	if !reloaded.IsWhitelisted("execute_action") {
+		t.Errorf("expected reloaded config to retain execute_action in whitelist")
 	}
 
 	// Remove tool from whitelist
-	if err := cfg.RemoveWhitelist("run_terminal_command"); err != nil {
+	if err := cfg.RemoveWhitelist("execute_action"); err != nil {
 		t.Fatalf("failed to remove whitelist: %v", err)
 	}
-	if cfg.IsWhitelisted("run_terminal_command") {
-		t.Errorf("expected run_terminal_command to be removed from whitelist")
+	if cfg.IsWhitelisted("execute_action") {
+		t.Errorf("expected execute_action to be removed from whitelist")
 	}
 }
 

@@ -332,26 +332,26 @@ func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) 
 	reg.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
-			Name:        "run_terminal_command",
-			Description: "Execute test or build terminal commands safely within workspace (e.g. 'go test ./...'). Supports 'cd <dir>' to switch working directory.",
+			Name:        "execute_action",
+			Description: "Execute a pre-approved project action (cat, ls, pwd, grep, go_test, go_vet, go_build, git_status, git_diff, git_log) or view action help.",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"command": {Type: "string", Description: "Full command string to execute (e.g. 'go test ./...' or 'cd ~/llm-pg')"},
+					"action":     {Type: "string", Description: "Pre-approved action: 'help', 'cat', 'ls', 'pwd', 'grep', 'go_test', 'go_vet', 'go_build', 'git_status', 'git_diff', 'git_log'"},
+					"target":     {Type: "string", Description: "Optional target path, package, keyword, or action name for help"},
+					"start_line": {Type: "integer", Description: "Optional start line for cat"},
+					"end_line":   {Type: "integer", Description: "Optional end line for cat"},
 				},
-				Required: []string{"command"},
+				Required: []string{"action"},
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		cmdStr := tools.ParseCommandArgs(args)
-		if cmdStr == "" {
-			return "", fmt.Errorf("missing or empty 'command' argument")
-		}
-		output, newWs, err := tools.ExecuteCommandWithWorkspace(ctx, cmdStr, reg.GetWorkspace(), reg.GetWorkspaceRoot())
-		if newWs != reg.GetWorkspace() {
-			reg.SetWorkspace(newWs)
-		}
-		return output, err
+		action, _ := args["action"].(string)
+		target, _ := args["target"].(string)
+		startLine := tools.ParseOptionalInt(args, "start_line")
+		endLine := tools.ParseOptionalInt(args, "end_line")
+
+		return tools.ExecuteActionWithWorkspace(ctx, action, target, startLine, endLine, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
 
 	reg.Register(ollama.Tool{

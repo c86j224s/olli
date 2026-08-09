@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -237,7 +238,318 @@ func ListDir(dirPath string, workspace string, allowedRootDir ...string) (string
 	return fmt.Sprintf("Directory Contents of '%s' (%d items):\n%s", safePath, len(results), strings.Join(results, "\n")), nil
 }
 
-// ExecuteCommandWithWorkspace executes terminal commands safely within the target workspace directory
+// ParseOptionalInt parses optional integer argument from tool args map
+func ParseOptionalInt(args map[string]interface{}, key string) int {
+	val, ok := args[key]
+	if !ok || val == nil {
+		return 0
+	}
+	switch v := val.(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case string:
+		n, _ := strconv.Atoi(v)
+		return n
+	default:
+		return 0
+	}
+}
+
+// ExecuteActionWithWorkspace executes pre-approved project actions safely within the target workspace
+func ExecuteActionWithWorkspace(ctx context.Context, action string, target string, startLine int, endLine int, workspace string, allowedRootDir ...string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	root := workspaceRootFor(workspace, allowedRootDir...)
+	safeRoot, err := IsPathSafeFrom(".", root, root)
+	if err != nil {
+		return "", fmt.Errorf("security block: workspace root '%s' is not safe: %w", root, err)
+	}
+
+	safeWorkspace, err := IsPathSafeFrom(".", workspace, safeRoot)
+	if err != nil {
+		return "", fmt.Errorf("security block: workspace directory '%s' is outside allowed root: %w", workspace, err)
+	}
+
+	action = strings.ToLower(strings.TrimSpace(action))
+	target = strings.TrimSpace(target)
+
+	switch action {
+	case "help":
+		return handleActionHelp(target)
+
+	case "cat":
+		if target == "" {
+			return "", fmt.Errorf("cat action requires target file path")
+		}
+		return ViewFile(target, startLine, endLine, safeWorkspace, safeRoot)
+
+	case "ls":
+		targetDir := target
+		if targetDir == "" {
+			targetDir = "."
+		}
+		safeDir, err := IsPathSafeFrom(targetDir, safeWorkspace, safeRoot)
+		if err != nil {
+			return "", fmt.Errorf("security block: ls target directory rejected: %w", err)
+		}
+		entries, err := os.ReadDir(safeDir)
+		if err != nil {
+			return "", fmt.Errorf("failed to list directory '%s': %w", safeDir, err)
+		}
+		relDir, _ := filepath.Rel(safeRoot, safeDir)
+		if relDir == "." {
+			relDir = "workspace root"
+		}
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Directory contents of '%s':\n", relDir))
+		for _, entry := range entries {
+			if entry.Type()&os.ModeSymlink != 0 {
+				sb.WriteString(fmt.Sprintf("  [LINK] %s (symlink)\n", entry.Name()))
+				continue
+			}
+			if entry.IsDir() {
+				sb.WriteString(fmt.Sprintf("  [DIR]  %s/\n", entry.Name()))
+			} else {
+				info, err := entry.Info()
+				if err == nil {
+					sb.WriteString(fmt.Sprintf("  [FILE] %s (%d bytes)\n", entry.Name(), info.Size()))
+				} else {
+					sb.WriteString(fmt.Sprintf("  [FILE] %s\n", entry.Name()))
+				}
+			}
+		}
+		return sb.String(), nil
+
+	case "pwd":
+		rel, err := filepath.Rel(safeRoot, safeWorkspace)
+		if err != nil || rel == "." {
+			return fmt.Sprintf("Current Workspace: %s (workspace root)", safeWorkspace), nil
+		}
+		return fmt.Sprintf("Current Workspace: %s (relative to root: %s)", safeWorkspace, rel), nil
+
+	case "grep":
+		if target == "" {
+			return "", fmt.Errorf("grep action requires search keyword target")
+		}
+		return handleActionGrep(ctx, target, safeWorkspace, safeRoot)
+
+	case "go_test":
+		targetPkg := target
+		if targetPkg == "" {
+			targetPkg = "./..."
+		}
+		if err := validateSafeExecArg(targetPkg); err != nil {
+			return "", fmt.Errorf("security block: go_test target rejected: %w", err)
+		}
+		return runApprovedProcess(ctx, []string{"go", "test", targetPkg}, safeWorkspace, safeRoot)
+
+	case "go_vet":
+		targetPkg := target
+		if targetPkg == "" {
+			targetPkg = "./..."
+		}
+		if err := validateSafeExecArg(targetPkg); err != nil {
+			return "", fmt.Errorf("security block: go_vet target rejected: %w", err)
+		}
+		return runApprovedProcess(ctx, []string{"go", "vet", targetPkg}, safeWorkspace, safeRoot)
+
+	case "go_build":
+		targetPkg := target
+		if targetPkg == "" {
+			targetPkg = "."
+		}
+		if err := validateSafeExecArg(targetPkg); err != nil {
+			return "", fmt.Errorf("security block: go_build target rejected: %w", err)
+		}
+		outBin := filepath.Join("bin", "app")
+		return runApprovedProcess(ctx, []string{"go", "build", "-o", outBin, targetPkg}, safeWorkspace, safeRoot)
+
+	case "git_status":
+		return runApprovedProcess(ctx, []string{"git", "status", "--short"}, safeWorkspace, safeRoot)
+
+	case "git_diff":
+		args := []string{"git", "diff", "--check"}
+		if target != "" {
+			if err := validateSafeExecArg(target); err != nil {
+				return "", fmt.Errorf("security block: git_diff target rejected: %w", err)
+			}
+			args = append(args, target)
+		}
+		return runApprovedProcess(ctx, args, safeWorkspace, safeRoot)
+
+	case "git_log":
+		return runApprovedProcess(ctx, []string{"git", "log", "-n", "10"}, safeWorkspace, safeRoot)
+
+	default:
+		return "", fmt.Errorf("unapproved action '%s'. Use action='help' to list allowed actions", action)
+	}
+}
+
+func validateSafeExecArg(arg string) error {
+	if strings.ContainsAny(arg, ";&|><$`\r\n\t") {
+		return fmt.Errorf("argument contains forbidden shell characters")
+	}
+	if strings.HasPrefix(arg, "-") && arg != "./..." {
+		return fmt.Errorf("flag arguments are not allowed in target parameter")
+	}
+	return nil
+}
+
+func runApprovedProcess(ctx context.Context, fields []string, safeWorkspace string, safeRoot string) (string, error) {
+	if err := validateAllowedCommand(fields, safeWorkspace, safeRoot); err != nil {
+		return "", err
+	}
+	env, err := sandboxEnv(safeRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to prepare sandbox environment: %w", err)
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
+	defer cancel()
+
+	cmd, err := buildSandboxedCommand(execCtx, fields, safeWorkspace, safeRoot)
+	if err != nil {
+		return "", err
+	}
+	cmd.Env = env
+
+	outBytes, err := cmd.CombinedOutput()
+	output := string(outBytes)
+
+	if execCtx.Err() == context.DeadlineExceeded {
+		return output + "\n[Timeout Error] Action timed out after 35 seconds.", fmt.Errorf("action execution timed out after 35s")
+	}
+	if err != nil {
+		return output, fmt.Errorf("action exited with error: %w", err)
+	}
+	if output == "" {
+		output = "[Action executed successfully with no output]"
+	}
+	return output, nil
+}
+
+func handleActionHelp(targetAction string) (string, error) {
+	targetAction = strings.ToLower(strings.TrimSpace(targetAction))
+	switch targetAction {
+	case "cat":
+		return "Action: cat\nDescription: Read file contents line-by-line.\nParameters:\n  - target: File path (required)\n  - start_line: 1-based start line (optional)\n  - end_line: 1-based end line (optional)\nExample: action='cat', target='main.go', start_line=1, end_line=30", nil
+	case "ls":
+		return "Action: ls\nDescription: List directory entries safely.\nParameters:\n  - target: Directory path (optional, default '.')\nExample: action='ls', target='tools'", nil
+	case "pwd":
+		return "Action: pwd\nDescription: Display current workspace directory path.\nParameters: None", nil
+	case "grep":
+		return "Action: grep\nDescription: Search text keyword across files in workspace.\nParameters:\n  - target: Keyword or search pattern (required)\nExample: action='grep', target='ExecuteAction'", nil
+	case "go_test":
+		return "Action: go_test\nDescription: Execute Go unit tests in workspace.\nParameters:\n  - target: Package path (optional, default './...')\nExample: action='go_test', target='./tools'", nil
+	case "go_vet":
+		return "Action: go_vet\nDescription: Execute Go vet static analysis.\nParameters:\n  - target: Package path (optional, default './...')\nExample: action='go_vet'", nil
+	case "go_build":
+		return "Action: go_build\nDescription: Safely build Go binary into repo-local 'bin/'.\nParameters:\n  - target: Package or entry file (optional, default '.')\nExample: action='go_build'", nil
+	case "git_status":
+		return "Action: git_status\nDescription: Show git status summary (--short).\nParameters: None", nil
+	case "git_diff":
+		return "Action: git_diff\nDescription: Show uncommitted git diffs (--check).\nParameters:\n  - target: Optional file path", nil
+	case "git_log":
+		return "Action: git_log\nDescription: Show recent 10 git commit logs.\nParameters: None", nil
+	case "help", "":
+		return `Available Pre-Approved Actions:
+  - help       : Show action usage instructions (target: optional action name)
+  - cat        : View file content line-by-line (target: file path, start_line, end_line)
+  - ls         : List directory files (target: optional dir path)
+  - pwd        : Show workspace directory
+  - grep       : Search text keyword in workspace files (target: keyword)
+  - go_test    : Run Go unit tests (target: optional package path, default './...')
+  - go_vet     : Run Go vet static analysis (target: optional package path, default './...')
+  - go_build   : Build binary to bin/ directory (target: optional entry file)
+  - git_status : Show git status summary
+  - git_diff   : Show uncommitted git diffs
+  - git_log    : Show recent 10 git commits
+
+Pass target='<action_name>' with action='help' for detailed instructions.`, nil
+	default:
+		return "", fmt.Errorf("unknown action '%s' for help query", targetAction)
+	}
+}
+
+func handleActionGrep(ctx context.Context, keyword string, safeWorkspace string, safeRoot string) (string, error) {
+	if err := validateSafeExecArg(keyword); err != nil {
+		return "", fmt.Errorf("security block: grep keyword rejected: %w", err)
+	}
+	out, err := runApprovedProcess(ctx, []string{"rg", "-n", "--color=never", keyword, "."}, safeWorkspace, safeRoot)
+	if err == nil {
+		return out, nil
+	}
+	return searchFilesLineByLine(keyword, safeWorkspace, safeRoot)
+}
+
+func searchFilesLineByLine(keyword string, workspace string, root string) (string, error) {
+	kwLower := strings.ToLower(keyword)
+	var matches []string
+	maxMatches := 100
+
+	err := filepath.Walk(workspace, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			base := info.Name()
+			if base == ".git" || base == "bin" || base == "vendor" || base == ".olli_sandbox" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil
+		}
+		if info.Size() > 1024*1024 {
+			return nil
+		}
+		safePath, err := IsPathSafeFrom(path, workspace, root)
+		if err != nil {
+			return nil
+		}
+
+		file, err := os.Open(safePath)
+		if err != nil {
+			return nil
+		}
+		defer file.Close()
+
+		scanner := bufio.NewScanner(file)
+		lineNo := 0
+		for scanner.Scan() {
+			lineNo++
+			text := scanner.Text()
+			if strings.Contains(strings.ToLower(text), kwLower) {
+				relPath, _ := filepath.Rel(workspace, safePath)
+				trunc := text
+				if len(trunc) > 200 {
+					trunc = trunc[:200] + "... [truncated]"
+				}
+				matches = append(matches, fmt.Sprintf("%s:%d: %s", relPath, lineNo, trunc))
+				if len(matches) >= maxMatches {
+					return fmt.Errorf("max matches reached")
+				}
+			}
+		}
+		return nil
+	})
+
+	if err != nil && err.Error() != "max matches reached" {
+		return "", fmt.Errorf("grep search failed: %w", err)
+	}
+
+	if len(matches) == 0 {
+		return fmt.Sprintf("No matches found for keyword '%s'", keyword), nil
+	}
+	return fmt.Sprintf("Found %d matches for '%s':\n%s", len(matches), keyword, strings.Join(matches, "\n")), nil
+}
+
+// ExecuteCommandWithWorkspace executes terminal commands safely by routing them to ExecuteActionWithWorkspace
 func ExecuteCommandWithWorkspace(ctx context.Context, cmdStr string, workspace string, allowedRootDir ...string) (string, string, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -278,41 +590,74 @@ func ExecuteCommandWithWorkspace(ctx context.Context, cmdStr string, workspace s
 		return executeSafeCD(fields, safeWorkspace, root, workspace)
 	}
 
-	if err := validateAllowedCommand(fields, safeWorkspace, safeRoot); err != nil {
-		return "", workspace, err
+	// Route to ExecuteActionWithWorkspace based on fields
+	var action string
+	var target string
+	if len(fields) > 1 {
+		target = fields[1]
 	}
 
-	env, err := sandboxEnv(safeRoot)
-	if err != nil {
-		return "", workspace, fmt.Errorf("failed to prepare sandbox environment: %w", err)
+	switch fields[0] {
+	case "ls":
+		action = "ls"
+	case "cat":
+		action = "cat"
+	case "pwd":
+		action = "pwd"
+	case "grep", "rg":
+		action = "grep"
+	case "go":
+		if len(fields) >= 2 {
+			switch fields[1] {
+			case "test":
+				action = "go_test"
+				target = ""
+				if len(fields) > 2 {
+					target = fields[2]
+				}
+			case "vet":
+				action = "go_vet"
+				target = ""
+				if len(fields) > 2 {
+					target = fields[2]
+				}
+			case "build":
+				action = "go_build"
+				target = ""
+				if len(fields) > 2 {
+					target = fields[2]
+				}
+			case "env":
+				// Support go env for security testing (e.g. go env GOCACHE)
+				out, err := runApprovedProcess(ctx, fields, safeWorkspace, safeRoot)
+				return out, workspace, err
+			}
+		}
+	case "git":
+		if len(fields) >= 2 {
+			switch fields[1] {
+			case "status":
+				action = "git_status"
+				target = ""
+			case "diff":
+				action = "git_diff"
+				target = ""
+				if len(fields) > 2 {
+					target = fields[2]
+				}
+			case "log":
+				action = "git_log"
+				target = ""
+			}
+		}
 	}
 
-	// 35-second execution timeout guard to prevent terminal hangs
-	execCtx, cancel := context.WithTimeout(ctx, 35*time.Second)
-	defer cancel()
-
-	cmd, err := buildSandboxedCommand(execCtx, fields, safeWorkspace, safeRoot)
-	if err != nil {
-		return "", workspace, err
-	}
-	cmd.Env = env
-
-	outBytes, err := cmd.CombinedOutput()
-	output := string(outBytes)
-
-	if execCtx.Err() == context.DeadlineExceeded {
-		return output + "\n[Timeout Error] Terminal command timed out after 35 seconds.", workspace, fmt.Errorf("command execution timed out after 35s")
+	if action == "" {
+		return "", workspace, fmt.Errorf("SECURITY BLOCK: raw terminal command '%s' is forbidden. Use 'execute_action'", fields[0])
 	}
 
-	if err != nil {
-		return output, workspace, fmt.Errorf("command exited with error: %w", err)
-	}
-
-	if output == "" {
-		output = "[Command executed successfully with no output]"
-	}
-
-	return output, workspace, nil
+	out, err := ExecuteActionWithWorkspace(ctx, action, target, 0, 0, safeWorkspace, safeRoot)
+	return out, workspace, err
 }
 
 func buildSandboxedCommand(ctx context.Context, fields []string, workspace string, root string) (*exec.Cmd, error) {

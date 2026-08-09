@@ -309,7 +309,7 @@ func normalizeToolMode(mode string) ToolMode {
 
 func isSensitiveTool(toolName string) bool {
 	switch toolName {
-	case "run_terminal_command", "cd", "change_directory",
+	case "execute_action", "cd", "change_directory",
 		"delegate_coder", "delegate_tester", "delegate_documenter", "delegate_presenter":
 		return true
 	default:

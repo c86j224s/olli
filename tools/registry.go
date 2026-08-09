@@ -178,34 +178,42 @@ func (r *Registry) registerDefaultTools() {
 		return string(b), nil
 	})
 
-	// Tool 4: run_terminal_command (using ExecuteCommandWithWorkspace)
+	// Tool 4: execute_action (using ExecuteActionWithWorkspace)
 	r.Register(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
-			Name:        "run_terminal_command",
-			Description: "Run safe CLI terminal commands like 'ls', 'pwd', 'go test', 'cd <dir>'",
+			Name:        "execute_action",
+			Description: "Execute a pre-approved project action (cat, ls, pwd, grep, go_test, go_vet, go_build, git_status, git_diff, git_log) or view action help. Raw terminal strings and shell pipelines are blocked.",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
-					"command": {
+					"action": {
 						Type:        "string",
-						Description: "Terminal command string to run",
+						Description: "Pre-approved action: 'help', 'cat', 'ls', 'pwd', 'grep', 'go_test', 'go_vet', 'go_build', 'git_status', 'git_diff', 'git_log'",
+					},
+					"target": {
+						Type:        "string",
+						Description: "Optional target file, directory, package, search keyword, or action name for help",
+					},
+					"start_line": {
+						Type:        "integer",
+						Description: "Optional 1-based start line for 'cat' file line slicing",
+					},
+					"end_line": {
+						Type:        "integer",
+						Description: "Optional 1-based end line for 'cat' file line slicing",
 					},
 				},
-				Required: []string{"command"},
+				Required: []string{"action"},
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
-		cmdStr := ParseCommandArgs(args)
-		if cmdStr == "" {
-			return "", fmt.Errorf("invalid command argument")
-		}
+		action, _ := args["action"].(string)
+		target, _ := args["target"].(string)
+		startLine := ParseOptionalInt(args, "start_line")
+		endLine := ParseOptionalInt(args, "end_line")
 
-		output, newWs, err := ExecuteCommandWithWorkspace(context.Background(), cmdStr, r.workspace, r.GetWorkspaceRoot())
-		if newWs != r.workspace {
-			r.workspace = newWs
-		}
-		return output, err
+		return ExecuteActionWithWorkspace(context.Background(), action, target, startLine, endLine, r.workspace, r.GetWorkspaceRoot())
 	})
 
 	// Tool 5: search_session_history (Scoped to active session file or sessions dir)

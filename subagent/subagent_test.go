@@ -47,7 +47,7 @@ func TestSubagentRoleRegistryStartsEmpty(t *testing.T) {
 	if runner.GetWorkspaceRoot() != wantRoot {
 		t.Fatalf("expected runner root %s, got %s", wantRoot, runner.GetWorkspaceRoot())
 	}
-	if _, err := reg.Execute("run_terminal_command", map[string]interface{}{"command": "pwd"}); err == nil {
-		t.Fatal("expected base role registry not to inherit terminal tool")
+	if _, err := reg.Execute("execute_action", map[string]interface{}{"action": "pwd"}); err == nil {
+		t.Fatal("expected base role registry not to inherit terminal action tool")
 	}
 }
