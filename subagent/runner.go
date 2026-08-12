@@ -13,6 +13,7 @@ import (
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/session"
 	"github.com/c86j224s/olli/tools"
+	"golang.org/x/sys/unix"
 )
 
 type SubagentRunner struct {
@@ -43,10 +44,8 @@ func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspac
 	} else {
 		workspace = workspaceRoot
 	}
-	outDir, err := tools.IsPathSafeFrom(filepath.Join("sessions", "subagents"), workspace, workspaceRoot)
-	if err == nil {
-		_ = os.MkdirAll(outDir, 0755)
-	} else {
+	outDir, err := prepareSubagentOutputDir(workspace, workspaceRoot)
+	if err != nil {
 		outDir = ""
 	}
 
@@ -87,7 +86,7 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 		return nil, fmt.Errorf("subagent output directory is not safely contained within the workspace root")
 	}
 	jsonlPath := filepath.Join(r.outputDir, subID+".jsonl")
-	jsonlFile, err := os.OpenFile(jsonlPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	jsonlFile, err := openSubagentLogFileNoFollow(jsonlPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subagent jsonl: %w", err)
 	}
@@ -128,6 +127,8 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 
 	toolCallsRun := 0
 	var finalAnswer string
+	var artifactFiles []string
+	var createdFiles []string
 
 	thinkingActive := false
 	streamCB := ollama.StreamCallbacks{
@@ -157,14 +158,16 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 		case <-ctx.Done():
 			logEvent("system", "⚠️ Subagent execution canceled by user interrupt (ESC Key)", nil)
 			return &ResultReport{
-				SubagentID:   subID,
-				Type:         subType,
-				Task:         task,
-				Status:       "INTERRUPTED",
-				Summary:      "⚠️ Subagent execution was interrupted by user (ESC Key).",
-				JSONLFile:    jsonlPath,
-				ToolCallsRun: toolCallsRun,
-				WorkingDir:   r.workspace,
+				SubagentID:    subID,
+				Type:          subType,
+				Task:          task,
+				Status:        "INTERRUPTED",
+				Summary:       "⚠️ Subagent execution was interrupted by user (ESC Key).",
+				JSONLFile:     jsonlPath,
+				ToolCallsRun:  toolCallsRun,
+				WorkingDir:    r.workspace,
+				ArtifactFiles: artifactFiles,
+				CreatedFiles:  createdFiles,
 			}, nil
 		default:
 		}
@@ -174,14 +177,16 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 			if ctx.Err() == context.Canceled || err == context.Canceled {
 				logEvent("system", "⚠️ Subagent LLM stream canceled by user interrupt (ESC Key)", nil)
 				return &ResultReport{
-					SubagentID:   subID,
-					Type:         subType,
-					Task:         task,
-					Status:       "INTERRUPTED",
-					Summary:      "⚠️ Subagent execution was interrupted by user (ESC Key).",
-					JSONLFile:    jsonlPath,
-					ToolCallsRun: toolCallsRun,
-					WorkingDir:   r.workspace,
+					SubagentID:    subID,
+					Type:          subType,
+					Task:          task,
+					Status:        "INTERRUPTED",
+					Summary:       "⚠️ Subagent execution was interrupted by user (ESC Key).",
+					JSONLFile:     jsonlPath,
+					ToolCallsRun:  toolCallsRun,
+					WorkingDir:    r.workspace,
+					ArtifactFiles: artifactFiles,
+					CreatedFiles:  createdFiles,
 				}, nil
 			}
 			return nil, fmt.Errorf("subagent LLM stream failed: %w", err)
@@ -202,22 +207,34 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 				if ctx.Err() == context.Canceled {
 					logEvent("system", "⚠️ Subagent tool execution canceled by user interrupt (ESC Key)", nil)
 					return &ResultReport{
-						SubagentID:   subID,
-						Type:         subType,
-						Task:         task,
-						Status:       "INTERRUPTED",
-						Summary:      "⚠️ Subagent execution was interrupted by user (ESC Key).",
-						JSONLFile:    jsonlPath,
-						ToolCallsRun: toolCallsRun,
-						WorkingDir:   r.workspace,
+						SubagentID:    subID,
+						Type:          subType,
+						Task:          task,
+						Status:        "INTERRUPTED",
+						Summary:       "⚠️ Subagent execution was interrupted by user (ESC Key).",
+						JSONLFile:     jsonlPath,
+						ToolCallsRun:  toolCallsRun,
+						WorkingDir:    r.workspace,
+						ArtifactFiles: artifactFiles,
+						CreatedFiles:  createdFiles,
 					}, nil
 				}
 
 				toolCallsRun++
+				candidatePath, existedBefore, isArtifactCandidate := artifactCandidatePath(tc.Function.Arguments, r.workspace, r.workspaceRoot)
 				toolRes, tErr := reg.Execute(tc.Function.Name, tc.Function.Arguments)
 				resContent := toolRes
 				if tErr != nil {
 					resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)
+				}
+				if tErr == nil && isArtifactWriteTool(tc.Function.Name) && isArtifactCandidate {
+					req := artifactRequirementForSubagent(subType)
+					if err := validateArtifactPath(candidatePath, r.workspaceRoot, req); err == nil {
+						artifactFiles = appendUniquePath(artifactFiles, candidatePath)
+						if !existedBefore {
+							createdFiles = appendUniquePath(createdFiles, candidatePath)
+						}
+					}
 				}
 
 				if r.callbacks.OnToolCall != nil {
@@ -242,16 +259,155 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 		finalAnswer = "Subagent task completed tool execution."
 	}
 
+	artifactReq := artifactRequirementForSubagent(subType)
+	artifactFiles = validArtifactFiles(artifactFiles, r.workspaceRoot, artifactReq)
+	if artifactReq.required && len(artifactFiles) == 0 {
+		summary := fmt.Sprintf("%s subagent did not create or update a required artifact file (%s).", subType, artifactReq.description)
+		logEvent("system", "Subagent artifact verification failed: "+summary, nil)
+		return &ResultReport{
+			SubagentID:    subID,
+			Type:          subType,
+			Task:          task,
+			Status:        "FAILED",
+			Summary:       summary,
+			JSONLFile:     jsonlPath,
+			ToolCallsRun:  toolCallsRun,
+			WorkingDir:    r.workspace,
+			ArtifactFiles: artifactFiles,
+			CreatedFiles:  createdFiles,
+		}, nil
+	}
+	if len(artifactFiles) > 0 || len(createdFiles) > 0 {
+		logEvent("system", fmt.Sprintf("Subagent artifacts verified. Artifact Files: %s; Created Files: %s", pathListOrNone(artifactFiles), pathListOrNone(createdFiles)), nil)
+	}
+
 	report := &ResultReport{
-		SubagentID:   subID,
-		Type:         subType,
-		Task:         task,
-		Status:       "SUCCESS",
-		Summary:      strings.TrimSpace(finalAnswer),
-		JSONLFile:    jsonlPath,
-		ToolCallsRun: toolCallsRun,
-		WorkingDir:   r.workspace,
+		SubagentID:    subID,
+		Type:          subType,
+		Task:          task,
+		Status:        "SUCCESS",
+		Summary:       strings.TrimSpace(finalAnswer),
+		JSONLFile:     jsonlPath,
+		ToolCallsRun:  toolCallsRun,
+		WorkingDir:    r.workspace,
+		ArtifactFiles: artifactFiles,
+		CreatedFiles:  createdFiles,
 	}
 
 	return report, nil
+}
+
+func openSubagentLogFileNoFollow(path string) (*os.File, error) {
+	if info, err := os.Lstat(filepath.Dir(path)); err != nil {
+		return nil, fmt.Errorf("failed to inspect subagent log directory: %w", err)
+	} else if info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("subagent log directory '%s' is a symlink and is not allowed", filepath.Dir(path))
+	}
+	if info, err := os.Lstat(path); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("subagent log file '%s' is a symlink and is not allowed", path)
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("failed to inspect subagent log file: %w", err)
+	}
+
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_WRONLY|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(fd), path), nil
+}
+
+func prepareSubagentOutputDir(workspace string, workspaceRoot string) (string, error) {
+	outDir, err := tools.IsPathSafeFrom(filepath.Join("sessions", "subagents"), workspace, workspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	lexicalPath, lexicalRoot, err := subagentOutputLexicalPath(filepath.Join("sessions", "subagents"), workspace, workspaceRoot)
+	if err != nil {
+		return "", err
+	}
+	if err := rejectSubagentOutputSymlinkComponents(lexicalPath, lexicalRoot, true); err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return "", err
+	}
+	if err := rejectSubagentOutputSymlinkComponents(lexicalPath, lexicalRoot, false); err != nil {
+		return "", err
+	}
+	info, err := os.Lstat(outDir)
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("subagent output directory '%s' is a symlink and is not allowed", outDir)
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("subagent output path '%s' is not a directory", outDir)
+	}
+	return outDir, nil
+}
+
+func subagentOutputLexicalPath(path string, workspace string, workspaceRoot string) (string, string, error) {
+	root := strings.TrimSpace(tools.ExpandTilde(workspaceRoot))
+	if root == "" {
+		return "", "", fmt.Errorf("workspace root cannot be empty")
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid workspace root: %w", err)
+	}
+	absRoot = filepath.Clean(absRoot)
+	canonicalRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		return "", "", fmt.Errorf("workspace root must be resolvable: %w", err)
+	}
+	canonicalRoot = filepath.Clean(canonicalRoot)
+
+	safeWorkspace, err := tools.IsPathSafeFrom(".", workspace, canonicalRoot)
+	if err != nil {
+		return "", "", err
+	}
+	target := strings.TrimSpace(tools.ExpandTilde(path))
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(safeWorkspace, target)
+	}
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return "", "", fmt.Errorf("invalid subagent output path: %w", err)
+	}
+	absTarget = filepath.Clean(absTarget)
+
+	if pathContainedBy(absTarget, absRoot) {
+		return absTarget, absRoot, nil
+	}
+	if pathContainedBy(absTarget, canonicalRoot) {
+		return absTarget, canonicalRoot, nil
+	}
+	return "", "", fmt.Errorf("subagent output path '%s' escapes workspace root '%s'", absTarget, canonicalRoot)
+}
+
+func rejectSubagentOutputSymlinkComponents(path string, root string, allowMissing bool) error {
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("cannot compare subagent output path '%s' with workspace root '%s': %w", path, root, err)
+	}
+
+	current := filepath.Clean(root)
+	for _, component := range strings.Split(rel, string(os.PathSeparator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) && allowMissing {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("subagent output path '%s' cannot be inspected: %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("subagent output path '%s' is a symlink and is not allowed", current)
+		}
+	}
+	return nil
 }

@@ -57,7 +57,7 @@ func TestApprovedToolStillBlocksDangerousCommands(t *testing.T) {
 	}
 
 	// Shell metacharacters in target must be blocked
-	_, execErr := reg.Execute("execute_action", map[string]interface{}{"action": "go_test", "target": "pkg; rm -rf ." })
+	_, execErr := reg.Execute("execute_action", map[string]interface{}{"action": "go_test", "target": "pkg; rm -rf ."})
 	if execErr == nil || !strings.Contains(execErr.Error(), "security block") {
 		t.Fatalf("expected security block for shell metacharacters in target, got: %v", execErr)
 	}
@@ -87,6 +87,40 @@ func TestAgentHonorsConfigDefaultMode(t *testing.T) {
 	}
 }
 
+func TestAgentRegistersGoalTools(t *testing.T) {
+	tempDir := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get working dir: %v", err)
+	}
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatalf("failed to chdir: %v", err)
+	}
+	defer os.Chdir(originalWD)
+
+	cfg, err := config.LoadConfig(filepath.Join(tempDir, "config.json"))
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+
+	client := ollama.NewClient("http://localhost:11434")
+	ag := agent.New(client, "qwen3.5:0.8b", "Test prompt", nil, cfg)
+	reg := ag.GetRegistry()
+
+	if _, err := reg.Execute("set_active_goal", map[string]interface{}{"goal_description": "ship artifact checks"}); err != nil {
+		t.Fatalf("expected set_active_goal to be registered: %v", err)
+	}
+	if ag.GetGoal() != "ship artifact checks" {
+		t.Fatalf("expected active goal to be set, got %q", ag.GetGoal())
+	}
+	if _, err := reg.Execute("complete_goal", map[string]interface{}{}); err != nil {
+		t.Fatalf("expected complete_goal with empty args to be registered and accepted: %v", err)
+	}
+	if ag.GetGoal() != "" {
+		t.Fatalf("expected active goal to be cleared, got %q", ag.GetGoal())
+	}
+}
+
 func TestSensitiveToolsRequirePermissionEvenWhenWhitelisted(t *testing.T) {
 	tempDir := t.TempDir()
 	cfg, err := config.LoadConfig(filepath.Join(tempDir, "config.json"))
@@ -95,6 +129,12 @@ func TestSensitiveToolsRequirePermissionEvenWhenWhitelisted(t *testing.T) {
 	}
 	if err := cfg.AddWhitelist("execute_action"); err != nil {
 		t.Fatalf("failed to whitelist action execution: %v", err)
+	}
+	if err := cfg.AddWhitelist("image_generate"); err != nil {
+		t.Fatalf("failed to whitelist image generation: %v", err)
+	}
+	if err := cfg.AddWhitelist("audio_generate"); err != nil {
+		t.Fatalf("failed to whitelist audio generation: %v", err)
 	}
 
 	client := ollama.NewClient("http://localhost:11434")
@@ -106,6 +146,12 @@ func TestSensitiveToolsRequirePermissionEvenWhenWhitelisted(t *testing.T) {
 	}
 	if !ag.ShouldRequirePermission("delegate_coder") {
 		t.Fatal("expected mutation-capable delegate to require permission")
+	}
+	if !ag.ShouldRequirePermission("image_generate") {
+		t.Fatal("expected image_generate to require permission even in auto mode")
+	}
+	if !ag.ShouldRequirePermission("audio_generate") {
+		t.Fatal("expected audio_generate to require permission even in auto mode")
 	}
 	if ag.ShouldRequirePermission("calculator") {
 		t.Fatal("expected calculator to remain auto-allowed in auto mode")

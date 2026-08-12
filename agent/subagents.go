@@ -63,6 +63,39 @@ func (a *Agent) getWorkspaceRoot() string {
 	return a.initialDir
 }
 
+func formatSubagentReport(title string, report *subagent.ResultReport) string {
+	return fmt.Sprintf("%s\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nArtifact Files: %s\nCreated Files: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
+		title,
+		report.Task,
+		report.Status,
+		report.Summary,
+		report.WorkingDir,
+		formatSubagentPathList(report.ArtifactFiles),
+		formatSubagentPathList(report.CreatedFiles),
+		report.JSONLFile,
+		report.ToolCallsRun)
+}
+
+func formatSubagentPathList(paths []string) string {
+	if len(paths) == 0 {
+		return "none"
+	}
+	return strings.Join(paths, ", ")
+}
+
+func validateRequiredSubagentArtifacts(label string, report *subagent.ResultReport, workspaceRoot string) error {
+	if report == nil {
+		return fmt.Errorf("%s subagent returned no report", label)
+	}
+	if report.Status != "SUCCESS" {
+		return fmt.Errorf("%s subagent returned %s: %s (log: %s)", label, report.Status, report.Summary, report.JSONLFile)
+	}
+	if err := subagent.ValidateResultArtifacts(report, workspaceRoot); err != nil {
+		return fmt.Errorf("%s subagent artifact verification failed: %w (log: %s)", label, err, report.JSONLFile)
+	}
+	return nil
+}
+
 func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 	// 1. delegate_researcher
 	a.registry.Register(ollama.Tool{
@@ -90,8 +123,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("researcher subagent failed: %w", err)
 		}
-		return fmt.Sprintf("🔍 [Researcher Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
+		return formatSubagentReport("🔍 [Researcher Subagent Report]", report), nil
 	})
 
 	// 2. delegate_coder
@@ -120,8 +152,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
 		}
-		return fmt.Sprintf("💻 [Coder Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
+		return formatSubagentReport("💻 [Coder Subagent Report]", report), nil
 	})
 
 	// 3. delegate_tester
@@ -150,8 +181,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("tester subagent failed: %w", err)
 		}
-		return fmt.Sprintf("🧪 [Tester Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
+		return formatSubagentReport("🧪 [Tester Subagent Report]", report), nil
 	})
 
 	// 4. delegate_reviewer
@@ -180,8 +210,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("reviewer subagent failed: %w", err)
 		}
-		return fmt.Sprintf("🧐 [Reviewer Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
+		return formatSubagentReport("🧐 [Reviewer Subagent Report]", report), nil
 	})
 
 	// 5. delegate_documenter
@@ -210,8 +239,10 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("documenter subagent failed: %w", err)
 		}
-		return fmt.Sprintf("📝 [Documenter Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
+		if err := validateRequiredSubagentArtifacts("documenter", report, a.getWorkspaceRoot()); err != nil {
+			return "", err
+		}
+		return formatSubagentReport("📝 [Documenter Subagent Report]", report), nil
 	})
 
 	// 6. delegate_presenter
@@ -240,7 +271,9 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		if err != nil {
 			return "", fmt.Errorf("presenter subagent failed: %w", err)
 		}
-		return fmt.Sprintf("📊 [Presenter Subagent Report]\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
-			report.Task, report.Status, report.Summary, report.WorkingDir, report.JSONLFile, report.ToolCallsRun), nil
+		if err := validateRequiredSubagentArtifacts("presenter", report, a.getWorkspaceRoot()); err != nil {
+			return "", err
+		}
+		return formatSubagentReport("📊 [Presenter Subagent Report]", report), nil
 	})
 }

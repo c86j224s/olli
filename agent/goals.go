@@ -43,14 +43,17 @@ func (a *Agent) registerGoalTools() {
 				Properties: map[string]ollama.FunctionParamProperty{
 					"completion_summary": {
 						Type:        "string",
-						Description: "Summary of achievements and completed goal results",
+						Description: "Optional summary of achievements and completed goal results",
 					},
 				},
-				Required: []string{"completion_summary"},
 			},
 		},
 	}, func(args map[string]interface{}) (string, error) {
 		summary, _ := args["completion_summary"].(string)
+		summary = strings.TrimSpace(summary)
+		if summary == "" {
+			summary = "No completion summary provided."
+		}
 		prevGoal := a.activeGoal
 		a.ClearGoal()
 		return fmt.Sprintf("🎉 Goal '%s' marked as COMPLETED! Summary: %s", prevGoal, summary), nil

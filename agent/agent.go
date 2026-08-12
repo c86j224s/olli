@@ -80,6 +80,10 @@ func New(client *ollama.Client, model string, systemMsg string, sessMgr *session
 	reg := tools.NewRegistry()
 	reg.SetWorkspaceRoot(initialDir)
 	reg.SetWorkspace(initialDir)
+	if cfg != nil {
+		reg.SetImageGenerationConfig(toolsImageGenerationConfig(cfg.ImageGeneration))
+		reg.SetAudioGenerationConfig(toolsAudioGenerationConfig(cfg.AudioGeneration))
+	}
 
 	numCtx := 32768
 	if cfg != nil && cfg.NumCtx > 0 {
@@ -107,6 +111,7 @@ func New(client *ollama.Client, model string, systemMsg string, sessMgr *session
 	}
 
 	ag.registerBuiltinTools()
+	ag.registerGoalTools()
 
 	if sessMgr != nil {
 		sessInfo, err := sessMgr.CreateSession("", model)
@@ -307,10 +312,54 @@ func normalizeToolMode(mode string) ToolMode {
 	}
 }
 
+func toolsImageGenerationConfig(cfg config.ImageGenerationConfig) tools.ImageGenerationConfig {
+	workflows := make(map[string]tools.ComfyUIWorkflowConfig, len(cfg.ComfyUI.Workflows))
+	for alias, workflow := range cfg.ComfyUI.Workflows {
+		workflows[alias] = tools.ComfyUIWorkflowConfig{
+			Path:                 workflow.Path,
+			PromptNodeID:         workflow.PromptNodeID,
+			PromptInput:          workflow.PromptInput,
+			NegativePromptNodeID: workflow.NegativePromptNodeID,
+			NegativePromptInput:  workflow.NegativePromptInput,
+			WidthNodeID:          workflow.WidthNodeID,
+			WidthInput:           workflow.WidthInput,
+			HeightNodeID:         workflow.HeightNodeID,
+			HeightInput:          workflow.HeightInput,
+			StepsNodeID:          workflow.StepsNodeID,
+			StepsInput:           workflow.StepsInput,
+			SeedNodeID:           workflow.SeedNodeID,
+			SeedInput:            workflow.SeedInput,
+		}
+	}
+	return tools.ImageGenerationConfig{
+		ComfyUI: tools.ComfyUIConfig{
+			Endpoint:       cfg.ComfyUI.Endpoint,
+			OutputDir:      cfg.ComfyUI.OutputDir,
+			TimeoutSeconds: cfg.ComfyUI.TimeoutSeconds,
+			MaxImageBytes:  cfg.ComfyUI.MaxImageBytes,
+			Workflows:      workflows,
+		},
+	}
+}
+
+func toolsAudioGenerationConfig(cfg config.AudioGenerationConfig) tools.AudioGenerationConfig {
+	return tools.AudioGenerationConfig{
+		ACEStep: tools.ACEStepConfig{
+			Endpoint:           cfg.ACEStep.Endpoint,
+			OutputDir:          cfg.ACEStep.OutputDir,
+			TimeoutSeconds:     cfg.ACEStep.TimeoutSeconds,
+			MaxAudioBytes:      cfg.ACEStep.MaxAudioBytes,
+			PollIntervalMS:     cfg.ACEStep.PollIntervalMS,
+			MaxDurationSeconds: cfg.ACEStep.MaxDurationSeconds,
+		},
+	}
+}
+
 func isSensitiveTool(toolName string) bool {
 	switch toolName {
 	case "execute_action", "cd", "change_directory",
-		"delegate_coder", "delegate_tester", "delegate_documenter", "delegate_presenter":
+		"delegate_coder", "delegate_tester", "delegate_documenter", "delegate_presenter",
+		"image_generate", "audio_generate":
 		return true
 	default:
 		return false

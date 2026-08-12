@@ -18,11 +18,13 @@ import (
 type ToolHandler func(args map[string]interface{}) (string, error)
 
 type Registry struct {
-	definitions   []ollama.Tool
-	handlers      map[string]ToolHandler
-	workspace     string
-	workspaceRoot string
-	sessionFile   string
+	definitions     []ollama.Tool
+	handlers        map[string]ToolHandler
+	workspace       string
+	workspaceRoot   string
+	sessionFile     string
+	imageGeneration ImageGenerationConfig
+	audioGeneration AudioGenerationConfig
 }
 
 func NewRegistry() *Registry {
@@ -37,10 +39,12 @@ func NewEmptyRegistry() *Registry {
 		wd = "."
 	}
 	return &Registry{
-		definitions:   make([]ollama.Tool, 0),
-		handlers:      make(map[string]ToolHandler),
-		workspace:     wd,
-		workspaceRoot: wd,
+		definitions:     make([]ollama.Tool, 0),
+		handlers:        make(map[string]ToolHandler),
+		workspace:       wd,
+		workspaceRoot:   wd,
+		imageGeneration: DefaultImageGenerationConfig(),
+		audioGeneration: DefaultAudioGenerationConfig(),
 	}
 }
 
@@ -255,6 +259,9 @@ func (r *Registry) registerDefaultTools() {
 
 		return fmt.Sprintf("Found %d session log matches for '%s':\n%s", len(matches), query, strings.Join(matches, "\n")), nil
 	})
+
+	r.registerImageGenerateTool()
+	r.registerAudioGenerateTool()
 }
 
 func evalMathExpr(expr string) (string, error) {

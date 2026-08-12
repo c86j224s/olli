@@ -6,6 +6,8 @@ olli
 # Temporary files
 *.tmp
 .toy_agent_readline_history
+.local/
+artifacts/
 
 # Sessions data (optional: keep directory structure if desired)
 sessions/

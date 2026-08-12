@@ -12,6 +12,28 @@
     "change_directory",
     "view_file",
     "list_dir",
-    "grep_search"
-  ]
+    "grep_search",
+    "delegate_coder",
+    "delegate_documenter",
+    "delegate_presenter"
+  ],
+  "image_generation": {
+    "comfyui": {
+      "endpoint": "http://127.0.0.1:8188",
+      "output_dir": "artifacts/images",
+      "timeout_seconds": 300,
+      "max_image_bytes": 67108864,
+      "workflows": {}
+    }
+  },
+  "audio_generation": {
+    "ace_step": {
+      "endpoint": "http://127.0.0.1:8001",
+      "output_dir": "artifacts/audio",
+      "timeout_seconds": 900,
+      "max_audio_bytes": 209715200,
+      "poll_interval_ms": 1000,
+      "max_duration_seconds": 600
+    }
+  }
 }

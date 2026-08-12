@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>O.L.L.I. Local Agent Stack</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #101214;
+      --panel: #181c20;
+      --panel-2: #20262b;
+      --line: #3b4650;
+      --text: #f5f7f8;
+      --muted: #b5c0c8;
+      --cyan: #55d6d2;
+      --green: #79d279;
+      --amber: #efc96a;
+      --red: #ff8f7c;
+      --blue: #77a7ff;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    .deck {
+      height: 100vh;
+      display: grid;
+      grid-template-rows: 1fr auto;
+    }
+
+    .slides {
+      position: relative;
+      min-height: 0;
+    }
+
+    .slide {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      grid-template-columns: minmax(320px, 0.92fr) minmax(360px, 1.08fr);
+      gap: clamp(24px, 4vw, 64px);
+      align-items: center;
+      padding: clamp(28px, 5vw, 72px);
+      opacity: 0;
+      transform: translateX(28px);
+      pointer-events: none;
+      transition: opacity 220ms ease, transform 220ms ease;
+    }
+
+    .slide.active {
+      opacity: 1;
+      transform: translateX(0);
+      pointer-events: auto;
+    }
+
+    .kicker {
+      margin: 0 0 18px;
+      color: var(--cyan);
+      font-size: 0.8rem;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+    }
+
+    h1, h2 {
+      margin: 0;
+      line-height: 1.02;
+      letter-spacing: 0;
+    }
+
+    h1 {
+      font-size: 6.8rem;
+    }
+
+    h2 {
+      font-size: 4.6rem;
+    }
+
+    p {
+      margin: 22px 0 0;
+      max-width: 62ch;
+      color: var(--muted);
+      font-size: 1.18rem;
+      line-height: 1.62;
+    }
+
+    .points {
+      display: grid;
+      gap: 14px;
+      margin: 28px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .points li {
+      display: grid;
+      grid-template-columns: 10px 1fr;
+      gap: 14px;
+      align-items: start;
+      color: var(--text);
+      font-size: 1.12rem;
+      line-height: 1.5;
+    }
+
+    .points li::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      margin-top: 9px;
+      background: var(--amber);
+    }
+
+    .console {
+      background: #07090a;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 22px;
+      min-height: 300px;
+      box-shadow: 0 20px 60px rgb(0 0 0 / 0.28);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      color: #d6f5dc;
+      line-height: 1.7;
+      white-space: pre-wrap;
+      overflow: hidden;
+    }
+
+    .diagram {
+      display: grid;
+      gap: 16px;
+    }
+
+    .node {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 8px;
+      padding: 18px;
+    }
+
+    .node strong {
+      display: block;
+      margin-bottom: 8px;
+      color: var(--text);
+      font-size: 1.05rem;
+    }
+
+    .node span {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .flow {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 10px;
+      margin-top: 18px;
+    }
+
+    .flow .step {
+      min-height: 126px;
+      border-top: 4px solid var(--cyan);
+      background: var(--panel-2);
+      padding: 14px;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .step:nth-child(2) {
+      border-color: var(--amber);
+    }
+
+    .step:nth-child(3) {
+      border-color: var(--blue);
+    }
+
+    .step:nth-child(4) {
+      border-color: var(--green);
+    }
+
+    .step b {
+      font-size: 1.02rem;
+    }
+
+    .step small {
+      color: var(--muted);
+      line-height: 1.4;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .status {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 18px;
+      background: var(--panel);
+      min-height: 148px;
+    }
+
+    .status .label {
+      color: var(--muted);
+      font-size: 0.85rem;
+      margin-bottom: 10px;
+    }
+
+    .status .value {
+      font-size: 1.28rem;
+      font-weight: 800;
+    }
+
+    .status.ok .value {
+      color: var(--green);
+    }
+
+    .status.wait .value {
+      color: var(--amber);
+    }
+
+    .status.warn .value {
+      color: var(--red);
+    }
+
+    .controls {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 22px;
+      border-top: 1px solid var(--line);
+      background: #0d0f11;
+    }
+
+    .nav {
+      display: flex;
+      gap: 8px;
+    }
+
+    button {
+      width: 42px;
+      height: 42px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--panel);
+      color: var(--text);
+      font-size: 1.35rem;
+      cursor: pointer;
+    }
+
+    button:hover {
+      border-color: var(--cyan);
+    }
+
+    .progress {
+      height: 8px;
+      background: #24292e;
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .progress span {
+      display: block;
+      height: 100%;
+      width: 0;
+      background: var(--cyan);
+      transition: width 180ms ease;
+    }
+
+    .counter {
+      color: var(--muted);
+      font-variant-numeric: tabular-nums;
+      min-width: 70px;
+      text-align: right;
+    }
+
+    code {
+      color: var(--cyan);
+      background: #0b0e10;
+      border: 1px solid #263038;
+      border-radius: 5px;
+      padding: 2px 6px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    @media (max-width: 860px) {
+      body {
+        overflow: auto;
+      }
+
+      .deck {
+        min-height: 100vh;
+      }
+
+      .slides {
+        min-height: calc(100vh - 74px);
+      }
+
+      .slide {
+        grid-template-columns: 1fr;
+        align-content: start;
+        overflow: auto;
+      }
+
+      h1 {
+        font-size: 3.7rem;
+      }
+
+      h2 {
+        font-size: 2.65rem;
+      }
+
+      p,
+      .points li {
+        font-size: 1rem;
+      }
+
+      .flow,
+      .status-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .console {
+        min-height: 220px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="deck" aria-label="O.L.L.I. presentation deck">
+    <div class="slides">
+      <section class="slide active">
+        <div>
+          <p class="kicker">local agent stack</p>
+          <h1>O.L.L.I.</h1>
+          <p>Ollama 기반 Go 에이전트에 파일 도구, subagent 위임, 세션 RAG, ComfyUI 이미지 생성, ACE-Step 오디오 생성을 붙인 로컬 작업 환경.</p>
+        </div>
+        <div class="console">./build.sh
+./bin/olli
+
+scripts/backends.sh status
+scripts/backends.sh start comfyui
+scripts/backends.sh start ace-step</div>
+      </section>
+
+      <section class="slide">
+        <div>
+          <p class="kicker">runtime shape</p>
+          <h2>작업은 로컬에서 돌고, 결과는 워크스페이스 안에 남습니다</h2>
+          <p>에이전트는 Ollama 모델을 호출하고, 도구 실행과 생성 결과는 repository 내부 경계 안에서만 다룹니다.</p>
+        </div>
+        <div class="diagram">
+          <div class="node"><strong>Agent Core</strong><span>대화, 목표, 권한 모드, 세션 저장을 관리합니다.</span></div>
+          <div class="node"><strong>Tool Registry</strong><span>파일 보기, 검색, 안전한 action, 이미지/오디오 생성 도구를 노출합니다.</span></div>
+          <div class="node"><strong>Local Backends</strong><span>Ollama, ComfyUI, ACE-Step은 로컬 HTTP endpoint로만 연결됩니다.</span></div>
+        </div>
+      </section>
+
+      <section class="slide">
+        <div>
+          <p class="kicker">delegation contract</p>
+          <h2>Documenter와 Presenter는 실제 파일을 만들어야 성공입니다</h2>
+          <p>이번 수정의 핵심은 subagent 보고서가 말만 SUCCESS로 끝나는 경로를 닫는 것입니다.</p>
+        </div>
+        <div class="flow">
+          <div class="step"><b>1. Delegate</b><small>메인 agent가 역할별 subagent를 호출합니다.</small></div>
+          <div class="step"><b>2. Write</b><small>쓰기 도구가 Markdown 또는 HTML artifact를 생성합니다.</small></div>
+          <div class="step"><b>3. Verify</b><small>runner가 확장자, 존재, regular file, symlink 여부를 확인합니다.</small></div>
+          <div class="step"><b>4. Report</b><small>메인 agent가 artifact 경로를 재검증한 뒤 성공을 보고합니다.</small></div>
+        </div>
+      </section>
+
+      <section class="slide">
+        <div>
+          <p class="kicker">backend tools</p>
+          <h2>이미지와 음악 생성은 HTTP backend가 맞습니다</h2>
+          <p>Go agent는 생성 모델 런타임을 직접 안고 가지 않고, ComfyUI와 ACE-Step API를 안정적인 도구 backend로 호출합니다.</p>
+        </div>
+        <div class="status-grid">
+          <div class="status ok"><div class="label">Ollama</div><div class="value">LLM runtime</div><p>대화 모델, tool call, subagent loop 담당.</p></div>
+          <div class="status ok"><div class="label">ComfyUI</div><div class="value">image_generate</div><p>workflow alias 기반 이미지 artifact 저장.</p></div>
+          <div class="status wait"><div class="label">ACE-Step</div><div class="value">audio_generate</div><p>text2music 작업 제출 후 WAV artifact 저장.</p></div>
+          <div class="status warn"><div class="label">Permission</div><div class="value">always ask</div><p>생성 도구와 mutation delegate는 자동 승인에서 제외.</p></div>
+        </div>
+      </section>
+
+      <section class="slide">
+        <div>
+          <p class="kicker">operator workflow</p>
+          <h2>설치, 실행, 사용은 스크립트와 config로 분리합니다</h2>
+          <p>모델 다운로드와 workflow 등록은 backend별로 다르므로 설치 스크립트가 런타임 준비를 맡고, 실제 모델/alias는 <code>config.json</code>에 명시합니다.</p>
+        </div>
+        <div class="console">./scripts/install-prerequisites.sh --check-only
+./scripts/install-prerequisites.sh --yes
+
+./scripts/backends.sh start all
+./scripts/backends.sh logs comfyui -f
+./scripts/backends.sh status ace-step</div>
+      </section>
+
+      <section class="slide">
+        <div>
+          <p class="kicker">safety posture</p>
+          <h2>파일 경계는 성공 조건의 일부입니다</h2>
+          <p>세션, subagent report, 생성 artifact는 워크스페이스 내부 regular file이어야 하며 symlink는 실패로 처리됩니다.</p>
+        </div>
+        <ul class="points">
+          <li>Documenter는 최소 하나의 <code>.md</code> artifact를 보고해야 합니다.</li>
+          <li>Presenter는 최소 하나의 <code>.html</code> artifact를 보고해야 합니다.</li>
+          <li>성공 보고 전 메인 agent가 artifact 존재를 다시 확인합니다.</li>
+          <li><code>complete_goal</code>은 agent 생성 시 등록되어 목표 종료 호출이 실패하지 않습니다.</li>
+        </ul>
+      </section>
+    </div>
+
+    <footer class="controls">
+      <div class="nav">
+        <button id="prev" type="button" aria-label="Previous slide">‹</button>
+        <button id="next" type="button" aria-label="Next slide">›</button>
+      </div>
+      <div class="progress" aria-hidden="true"><span id="bar"></span></div>
+      <div id="counter" class="counter">1 / 6</div>
+    </footer>
+  </main>
+
+  <script>
+    const slides = [...document.querySelectorAll(".slide")];
+    const counter = document.getElementById("counter");
+    const bar = document.getElementById("bar");
+    let index = 0;
+
+    function render() {
+      slides.forEach((slide, i) => {
+        slide.classList.toggle("active", i === index);
+      });
+      counter.textContent = `${index + 1} / ${slides.length}`;
+      bar.style.width = `${((index + 1) / slides.length) * 100}%`;
+    }
+
+    function move(delta) {
+      index = (index + delta + slides.length) % slides.length;
+      render();
+    }
+
+    document.getElementById("prev").addEventListener("click", () => move(-1));
+    document.getElementById("next").addEventListener("click", () => move(1));
+    window.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowRight" || event.key === " ") move(1);
+      if (event.key === "ArrowLeft") move(-1);
+    });
+    render();
+  </script>
+</body>
+</html>

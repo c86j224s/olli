@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -11,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // ViewFile reads file contents within workspace boundary with line-range slicing
@@ -56,15 +59,15 @@ func ViewFile(filePath string, startLine int, endLine int, workspace string, all
 // EditFile replaces a specific target section or creates/overwrites file content within workspace boundary
 func EditFile(filePath string, targetContent string, replacementContent string, workspace string, allowedRootDir ...string) (string, error) {
 	root := workspaceRootFor(workspace, allowedRootDir...)
-	safePath, err := IsPathSafeFrom(filePath, workspace, root)
+	safePath, err := resolveWritePathNoSymlink(filePath, workspace, root)
 	if err != nil {
 		return "", fmt.Errorf("security block: %w", err)
 	}
 
-	data, err := os.ReadFile(safePath)
+	data, err := readFileNoFollow(safePath)
 	if err != nil {
 		if os.IsNotExist(err) && targetContent == "" {
-			if err := os.WriteFile(safePath, []byte(replacementContent), 0644); err != nil {
+			if err := writeFileNoFollow(safePath, []byte(replacementContent), 0644); err != nil {
 				return "", fmt.Errorf("failed to create file '%s': %w", safePath, err)
 			}
 			return fmt.Sprintf("File '%s' successfully created.", safePath), nil
@@ -82,7 +85,7 @@ func EditFile(filePath string, targetContent string, replacementContent string, 
 		content = replacementContent
 	}
 
-	if err := os.WriteFile(safePath, []byte(content), 0644); err != nil {
+	if err := writeFileNoFollow(safePath, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("failed to write edited content to file '%s': %w", safePath, err)
 	}
 
@@ -92,12 +95,12 @@ func EditFile(filePath string, targetContent string, replacementContent string, 
 // InsertContent inserts new content right before or right after an anchor text chunk in the middle of a file
 func InsertContent(filePath string, anchorContent string, position string, newContent string, workspace string, allowedRootDir ...string) (string, error) {
 	root := workspaceRootFor(workspace, allowedRootDir...)
-	safePath, err := IsPathSafeFrom(filePath, workspace, root)
+	safePath, err := resolveWritePathNoSymlink(filePath, workspace, root)
 	if err != nil {
 		return "", fmt.Errorf("security block: %w", err)
 	}
 
-	data, err := os.ReadFile(safePath)
+	data, err := readFileNoFollow(safePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read file '%s': %w", safePath, err)
 	}
@@ -117,7 +120,7 @@ func InsertContent(filePath string, anchorContent string, position string, newCo
 
 	updated := strings.Replace(content, anchorContent, replacement, 1)
 
-	if err := os.WriteFile(safePath, []byte(updated), 0644); err != nil {
+	if err := writeFileNoFollow(safePath, []byte(updated), 0644); err != nil {
 		return "", fmt.Errorf("failed to write inserted content to file '%s': %w", safePath, err)
 	}
 
@@ -127,12 +130,12 @@ func InsertContent(filePath string, anchorContent string, position string, newCo
 // AppendFile appends new content to the end of a file without overwriting existing content
 func AppendFile(filePath string, appendContent string, workspace string, allowedRootDir ...string) (string, error) {
 	root := workspaceRootFor(workspace, allowedRootDir...)
-	safePath, err := IsPathSafeFrom(filePath, workspace, root)
+	safePath, err := resolveWritePathNoSymlink(filePath, workspace, root)
 	if err != nil {
 		return "", fmt.Errorf("security block: %w", err)
 	}
 
-	file, err := os.OpenFile(safePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	file, err := openAppendFileNoFollow(safePath, 0644)
 	if err != nil {
 		return "", fmt.Errorf("failed to open file '%s' for append: %w", safePath, err)
 	}
@@ -143,6 +146,113 @@ func AppendFile(filePath string, appendContent string, workspace string, allowed
 	}
 
 	return fmt.Sprintf("Successfully appended %d bytes to file '%s'.", len(appendContent), safePath), nil
+}
+
+func resolveWritePathNoSymlink(filePath string, workspace string, allowedRootDir ...string) (string, error) {
+	root := workspaceRootFor(workspace, allowedRootDir...)
+	safePath, err := IsPathSafeFrom(filePath, workspace, root)
+	if err != nil {
+		return "", err
+	}
+
+	lexicalPath, err := lexicalWritePath(filePath, workspace, root)
+	if err != nil {
+		return "", err
+	}
+	if err := rejectExistingSymlinkWriteComponents(lexicalPath, root); err != nil {
+		return "", err
+	}
+	return safePath, nil
+}
+
+func lexicalWritePath(filePath string, workspace string, root string) (string, error) {
+	canonicalRoot, err := canonicalWorkspaceRoot(root)
+	if err != nil {
+		return "", err
+	}
+	canonicalWorkspace, err := canonicalBaseWithinRoot(workspace, canonicalRoot)
+	if err != nil {
+		return "", err
+	}
+
+	targetPath := strings.TrimSpace(filePath)
+	if targetPath == "" {
+		return "", fmt.Errorf("path cannot be empty")
+	}
+	targetPath = ExpandTilde(targetPath)
+	if !filepath.IsAbs(targetPath) {
+		targetPath = filepath.Join(canonicalWorkspace, targetPath)
+	}
+	absTarget, err := filepath.Abs(targetPath)
+	if err != nil {
+		return "", fmt.Errorf("invalid target path: %w", err)
+	}
+	absTarget = filepath.Clean(absTarget)
+	if err := ensureContained(absTarget, canonicalRoot); err != nil {
+		return "", err
+	}
+	return absTarget, nil
+}
+
+func rejectExistingSymlinkWriteComponents(path string, root string) error {
+	canonicalRoot, err := canonicalWorkspaceRoot(root)
+	if err != nil {
+		return err
+	}
+	rel, err := filepath.Rel(canonicalRoot, filepath.Clean(path))
+	if err != nil {
+		return fmt.Errorf("cannot compare write path '%s' with workspace root '%s': %w", path, root, err)
+	}
+
+	current := canonicalRoot
+	for _, component := range strings.Split(rel, string(os.PathSeparator)) {
+		if component == "" || component == "." {
+			continue
+		}
+		current = filepath.Join(current, component)
+		info, err := os.Lstat(current)
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("failed to inspect write path component '%s': %w", current, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("write path component '%s' is a symlink and is not allowed", current)
+		}
+	}
+	return nil
+}
+
+func readFileNoFollow(path string) ([]byte, error) {
+	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	file := os.NewFile(uintptr(fd), path)
+	defer file.Close()
+	return io.ReadAll(file)
+}
+
+func writeFileNoFollow(path string, data []byte, perm os.FileMode) error {
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(perm.Perm()))
+	if err != nil {
+		return &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	file := os.NewFile(uintptr(fd), path)
+	if _, err := file.Write(data); err != nil {
+		_ = file.Close()
+		return err
+	}
+	return file.Close()
+}
+
+func openAppendFileNoFollow(path string, perm os.FileMode) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_WRONLY|unix.O_CREAT|unix.O_APPEND|unix.O_NOFOLLOW|unix.O_CLOEXEC, uint32(perm.Perm()))
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	return os.NewFile(uintptr(fd), path), nil
 }
 
 // GrepSearch performs pattern search across files in workspace

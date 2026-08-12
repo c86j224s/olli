@@ -498,7 +498,7 @@ func (r *SubagentRunner) RunDocumenter(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_documenter_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, and READMEs. FLEXIBLE EDITING INSTRUCTION: You can view specific line ranges with 'view_file(path, start, end)', replace targeted sections with 'edit_file(path, target_content, replacement_content)', insert new sections in the middle with 'insert_content(path, anchor_content, insert_position, new_content)', or append new sections to the end with 'append_file(path, append_content)'. Before writing, inspect subagent investigation findings ('list_subagent_reports' / 'view_subagent_report'), active session history ('search_session_history'), and real source code."
+	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, and READMEs. FLEXIBLE EDITING INSTRUCTION: You can view specific line ranges with 'view_file(path, start, end)', replace targeted sections with 'edit_file(path, target_content, replacement_content)', insert new sections in the middle with 'insert_content(path, anchor_content, insert_position, new_content)', or append new sections to the end with 'append_file(path, append_content)'. Before writing, inspect subagent investigation findings ('list_subagent_reports' / 'view_subagent_report'), active session history ('search_session_history'), and real source code. You must create or update at least one Markdown artifact (*.md) and include its path in your final answer."
 
 	reg := r.newRoleRegistry()
 
@@ -697,7 +697,7 @@ func (r *SubagentRunner) RunPresenter(task string) (*ResultReport, error) {
 
 func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
 	subID := fmt.Sprintf("subagent_presenter_%s", time.Now().Format("20060102_150405"))
-	sysPrompt := "You are a specialized Presenter Subagent. Your goal is to generate interactive HTML presentation slides with modern CSS glassmorphism, animations, and query session logs for content."
+	sysPrompt := "You are a specialized Presenter Subagent. Your goal is to generate interactive HTML presentation slides with modern CSS, animations, and query session logs for content. You must create or update at least one HTML artifact (*.html) and include its path in your final answer."
 
 	reg := r.newRoleRegistry()
 

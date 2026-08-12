@@ -9,11 +9,54 @@ import (
 )
 
 type Config struct {
-	DefaultMode    string   `json:"default_mode"`
-	NumCtx         int      `json:"num_ctx"`
-	WhitelistTools []string `json:"whitelist_tools"`
-	filePath       string
-	mu             sync.RWMutex
+	DefaultMode     string                `json:"default_mode"`
+	NumCtx          int                   `json:"num_ctx"`
+	WhitelistTools  []string              `json:"whitelist_tools"`
+	ImageGeneration ImageGenerationConfig `json:"image_generation"`
+	AudioGeneration AudioGenerationConfig `json:"audio_generation"`
+	filePath        string
+	mu              sync.RWMutex
+}
+
+type ImageGenerationConfig struct {
+	ComfyUI ComfyUIConfig `json:"comfyui"`
+}
+
+type ComfyUIConfig struct {
+	Endpoint       string                           `json:"endpoint"`
+	OutputDir      string                           `json:"output_dir"`
+	TimeoutSeconds int                              `json:"timeout_seconds"`
+	MaxImageBytes  int64                            `json:"max_image_bytes"`
+	Workflows      map[string]ComfyUIWorkflowConfig `json:"workflows"`
+}
+
+type ComfyUIWorkflowConfig struct {
+	Path                 string `json:"path"`
+	PromptNodeID         string `json:"prompt_node_id"`
+	PromptInput          string `json:"prompt_input"`
+	NegativePromptNodeID string `json:"negative_prompt_node_id"`
+	NegativePromptInput  string `json:"negative_prompt_input"`
+	WidthNodeID          string `json:"width_node_id"`
+	WidthInput           string `json:"width_input"`
+	HeightNodeID         string `json:"height_node_id"`
+	HeightInput          string `json:"height_input"`
+	StepsNodeID          string `json:"steps_node_id"`
+	StepsInput           string `json:"steps_input"`
+	SeedNodeID           string `json:"seed_node_id"`
+	SeedInput            string `json:"seed_input"`
+}
+
+type AudioGenerationConfig struct {
+	ACEStep ACEStepConfig `json:"ace_step"`
+}
+
+type ACEStepConfig struct {
+	Endpoint           string `json:"endpoint"`
+	OutputDir          string `json:"output_dir"`
+	TimeoutSeconds     int    `json:"timeout_seconds"`
+	MaxAudioBytes      int64  `json:"max_audio_bytes"`
+	PollIntervalMS     int    `json:"poll_interval_ms"`
+	MaxDurationSeconds int    `json:"max_duration_seconds"`
 }
 
 func LoadConfig(filePath string) (*Config, error) {
@@ -39,7 +82,9 @@ func LoadConfig(filePath string) (*Config, error) {
 			"list_dir",
 			"grep_search",
 		},
-		filePath: absPath,
+		ImageGeneration: DefaultImageGenerationConfig(),
+		AudioGeneration: DefaultAudioGenerationConfig(),
+		filePath:        absPath,
 	}
 
 	// If config file does not exist, create default config.json
@@ -61,6 +106,8 @@ func LoadConfig(filePath string) (*Config, error) {
 
 	cfg.filePath = absPath
 	cfg.DefaultMode = safeDefaultMode(cfg.DefaultMode)
+	cfg.ImageGeneration = normalizeImageGenerationConfig(cfg.ImageGeneration)
+	cfg.AudioGeneration = normalizeAudioGenerationConfig(cfg.AudioGeneration)
 
 	// Ensure default safe tools exist in whitelist
 	for _, defaultTool := range []string{"view_file", "list_dir", "grep_search", "get_agent_status"} {
@@ -70,6 +117,74 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func DefaultImageGenerationConfig() ImageGenerationConfig {
+	return ImageGenerationConfig{
+		ComfyUI: ComfyUIConfig{
+			Endpoint:       "http://127.0.0.1:8188",
+			OutputDir:      "artifacts/images",
+			TimeoutSeconds: 300,
+			MaxImageBytes:  67108864,
+			Workflows:      map[string]ComfyUIWorkflowConfig{},
+		},
+	}
+}
+
+func DefaultAudioGenerationConfig() AudioGenerationConfig {
+	return AudioGenerationConfig{
+		ACEStep: ACEStepConfig{
+			Endpoint:           "http://127.0.0.1:8001",
+			OutputDir:          "artifacts/audio",
+			TimeoutSeconds:     900,
+			MaxAudioBytes:      209715200,
+			PollIntervalMS:     1000,
+			MaxDurationSeconds: 600,
+		},
+	}
+}
+
+func normalizeImageGenerationConfig(cfg ImageGenerationConfig) ImageGenerationConfig {
+	defaults := DefaultImageGenerationConfig()
+	if cfg.ComfyUI.Endpoint == "" {
+		cfg.ComfyUI.Endpoint = defaults.ComfyUI.Endpoint
+	}
+	if cfg.ComfyUI.OutputDir == "" {
+		cfg.ComfyUI.OutputDir = defaults.ComfyUI.OutputDir
+	}
+	if cfg.ComfyUI.TimeoutSeconds <= 0 {
+		cfg.ComfyUI.TimeoutSeconds = defaults.ComfyUI.TimeoutSeconds
+	}
+	if cfg.ComfyUI.MaxImageBytes <= 0 {
+		cfg.ComfyUI.MaxImageBytes = defaults.ComfyUI.MaxImageBytes
+	}
+	if cfg.ComfyUI.Workflows == nil {
+		cfg.ComfyUI.Workflows = map[string]ComfyUIWorkflowConfig{}
+	}
+	return cfg
+}
+
+func normalizeAudioGenerationConfig(cfg AudioGenerationConfig) AudioGenerationConfig {
+	defaults := DefaultAudioGenerationConfig()
+	if cfg.ACEStep.Endpoint == "" {
+		cfg.ACEStep.Endpoint = defaults.ACEStep.Endpoint
+	}
+	if cfg.ACEStep.OutputDir == "" {
+		cfg.ACEStep.OutputDir = defaults.ACEStep.OutputDir
+	}
+	if cfg.ACEStep.TimeoutSeconds <= 0 {
+		cfg.ACEStep.TimeoutSeconds = defaults.ACEStep.TimeoutSeconds
+	}
+	if cfg.ACEStep.MaxAudioBytes <= 0 {
+		cfg.ACEStep.MaxAudioBytes = defaults.ACEStep.MaxAudioBytes
+	}
+	if cfg.ACEStep.PollIntervalMS <= 0 {
+		cfg.ACEStep.PollIntervalMS = defaults.ACEStep.PollIntervalMS
+	}
+	if cfg.ACEStep.MaxDurationSeconds <= 0 {
+		cfg.ACEStep.MaxDurationSeconds = defaults.ACEStep.MaxDurationSeconds
+	}
+	return cfg
 }
 
 func safeDefaultMode(mode string) string {
