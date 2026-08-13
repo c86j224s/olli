@@ -1,21 +1,30 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"strings"
+	"unicode"
 
 	"github.com/c86j224s/olli/agent"
 	"github.com/c86j224s/olli/ollama"
 )
 
+type ToolConfirmer func(context.Context, string, map[string]interface{}) (bool, bool)
+
 func HandleCommand(cmdStr string, ag *agent.Agent, client *ollama.Client, models []string) bool {
-	parts := strings.Fields(cmdStr)
-	if len(parts) == 0 {
+	return HandleCommandWithContext(context.Background(), cmdStr, ag, client, models, nil)
+}
+
+func HandleCommandWithContext(ctx context.Context, cmdStr string, ag *agent.Agent, client *ollama.Client, models []string, confirm ToolConfirmer) bool {
+	command, remainder := splitFirstField(cmdStr)
+	if command == "" {
 		return false
 	}
-
-	command := parts[0]
-	args := parts[1:]
+	args := strings.Fields(remainder)
 
 	switch command {
 	case "/exit", "/quit":
@@ -113,6 +122,9 @@ func HandleCommand(cmdStr string, ag *agent.Agent, client *ollama.Client, models
 	case "/session":
 		handleSessionSubcommands(args, ag)
 
+	case "/workflow":
+		handleWorkflowCommand(ctx, remainder, ag, confirm)
+
 	case "/clear":
 		ag.ClearHistory()
 		fmt.Printf("%s[Agent]%s Context history cleared.\n\n", ColorYellow, ColorReset)
@@ -122,6 +134,179 @@ func HandleCommand(cmdStr string, ag *agent.Agent, client *ollama.Client, models
 	}
 
 	return false
+}
+
+func splitFirstField(value string) (string, string) {
+	trimmed := strings.TrimLeftFunc(value, unicode.IsSpace)
+	if trimmed == "" {
+		return "", ""
+	}
+	index := strings.IndexFunc(trimmed, unicode.IsSpace)
+	if index < 0 {
+		return trimmed, ""
+	}
+	return trimmed[:index], strings.TrimLeftFunc(trimmed[index:], unicode.IsSpace)
+}
+
+func decodeWorkflowInputs(value string) (map[string]any, error) {
+	if strings.TrimSpace(value) == "" {
+		return map[string]any{}, nil
+	}
+	decoder := json.NewDecoder(bytes.NewBufferString(value))
+	decoder.UseNumber()
+	inputs, err := decodeJSONObject(decoder)
+	if err != nil {
+		return nil, fmt.Errorf("invalid workflow inputs JSON: %w", err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("workflow inputs contain trailing JSON")
+		}
+		return nil, fmt.Errorf("invalid trailing workflow inputs JSON: %w", err)
+	}
+	return inputs, nil
+}
+
+func decodeJSONObject(decoder *json.Decoder) (map[string]any, error) {
+	value, err := decodeJSONValue(decoder)
+	if err != nil {
+		return nil, err
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("workflow inputs must be a JSON object")
+	}
+	return object, nil
+}
+
+func decodeJSONValue(decoder *json.Decoder) (any, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return token, nil
+	}
+	switch delimiter {
+	case '{':
+		object := map[string]any{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return nil, err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return nil, fmt.Errorf("JSON object key is not a string")
+			}
+			if _, exists := object[key]; exists {
+				return nil, fmt.Errorf("duplicate JSON object key %q", key)
+			}
+			child, err := decodeJSONValue(decoder)
+			if err != nil {
+				return nil, err
+			}
+			object[key] = child
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, err
+		}
+		return object, nil
+	case '[':
+		var array []any
+		for decoder.More() {
+			child, err := decodeJSONValue(decoder)
+			if err != nil {
+				return nil, err
+			}
+			array = append(array, child)
+		}
+		if _, err := decoder.Token(); err != nil {
+			return nil, err
+		}
+		return array, nil
+	default:
+		return nil, fmt.Errorf("unexpected JSON delimiter %q", delimiter)
+	}
+}
+
+func printJSON(value any) error {
+	encoded, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	fmt.Println(string(encoded))
+	fmt.Println()
+	return nil
+}
+
+func handleWorkflowCommand(ctx context.Context, remainder string, ag *agent.Agent, confirm ToolConfirmer) {
+	subcommand, tail := splitFirstField(remainder)
+	if subcommand == "" {
+		subcommand = "list"
+	}
+
+	switch subcommand {
+	case "list":
+		if strings.TrimSpace(tail) != "" {
+			fmt.Printf("%sUsage: /workflow list%s\n\n", ColorYellow, ColorReset)
+			return
+		}
+		names, err := ag.ListWorkflows()
+		if err != nil {
+			fmt.Printf("%s[Error]%s %v\n\n", ColorRed, ColorReset, err)
+			return
+		}
+		fmt.Printf("\n🔁 Available OAW Workflows (%d):\n", len(names))
+		for _, name := range names {
+			fmt.Printf("  • %s%s%s\n", ColorBold, name, ColorReset)
+		}
+		fmt.Println()
+	case "show":
+		name, extra := splitFirstField(tail)
+		if name == "" || strings.TrimSpace(extra) != "" {
+			fmt.Printf("%sUsage: /workflow show <name>%s\n\n", ColorYellow, ColorReset)
+			return
+		}
+		document, err := ag.GetWorkflow(name)
+		if err != nil {
+			fmt.Printf("%s[Error]%s %v\n\n", ColorRed, ColorReset, err)
+			return
+		}
+		if err := printJSON(document); err != nil {
+			fmt.Printf("%s[Error]%s %v\n\n", ColorRed, ColorReset, err)
+		}
+	case "validate":
+		name, extra := splitFirstField(tail)
+		if name == "" || strings.TrimSpace(extra) != "" {
+			fmt.Printf("%sUsage: /workflow validate <name>%s\n\n", ColorYellow, ColorReset)
+			return
+		}
+		if err := ag.ValidateWorkflow(name); err != nil {
+			fmt.Printf("%s[Error]%s %v\n\n", ColorRed, ColorReset, err)
+			return
+		}
+		fmt.Printf("%s[Workflow]%s %s%s%s is valid.\n\n", ColorGreen, ColorReset, ColorBold, name, ColorReset)
+	case "run":
+		name, rawInputs := splitFirstField(tail)
+		if name == "" {
+			fmt.Printf("%sUsage: /workflow run <name> <JSON object>%s\n\n", ColorYellow, ColorReset)
+			return
+		}
+		inputs, err := decodeWorkflowInputs(rawInputs)
+		if err != nil {
+			fmt.Printf("%s[Error]%s %v\n\n", ColorRed, ColorReset, err)
+			return
+		}
+		result := ag.RunWorkflow(ctx, name, inputs, confirm)
+		if err := printJSON(result); err != nil {
+			fmt.Printf("%s[Error]%s %v\n\n", ColorRed, ColorReset, err)
+		}
+	default:
+		fmt.Printf("%sUnknown workflow subcommand '%s'. Available: list, show, validate, run%s\n\n", ColorYellow, subcommand, ColorReset)
+	}
 }
 
 func handleConfigSubcommands(args []string, ag *agent.Agent) {
@@ -314,6 +499,7 @@ func printHelp() {
 	fmt.Println("  /config [whitelist|allow|deny]: Manage auto-approved tool whitelist")
 	fmt.Println("  /goal [set|clear|status]    : Manage goal steering")
 	fmt.Println("  /session [list|new|load|rename|current|delete]: Manage persistent sessions")
+	fmt.Println("  /workflow [list|show|validate|run]: Manage and run OAW workflows")
 	fmt.Println("  /summary                    : View agent conversation memory summary")
 	fmt.Println("  /numctx [tokens]            : View or update context window size")
 	fmt.Println("  /tools                      : View registered tools")

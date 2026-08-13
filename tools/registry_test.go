@@ -78,7 +78,7 @@ func TestRegistryLegacyRegisterUsesConvenienceContextAndMetadataDefaults(t *test
 		t.Fatalf("legacy execution failed: %q, %v", got, err)
 	}
 	metadata, ok := reg.GetMetadata("legacy")
-	if !ok || metadata != (ToolMetadata{WorkflowCallable: true}) {
+	if !ok || metadata != (ToolMetadata{WorkflowCallable: false}) {
 		t.Fatalf("unexpected legacy metadata: %#v, %v", metadata, ok)
 	}
 }

@@ -137,7 +137,16 @@ OAW(**O.L.L.I. Agent Workflow Protocol**) v0.1은 O.L.L.I.가 등록된 도구�
 image_generate → inspect_image → 결과 반환
 ```
 
-현재는 **프로토콜·스키마·예제만 정의된 상태**이며 OAW runner와 `/workflow` 명령은 아직 구현되지 않았습니다. 단계별 workflow engine 구현 계획은 `TODO.md`에 있습니다. 엔진이 구현되기 전에는 OAW JSON을 직접 실행할 수 없으며, 같은 절차를 사용하려면 자연어로 `image_generate` 후 `inspect_image`를 요청해야 합니다.
+OAW v0.1 runner는 시작 시 workflow·event schema와 Registry tool schema를 검증·snapshot하고, `workflows/agent/*.oaw.json`을 기존 tool permission 경계 안에서 순차 실행합니다. 메인 에이전트는 `list_workflows`, `get_workflow`, `run_workflow` 도구를 사용할 수 있고, CLI에서는 다음 명령을 제공합니다.
+
+```text
+/workflow list
+/workflow show image-generate-verify
+/workflow validate image-generate-verify
+/workflow run image-generate-verify {"prompt":"a red fox in snow","verification_question":"Does the image match the prompt?"}
+```
+
+`run`의 마지막 인자는 JSON object이며 공백과 중첩 값을 그대로 보존합니다. 각 tool attempt는 `auto`, `ask`, `accept-edit`, 민감 도구 분류와 whitelist를 포함한 기존 권한 정책을 다시 적용합니다. 실행 결과는 구조화된 status/output/failure와 finalized `sessions/workflows/<run_id>.jsonl` 로그 경로를 반환합니다. 로그에는 raw input·arguments·result·media를 기록하지 않습니다.
 
 ---
 

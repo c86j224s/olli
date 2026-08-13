@@ -373,6 +373,23 @@ func TestOutsideWrite(t *testing.T) {
 	}
 }
 
+func TestSessionLogReaderRejectsPartialAndInvalidTargets(t *testing.T) {
+	root := t.TempDir()
+	workflowDir := filepath.Join(root, "sessions", "workflows")
+	if err := os.MkdirAll(workflowDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{".oaw_test.jsonl.partial", "oaw_test.jsonl.invalid"} {
+		path := filepath.Join(workflowDir, name)
+		if err := os.WriteFile(path, []byte("secret\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := SearchSessionLogs(path, "secret", root); err == nil {
+			t.Fatalf("incomplete workflow log was accepted directly: %s", name)
+		}
+	}
+}
+
 func TestSessionAndSubagentLogReadersRejectSymlinks(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

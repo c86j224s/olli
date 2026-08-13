@@ -109,7 +109,7 @@ func (r *Registry) ResolvePathSafe(targetPath string) (string, error) {
 }
 
 func (r *Registry) Register(tool ollama.Tool, handler ToolHandler) error {
-	return r.RegisterContext(tool, ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
+	return r.RegisterContext(tool, ToolMetadata{WorkflowCallable: false}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		return handler(args)
 	})
 }
@@ -183,7 +183,7 @@ func cloneTool(tool ollama.Tool) ollama.Tool {
 
 func (r *Registry) registerDefaultTools() {
 	// Tool 1: get_current_time
-	r.Register(ollama.Tool{
+	r.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "get_current_time",
@@ -193,7 +193,10 @@ func (r *Registry) registerDefaultTools() {
 				Properties: map[string]ollama.FunctionParamProperty{},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, ToolMetadata{RetrySafe: true, WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
 		now := time.Now().Format("2006-01-02 15:04:05 MST (Monday)")
 		return fmt.Sprintf("Current time: %s", now), nil
 	})
@@ -452,6 +455,10 @@ func SearchSessionLogs(targetPath string, query string, allowedRootDir ...string
 	}
 
 	if !info.IsDir() {
+		base := filepath.Base(safeTarget)
+		if strings.HasPrefix(base, ".") || !strings.HasSuffix(base, ".jsonl") || strings.HasSuffix(base, ".partial") || strings.HasSuffix(base, ".invalid") {
+			return nil, fmt.Errorf("session log target must be a finalized JSONL file")
+		}
 		searchFile(safeTarget)
 		return results, nil
 	}
@@ -460,7 +467,8 @@ func SearchSessionLogs(targetPath string, query string, allowedRootDir ...string
 		if err != nil {
 			return nil
 		}
-		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || !strings.HasSuffix(path, ".jsonl") {
+		base := filepath.Base(path)
+		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || strings.HasPrefix(base, ".") || !strings.HasSuffix(base, ".jsonl") {
 			return nil
 		}
 		searchFile(path)

@@ -6,11 +6,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	"github.com/c86j224s/olli/config"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/session"
 	"github.com/c86j224s/olli/tools"
+	"github.com/c86j224s/olli/workflow"
 )
 
 type ToolMode string
@@ -30,16 +32,17 @@ const (
 )
 
 type Callbacks struct {
-	OnThinkingStart           func()
-	OnThinkingToken           func(token string)
-	OnThinkingEnd             func()
-	OnContentToken            func(token string)
-	OnToolCall                func(toolName string, args map[string]interface{}, result string, execErr error)
-	ConfirmToolCallWithAction func(toolName string, args map[string]interface{}) (bool, bool)
-	OnSubagentThinkingStart   func(subType string)
-	OnSubagentThinkingToken   func(token string)
-	OnSubagentThinkingEnd     func()
-	OnSubagentToolCall        func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
+	OnThinkingStart                  func()
+	OnThinkingToken                  func(token string)
+	OnThinkingEnd                    func()
+	OnContentToken                   func(token string)
+	OnToolCall                       func(toolName string, args map[string]interface{}, result string, execErr error)
+	ConfirmToolCallWithAction        func(toolName string, args map[string]interface{}) (bool, bool)
+	ConfirmToolCallWithActionContext func(context.Context, string, map[string]interface{}) (bool, bool)
+	OnSubagentThinkingStart          func(subType string)
+	OnSubagentThinkingToken          func(token string)
+	OnSubagentThinkingEnd            func()
+	OnSubagentToolCall               func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
 }
 
 type Agent struct {
@@ -56,6 +59,8 @@ type Agent struct {
 	registry            *tools.Registry
 	sessMgr             *session.Manager
 	cfg                 *config.Config
+	workflowMu          sync.RWMutex
+	workflowEngine      *workflow.Engine
 	lastPromptEvalCount int
 }
 

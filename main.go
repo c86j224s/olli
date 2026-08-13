@@ -63,6 +63,11 @@ func main() {
 	}
 
 	ag := agent.New(client, defaultModel, "You are an intelligent AI assistant equipped with Goal Steering and Subagent Delegation capabilities. Stay focused on achieving active goals.", sessMgr, cfg)
+	if err := ag.EnableWorkflows(workspaceRoot); err != nil {
+		fmt.Printf("%s[Error]%s Failed to initialize OAW workflow engine: %v\n", cli.ColorRed, cli.ColorReset, err)
+		os.Exit(1)
+	}
+	defer ag.Close()
 
 	cli.PrintBanner(ag, models, sessMgr.GetCurrentID())
 
@@ -92,6 +97,12 @@ func main() {
 			readline.PcItem("current"),
 			readline.PcItem("delete"),
 		),
+		readline.PcItem("/workflow",
+			readline.PcItem("list"),
+			readline.PcItem("show"),
+			readline.PcItem("validate"),
+			readline.PcItem("run"),
+		),
 		readline.PcItem("/summary"),
 		readline.PcItem("/summarize"),
 		readline.PcItem("/numctx"),
@@ -104,15 +115,17 @@ func main() {
 	)
 
 	historyFile := filepath.Join(os.TempDir(), ".toy_agent_readline_history")
-	rlConfig := &readline.Config{
-		Prompt:          cli.BuildPrompt(ag, sessMgr),
-		HistoryFile:     historyFile,
-		AutoComplete:    completer,
-		InterruptPrompt: "^C",
-		EOFPrompt:       "exit",
+	newReadline := func() (*readline.Instance, error) {
+		return readline.NewEx(&readline.Config{
+			Prompt:          cli.BuildPrompt(ag, sessMgr),
+			HistoryFile:     historyFile,
+			AutoComplete:    completer,
+			InterruptPrompt: "^C",
+			EOFPrompt:       "exit",
+		})
 	}
 
-	rl, err := readline.NewEx(rlConfig)
+	rl, err := newReadline()
 	if err != nil {
 		fmt.Printf("%s[Error]%s Failed to initialize readline: %v\n", cli.ColorRed, cli.ColorReset, err)
 		os.Exit(1)
@@ -121,8 +134,60 @@ func main() {
 		rl.Close()
 		_ = exec.Command("stty", "sane").Run()
 	}()
+	var readlineRecoveryErr error
+
+	confirmToolCall := func(ctx context.Context, toolName string, args map[string]interface{}) (bool, bool) {
+		if err := ctx.Err(); err != nil {
+			return false, false
+		}
+		prompt := fmt.Sprintf("\n%s❓ [Permission Required]%s Tool %s%s%s(%s).\n   Options: %s[y]%s Yes (once)  |  %s[a]%s Always (add to config.json whitelist)  |  %s[n]%s No (deny)\n   Choice [y/a/N]: ",
+			cli.ColorYellow, cli.ColorReset, cli.ColorBold, toolName, cli.ColorReset, agent.FormatArgs(args),
+			cli.ColorBold, cli.ColorReset, cli.ColorGreen, cli.ColorReset, cli.ColorRed, cli.ColorReset)
+		rl.SetPrompt(prompt)
+		type promptResult struct {
+			line string
+			err  error
+		}
+		result := make(chan promptResult, 1)
+		activeReadline := rl
+		go func() {
+			line, err := activeReadline.Readline()
+			result <- promptResult{line: line, err: err}
+		}()
+		var response promptResult
+		select {
+		case response = <-result:
+		case <-ctx.Done():
+			_ = activeReadline.Close()
+			response = <-result
+			replacement, err := newReadline()
+			if err != nil {
+				readlineRecoveryErr = fmt.Errorf("failed to restore terminal input: %w", err)
+				return false, false
+			}
+			rl = replacement
+			return false, false
+		}
+		rl.SetPrompt(cli.BuildPrompt(ag, sessMgr))
+		if response.err != nil || ctx.Err() != nil {
+			return false, false
+		}
+		answer := strings.TrimSpace(strings.ToLower(response.line))
+		if answer == "a" || answer == "always" {
+			fmt.Printf("%s[Config]%s Authorizing '%s%s%s' and adding it to the config.json whitelist.\n", cli.ColorGreen, cli.ColorReset, cli.ColorBold, toolName, cli.ColorReset)
+			return true, true
+		}
+		if answer == "y" || answer == "yes" {
+			return true, false
+		}
+		return false, false
+	}
 
 	for {
+		if readlineRecoveryErr != nil {
+			fmt.Printf("%s[Error]%s %v\n", cli.ColorRed, cli.ColorReset, readlineRecoveryErr)
+			break
+		}
 		rl.SetPrompt(cli.BuildPrompt(ag, sessMgr))
 
 		line, err := rl.Readline()
@@ -141,7 +206,13 @@ func main() {
 		}
 
 		if strings.HasPrefix(input, "/") {
-			if cli.HandleCommand(input, ag, client, models) {
+			commandCtx, cancel := context.WithCancel(context.Background())
+			doneChan := make(chan struct{})
+			cli.StartInterruptListener(cancel, doneChan)
+			shouldExit := cli.HandleCommandWithContext(commandCtx, input, ag, client, models, confirmToolCall)
+			close(doneChan)
+			cancel()
+			if shouldExit {
 				break
 			}
 			continue
@@ -190,24 +261,18 @@ func main() {
 			},
 			ConfirmToolCallWithAction: func(toolName string, args map[string]interface{}) (bool, bool) {
 				spinner.Stop()
-				prompt := fmt.Sprintf("\n%s❓ [Permission Required]%s Tool %s%s%s(%s).\n   Options: %s[y]%s Yes (once)  |  %s[a]%s Always (add to config.json whitelist)  |  %s[n]%s No (deny)\n   Choice [y/a/N]: ",
-					cli.ColorYellow, cli.ColorReset, cli.ColorBold, toolName, cli.ColorReset, agent.FormatArgs(args),
-					cli.ColorBold, cli.ColorReset, cli.ColorGreen, cli.ColorReset, cli.ColorRed, cli.ColorReset)
-				rl.SetPrompt(prompt)
-				ansLine, pErr := rl.Readline()
-				rl.SetPrompt(cli.BuildPrompt(ag, sessMgr))
-				if pErr != nil {
+				return confirmToolCall(context.Background(), toolName, args)
+			},
+			ConfirmToolCallWithActionContext: func(ctx context.Context, toolName string, args map[string]interface{}) (bool, bool) {
+				spinner.Stop()
+				if err := ctx.Err(); err != nil {
 					return false, false
 				}
-				ans := strings.TrimSpace(strings.ToLower(ansLine))
-				if ans == "a" || ans == "always" {
-					fmt.Printf("%s[Config]%s Added '%s%s%s' to config.json whitelist for future executions.\n", cli.ColorGreen, cli.ColorReset, cli.ColorBold, toolName, cli.ColorReset)
-					return true, true
+				allowed, always := confirmToolCall(ctx, toolName, args)
+				if err := ctx.Err(); err != nil {
+					return false, false
 				}
-				if ans == "y" || ans == "yes" {
-					return true, false
-				}
-				return false, false
+				return allowed, always
 			},
 			OnSubagentThinkingStart: func(subType string) {
 				spinner.Stop()

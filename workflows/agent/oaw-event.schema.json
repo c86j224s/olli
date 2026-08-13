@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olli.local/schemas/oaw-event-v0.1.schema.json",
+  "title": "OAW v0.1 workflow event",
+  "oneOf": [
+    {"$ref": "#/$defs/workflow_started"},
+    {"$ref": "#/$defs/step_started"},
+    {"$ref": "#/$defs/permission_requested"},
+    {"$ref": "#/$defs/tool_completed"},
+    {"$ref": "#/$defs/step_retried"},
+    {"$ref": "#/$defs/step_failed"},
+    {"$ref": "#/$defs/step_skipped"},
+    {"$ref": "#/$defs/workflow_completed"},
+    {"$ref": "#/$defs/workflow_cancelled"}
+  ],
+  "$defs": {
+    "common": {
+      "type": "object",
+      "required": ["event_schema_version", "event", "timestamp", "sequence", "run_id", "workflow", "status"],
+      "properties": {
+        "event_schema_version": {"const": "0.1"},
+        "event": {"type": "string"},
+        "timestamp": {"type": "string", "format": "date-time"},
+        "sequence": {"type": "integer", "minimum": 0},
+        "run_id": {"type": "string", "pattern": "^oaw_[0-9a-f]{32}$"},
+        "workflow": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "status": {"type": "string"},
+        "step_id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+        "attempt": {"type": "integer", "minimum": 1},
+        "tool": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+        "summary": {"type": "string", "maxLength": 2048},
+        "outcome_category": {"enum": ["success", "tool_error", "timeout", "cancelled", "denied", "log_limit", "validation"]}
+      }
+    },
+    "workflow_started": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"properties": {"event": {"const": "workflow_started"}, "status": {"const": "started"}}}
+      ],
+      "not": {"anyOf": [{"required": ["step_id"]}, {"required": ["attempt"]}, {"required": ["tool"]}, {"required": ["summary"]}, {"required": ["outcome_category"]}]},
+      "unevaluatedProperties": false
+    },
+    "step_started": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"required": ["step_id", "attempt"], "properties": {"event": {"const": "step_started"}, "status": {"const": "started"}}}
+      ],
+      "not": {"anyOf": [{"required": ["tool"]}, {"required": ["summary"]}, {"required": ["outcome_category"]}]},
+      "unevaluatedProperties": false
+    },
+    "permission_requested": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"required": ["step_id", "attempt", "tool"], "properties": {"event": {"const": "permission_requested"}, "status": {"enum": ["allowed", "denied"]}}}
+      ],
+      "not": {"anyOf": [{"required": ["summary"]}, {"required": ["outcome_category"]}]},
+      "unevaluatedProperties": false
+    },
+    "tool_completed": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"required": ["step_id", "attempt", "tool", "outcome_category"], "properties": {"event": {"const": "tool_completed"}}}
+      ],
+      "oneOf": [
+        {"properties": {"status": {"const": "succeeded"}, "outcome_category": {"const": "success"}}, "not": {"required": ["summary"]}},
+        {"required": ["summary"], "properties": {"status": {"const": "failed"}, "outcome_category": {"const": "tool_error"}}},
+        {"required": ["summary"], "properties": {"status": {"const": "cancelled"}, "outcome_category": {"const": "cancelled"}}},
+        {"required": ["summary"], "properties": {"status": {"const": "timed_out"}, "outcome_category": {"const": "timeout"}}}
+      ],
+      "unevaluatedProperties": false
+    },
+    "step_retried": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"required": ["step_id", "attempt", "tool", "outcome_category"], "properties": {"event": {"const": "step_retried"}, "status": {"const": "retrying"}, "outcome_category": {"enum": ["tool_error", "timeout"]}}}
+      ],
+      "not": {"required": ["summary"]},
+      "unevaluatedProperties": false
+    },
+    "step_failed": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"required": ["step_id", "attempt", "summary", "outcome_category"], "properties": {"event": {"const": "step_failed"}, "status": {"const": "failed"}, "outcome_category": {"enum": ["tool_error", "timeout", "denied", "validation"]}}}
+      ],
+      "not": {"required": ["tool"]},
+      "unevaluatedProperties": false
+    },
+    "step_skipped": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"required": ["step_id", "attempt"], "properties": {"event": {"const": "step_skipped"}, "status": {"const": "skipped"}}}
+      ],
+      "not": {"anyOf": [{"required": ["tool"]}, {"required": ["summary"]}, {"required": ["outcome_category"]}]},
+      "unevaluatedProperties": false
+    },
+    "workflow_completed": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"required": ["outcome_category"], "properties": {"event": {"const": "workflow_completed"}}}
+      ],
+      "oneOf": [
+        {"properties": {"status": {"const": "succeeded"}, "outcome_category": {"const": "success"}}, "not": {"required": ["summary"]}},
+        {"required": ["summary"], "properties": {"status": {"const": "failed"}, "outcome_category": {"enum": ["tool_error", "timeout", "denied", "log_limit", "validation"]}}},
+        {"required": ["summary"], "properties": {"status": {"const": "timed_out"}, "outcome_category": {"const": "timeout"}}}
+      ],
+      "not": {"anyOf": [{"required": ["step_id"]}, {"required": ["attempt"]}, {"required": ["tool"]}]},
+      "unevaluatedProperties": false
+    },
+    "workflow_cancelled": {
+      "allOf": [
+        {"$ref": "#/$defs/common"},
+        {"required": ["summary", "outcome_category"], "properties": {"event": {"const": "workflow_cancelled"}, "status": {"const": "cancelled"}, "outcome_category": {"const": "cancelled"}}}
+      ],
+      "not": {"anyOf": [{"required": ["step_id"]}, {"required": ["attempt"]}, {"required": ["tool"]}]},
+      "unevaluatedProperties": false
+    }
+  }
+}

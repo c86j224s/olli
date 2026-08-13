@@ -265,7 +265,11 @@ func (c *Config) AddWhitelist(toolName string) error {
 	}
 
 	c.WhitelistTools = append(c.WhitelistTools, toolName)
-	return c.saveUnlocked()
+	if err := c.saveUnlocked(); err != nil {
+		c.WhitelistTools = c.WhitelistTools[:len(c.WhitelistTools)-1]
+		return err
+	}
+	return nil
 }
 
 func (c *Config) RemoveWhitelist(toolName string) error {
