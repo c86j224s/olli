@@ -390,6 +390,37 @@ func TestSessionLogReaderRejectsPartialAndInvalidTargets(t *testing.T) {
 	}
 }
 
+func TestSessionLogReaderDefersWorkflowLogsToStrictReader(t *testing.T) {
+	root := t.TempDir()
+	sessionDir := filepath.Join(root, "sessions")
+	workflowDir := filepath.Join(sessionDir, "workflows")
+	if err := os.MkdirAll(workflowDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	workflowLog := filepath.Join(workflowDir, "oaw_00000000000000000000000000000001.jsonl")
+	if err := os.WriteFile(workflowLog, []byte("workflow-secret\n"), 0400); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := SearchSessionLogs(workflowLog, "workflow-secret", root); err == nil {
+		t.Fatal("generic session reader accepted a workflow log directly")
+	}
+	if matches, err := SearchSessionLogs(sessionDir, "workflow-secret", root); err != nil {
+		t.Fatalf("session search should skip workflow logs without failing: %v", err)
+	} else if len(matches) != 0 {
+		t.Fatalf("generic session reader exposed workflow log content: %v", matches)
+	}
+
+	ordinary := filepath.Join(sessionDir, "ordinary.jsonl")
+	if err := os.WriteFile(ordinary, []byte("ordinary-secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if matches, err := SearchSessionLogs(ordinary, "ordinary-secret", root); err != nil {
+		t.Fatalf("ordinary session log search failed: %v", err)
+	} else if len(matches) != 1 {
+		t.Fatalf("ordinary session log search returned %v", matches)
+	}
+}
+
 func TestSessionAndSubagentLogReadersRejectSymlinks(t *testing.T) {
 	root := t.TempDir()
 	outside := t.TempDir()

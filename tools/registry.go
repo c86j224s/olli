@@ -108,8 +108,8 @@ func (r *Registry) ResolvePathSafe(targetPath string) (string, error) {
 	return IsPathSafeFrom(targetPath, r.workspace, r.GetWorkspaceRoot())
 }
 
-func (r *Registry) Register(tool ollama.Tool, handler ToolHandler) error {
-	return r.RegisterContext(tool, ToolMetadata{WorkflowCallable: false}, func(ctx context.Context, args map[string]interface{}) (string, error) {
+func (r *Registry) Register(tool ollama.Tool, handler ToolHandler) {
+	_ = r.RegisterContext(tool, ToolMetadata{}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		return handler(args)
 	})
 }
@@ -418,6 +418,11 @@ func SearchSessionLogs(targetPath string, query string, allowedRootDir ...string
 		return nil, fmt.Errorf("failed to stat session log target: %w", err)
 	}
 
+	workflowLogs := filepath.Join(root, "sessions", "workflows")
+	if pathIsWithin(safeTarget, workflowLogs) {
+		return nil, fmt.Errorf("workflow logs require the strict workflow log reader")
+	}
+
 	queryLower := strings.ToLower(query)
 	var results []string
 
@@ -466,6 +471,9 @@ func SearchSessionLogs(targetPath string, query string, allowedRootDir ...string
 	_ = filepath.Walk(safeTarget, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return nil
+		}
+		if info.IsDir() && pathIsWithin(path, workflowLogs) {
+			return filepath.SkipDir
 		}
 		base := filepath.Base(path)
 		if info.IsDir() || info.Mode()&os.ModeSymlink != 0 || strings.HasPrefix(base, ".") || !strings.HasSuffix(base, ".jsonl") {

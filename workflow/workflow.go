@@ -40,6 +40,10 @@ var refPattern = regexp.MustCompile(`^\{\{(inputs\.([a-z][a-z0-9_-]{0,63})|steps
 var embeddedRefPattern = regexp.MustCompile(`\{\{(inputs\.[a-z][a-z0-9_-]{0,63}|steps\.[a-z][a-z0-9_-]{0,63}\.(?:result\.[A-Za-z0-9_.-]+|status|attempt))\}\}`)
 var runIDPattern = regexp.MustCompile(`^oaw_[0-9a-f]{32}$`)
 
+const workflowSchemaName = "https://olli.local/schemas/oaw.schema.json"
+const eventSchemaName = "https://olli.local/schemas/oaw-event-v0.1.schema.json"
+const schemaDraft202012 = "https://json-schema.org/draft/2020-12/schema"
+
 // ToolDefinition is immutable tool metadata and its JSON Schema.
 type ToolDefinition struct {
 	Name             string
@@ -93,6 +97,9 @@ type Engine struct {
 	closed         bool
 	workflowSchema *jsonschema.Schema
 	eventSchema    *jsonschema.Schema
+	runIDGenerator func() (string, error)
+	// eventWriterSetup is a same-package test seam; tests must configure it before concurrent runs.
+	eventWriterSetup func(*eventWriter)
 }
 
 type Failure struct {
@@ -162,7 +169,7 @@ func NewEngine(root string, catalog ToolCatalog, executor ToolExecutor) (*Engine
 		m[d.Name] = d
 		toolSchemas[d.Name] = compiled
 	}
-	e := &Engine{root: abs, rootFD: rootFD, catalog: m, toolSchemas: toolSchemas, executor: executor}
+	e := &Engine{root: abs, rootFD: rootFD, catalog: m, toolSchemas: toolSchemas, executor: executor, runIDGenerator: newRunID}
 	if err := e.ensureDirs([]string{"sessions", "workflows"}); err != nil {
 		_ = e.Close()
 		return nil, err
@@ -179,6 +186,114 @@ func NewEngine(root string, catalog ToolCatalog, executor ToolExecutor) (*Engine
 }
 
 func (e *Engine) Root() string { return e.root }
+
+func (e *Engine) ReadLog(runID string) ([]map[string]any, error) {
+	if !runIDPattern.MatchString(runID) {
+		return nil, errors.New("invalid workflow run ID")
+	}
+	dir, err := e.openRelativeDir([]string{"sessions", "workflows"})
+	if err != nil {
+		return nil, err
+	}
+	defer dir.Close()
+	open := func(name string) (*os.File, error) {
+		fd, err := unix.Openat(int(dir.Fd()), name, unix.O_RDONLY|unix.O_NONBLOCK|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0)
+		if err != nil {
+			return nil, err
+		}
+		file := os.NewFile(uintptr(fd), name)
+		if file == nil {
+			_ = unix.Close(fd)
+			return nil, errors.New("workflow log open failed")
+		}
+		return file, nil
+	}
+	final, err := open(runID + ".jsonl")
+	if err != nil {
+		return nil, err
+	}
+	defer final.Close()
+	marker, err := open(markerName(runID))
+	if err != nil {
+		return nil, err
+	}
+	defer marker.Close()
+	finalInfo, err := final.Stat()
+	if err != nil {
+		return nil, err
+	}
+	markerInfo, err := marker.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !finalInfo.Mode().IsRegular() || !markerInfo.Mode().IsRegular() {
+		return nil, errors.New("workflow log publication is not regular")
+	}
+	if finalInfo.Mode().Perm() != 0400 || markerInfo.Mode().Perm() != 0400 {
+		return nil, errors.New("workflow log publication is not committed")
+	}
+	if !os.SameFile(finalInfo, markerInfo) {
+		return nil, errors.New("workflow log publication identity mismatch")
+	}
+	if finalInfo.Size() > maxLogBytes {
+		return nil, errors.New("workflow log exceeds size limit")
+	}
+	data, err := io.ReadAll(io.LimitReader(final, maxLogBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || len(data) > maxLogBytes || data[len(data)-1] != '\n' {
+		return nil, errors.New("workflow log is incomplete")
+	}
+	lines := bytes.Split(data, []byte{'\n'})
+	lines = lines[:len(lines)-1]
+	events := make([]map[string]any, 0, len(lines))
+	var runWorkflow string
+	terminal := false
+	for sequence, line := range lines {
+		if len(line)+1 > maxLineBytes {
+			return nil, errors.New("workflow event line exceeds 64 KiB")
+		}
+		event, err := strictEventDocument(line)
+		if err != nil {
+			return nil, err
+		}
+		if err := e.eventSchema.Validate(event); err != nil {
+			return nil, err
+		}
+		if event["sequence"] != json.Number(strconv.Itoa(sequence)) {
+			return nil, errors.New("workflow event sequence is not monotonic")
+		}
+		if event["event"] == "workflow_started" && sequence != 0 {
+			return nil, errors.New("workflow_started event is only permitted at sequence zero")
+		}
+		if event["run_id"] != runID {
+			return nil, errors.New("workflow event run ID mismatch")
+		}
+		workflow, _ := event["workflow"].(string)
+		if sequence == 0 {
+			if event["event"] != "workflow_started" {
+				return nil, errors.New("workflow log must start with workflow_started")
+			}
+			runWorkflow = workflow
+		} else if workflow != runWorkflow {
+			return nil, errors.New("workflow event workflow mismatch")
+		}
+		isTerminal := event["event"] == "workflow_completed" || event["event"] == "workflow_cancelled"
+		if terminal || (isTerminal && sequence != len(lines)-1) {
+			return nil, errors.New("workflow log has post-terminal event")
+		}
+		if isTerminal {
+			terminal = true
+		}
+		events = append(events, event)
+	}
+	if !terminal {
+		return nil, errors.New("workflow log has no terminal event")
+	}
+	return events, nil
+}
+
 func (e *Engine) List() ([]string, error) {
 	d, err := e.openRelativeDir([]string{"workflows", "agent"})
 	if err != nil {
@@ -373,6 +488,20 @@ func rejectExternalRefs(value any) error {
 	return nil
 }
 
+func validateCanonicalSchema(document any, canonicalID string) error {
+	object, ok := document.(map[string]any)
+	if !ok {
+		return errors.New("schema must be an object")
+	}
+	if draft, _ := object["$schema"].(string); draft != schemaDraft202012 {
+		return fmt.Errorf("schema must declare Draft 2020-12")
+	}
+	if id, _ := object["$id"].(string); id != canonicalID {
+		return fmt.Errorf("schema $id must be %q", canonicalID)
+	}
+	return nil
+}
+
 func (e *Engine) compileWorkflowSchema() error {
 	data, err := e.readRelative([]string{"workflows", "agent", "oaw.schema.json"}, maxWorkflowFile)
 	if err != nil {
@@ -390,11 +519,13 @@ func (e *Engine) compileWorkflowSchema() error {
 	}
 	compiler := jsonschema.NewCompiler()
 	compiler.DefaultDraft(jsonschema.Draft2020)
-	const resource = "https://olli.local/schemas/oaw.schema.json"
-	if err := compiler.AddResource(resource, document); err != nil {
+	if err := validateCanonicalSchema(document, workflowSchemaName); err != nil {
+		return err
+	}
+	if err := compiler.AddResource(workflowSchemaName, document); err != nil {
 		return fmt.Errorf("compile schema resource: %w", err)
 	}
-	schema, err := compiler.Compile(resource)
+	schema, err := compiler.Compile(workflowSchemaName)
 	if err != nil {
 		return fmt.Errorf("compile schema: %w", err)
 	}
@@ -1030,6 +1161,9 @@ func (e *Engine) finalizePreflightFailure(runID, name, outcome string, result Ru
 		}
 		return RunResult{RunID: runID, Status: "failed", Error: "log_unavailable", LogUnavailable: true}
 	}
+	if e.eventWriterSetup != nil {
+		e.eventWriterSetup(writer)
+	}
 	defer writer.abort()
 	if err := writer.append(eventBase(runID, name, "workflow_started", "started", 0), false); err != nil {
 		return RunResult{RunID: runID, Status: "failed", Error: "log_unavailable", LogUnavailable: true}
@@ -1053,7 +1187,11 @@ func (e *Engine) Run(ctx context.Context, name string, supplied map[string]any, 
 	if ctx == nil {
 		return RunResult{Status: "failed", Error: "nil context"}
 	}
-	runID, err := newRunID()
+	runIDGenerator := e.runIDGenerator
+	if runIDGenerator == nil {
+		runIDGenerator = newRunID
+	}
+	runID, err := runIDGenerator()
 	if err != nil {
 		return RunResult{Status: "failed", Error: err.Error()}
 	}
@@ -1082,6 +1220,9 @@ func (e *Engine) Run(ctx context.Context, name string, supplied map[string]any, 
 	writer, err := e.openEventWriter(runID, name)
 	if err != nil {
 		return RunResult{RunID: runID, Status: "failed", Error: "log_unavailable", LogUnavailable: true}
+	}
+	if e.eventWriterSetup != nil {
+		e.eventWriterSetup(writer)
 	}
 	defer writer.abort()
 	sequence := int64(0)
@@ -1178,14 +1319,8 @@ func (e *Engine) Run(ctx context.Context, name string, supplied map[string]any, 
 	index, calls, stepsRun := 0, 0, 0
 	for index < len(p.steps) {
 		if err := deadline.Err(); err != nil {
-			status := statusForContext(ctx, deadline)
-			terminalEvent := "workflow_completed"
-			code := "timeout"
-			if status == "cancelled" {
-				terminalEvent = "workflow_cancelled"
-				code = "cancelled"
-			}
-			return finish(failureResult(status, code, err), terminalEvent, code)
+			status, terminalEvent, code, contextErr, _ := contextTermination(ctx, deadline)
+			return finish(failureResult(status, code, contextErr), terminalEvent, code)
 		}
 		stepsRun++
 		if stepsRun > p.limits.maxSteps {
@@ -1252,22 +1387,16 @@ func (e *Engine) Run(ctx context.Context, name string, supplied map[string]any, 
 					if err := emit(permission, false); err != nil {
 						return handleLogError(err)
 					}
-					if ctx.Err() != nil {
-						return finish(failureResult("cancelled", "cancelled", ctx.Err()), "workflow_cancelled", "cancelled")
-					}
-					if deadline.Err() != nil {
-						return finish(failureResult("timed_out", "timeout", deadline.Err()), "workflow_completed", "timeout")
+					if status, terminalEvent, code, contextErr, terminated := contextTermination(ctx, deadline); terminated {
+						return finish(failureResult(status, code, contextErr), terminalEvent, code)
 					}
 					return failStep(current, attempt, "denied", errors.New("tool attempt denied"))
 				}
 				if err := emit(permission, false); err != nil {
 					return handleLogError(err)
 				}
-				if ctx.Err() != nil {
-					return finish(failureResult("cancelled", "cancelled", ctx.Err()), "workflow_cancelled", "cancelled")
-				}
-				if deadline.Err() != nil {
-					return finish(failureResult("timed_out", "timeout", deadline.Err()), "workflow_completed", "timeout")
+				if status, terminalEvent, code, contextErr, terminated := contextTermination(ctx, deadline); terminated {
+					return finish(failureResult(status, code, contextErr), terminalEvent, code)
 				}
 				if calls >= p.limits.maxCalls {
 					return failStep(current, attempt, "validation", errors.New("tool call limit exceeded"))
@@ -1318,11 +1447,8 @@ func (e *Engine) Run(ctx context.Context, name string, supplied map[string]any, 
 					break
 				}
 				lastErr = callErr
-				if ctx.Err() != nil {
-					return finish(failureResult("cancelled", "cancelled", ctx.Err()), "workflow_cancelled", "cancelled")
-				}
-				if deadline.Err() != nil {
-					return finish(failureResult("timed_out", "timeout", deadline.Err()), "workflow_completed", "timeout")
+				if status, terminalEvent, code, contextErr, terminated := contextTermination(ctx, deadline); terminated {
+					return finish(failureResult(status, code, contextErr), terminalEvent, code)
 				}
 				if retryable(callErr, current.Retry.When, deadline, ctx) && attempt < attempts {
 					retried := eventBase(runID, name, "step_retried", "retrying", sequence)
@@ -1338,11 +1464,8 @@ func (e *Engine) Run(ctx context.Context, name string, supplied map[string]any, 
 				break
 			}
 			if lastErr != nil {
-				if ctx.Err() != nil {
-					return finish(failureResult("cancelled", "cancelled", ctx.Err()), "workflow_cancelled", "cancelled")
-				}
-				if deadline.Err() != nil {
-					return finish(failureResult("timed_out", "timeout", deadline.Err()), "workflow_completed", "timeout")
+				if status, terminalEvent, code, contextErr, terminated := contextTermination(ctx, deadline); terminated {
+					return finish(failureResult(status, code, contextErr), terminalEvent, code)
 				}
 				_, outcome := toolOutcome(lastErr, ctx, deadline)
 				return failStep(current, lastAttempt, outcome, lastErr)
@@ -1375,9 +1498,12 @@ func (e *Engine) Run(ctx context.Context, name string, supplied map[string]any, 
 		case "return":
 			outputs := map[string]any{}
 			for key, value := range p.doc["outputs"].(map[string]any) {
-				resolved, missing, err := resolveValue(value, inputs, state, false)
-				if err != nil || missing {
+				resolved, missing, err := resolveValue(value, inputs, state, true)
+				if err != nil {
 					return failStep(current, 1, "validation", errors.New("output resolution failed"))
+				}
+				if missing {
+					continue
 				}
 				outputs[key] = resolved
 			}
@@ -1404,11 +1530,8 @@ func toolOutcome(err error, caller context.Context, workflowContext context.Cont
 	if err == nil {
 		return "succeeded", "success"
 	}
-	if caller.Err() != nil {
-		return "cancelled", "cancelled"
-	}
-	if workflowContext.Err() != nil {
-		return "timed_out", "timeout"
+	if status, _, code, _, terminated := contextTermination(caller, workflowContext); terminated {
+		return status, code
 	}
 	var timeout HandlerTimeout
 	if errors.As(err, &timeout) {
@@ -1417,12 +1540,26 @@ func toolOutcome(err error, caller context.Context, workflowContext context.Cont
 	return "failed", "tool_error"
 }
 
-func statusForContext(c context.Context, w context.Context) string {
-	if c.Err() != nil {
-		return "cancelled"
+func contextTermination(caller, workflow context.Context) (status, terminalEvent, code string, err error, terminated bool) {
+	if callerErr := caller.Err(); callerErr != nil {
+		status = "cancelled"
+		if errors.Is(callerErr, context.DeadlineExceeded) {
+			status, terminalEvent, code = "timed_out", "workflow_completed", "timeout"
+		} else {
+			terminalEvent, code = "workflow_cancelled", "cancelled"
+		}
+		return status, terminalEvent, code, callerErr, true
 	}
-	if w.Err() != nil {
-		return "timed_out"
+	if workflowErr := workflow.Err(); workflowErr != nil {
+		return "timed_out", "workflow_completed", "timeout", workflowErr, true
+	}
+	return "", "", "", nil, false
+}
+
+func statusForContext(c context.Context, w context.Context) string {
+	status, _, _, _, terminated := contextTermination(c, w)
+	if terminated {
+		return status
 	}
 	return "failed"
 }
@@ -1816,7 +1953,7 @@ func (e *Engine) readRelative(parts []string, max int) ([]byte, error) {
 		return nil, err
 	}
 	defer d.Close()
-	fd, err := unix.Openat(int(d.Fd()), parts[len(parts)-1], syscall.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	fd, err := unix.Openat(int(d.Fd()), parts[len(parts)-1], syscall.O_RDONLY|syscall.O_NONBLOCK|syscall.O_NOFOLLOW|syscall.O_CLOEXEC, 0)
 	if err != nil {
 		return nil, err
 	}

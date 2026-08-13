@@ -69,16 +69,50 @@ func TestRegistryExecuteContextPassesCallerContext(t *testing.T) {
 
 func TestRegistryLegacyRegisterUsesConvenienceContextAndMetadataDefaults(t *testing.T) {
 	reg := NewEmptyRegistry()
-	if err := reg.Register(ollama.Tool{Function: ollama.FunctionDef{Name: "legacy"}}, func(map[string]interface{}) (string, error) {
+	reg.Register(ollama.Tool{Function: ollama.FunctionDef{Name: "legacy"}}, func(map[string]interface{}) (string, error) {
 		return "ok", nil
-	}); err != nil {
-		t.Fatalf("registration failed: %v", err)
-	}
+	})
 	if got, err := reg.Execute("legacy", nil); err != nil || got != "ok" {
 		t.Fatalf("legacy execution failed: %q, %v", got, err)
 	}
 	metadata, ok := reg.GetMetadata("legacy")
-	if !ok || metadata != (ToolMetadata{WorkflowCallable: false}) {
+	if !ok || metadata != (ToolMetadata{}) {
 		t.Fatalf("unexpected legacy metadata: %#v, %v", metadata, ok)
+	}
+}
+
+func TestRegistryLegacyRegisterMethodShape(t *testing.T) {
+	var _ interface {
+		Register(ollama.Tool, ToolHandler)
+	} = (*Registry)(nil)
+
+	var register func(*Registry, ollama.Tool, ToolHandler) = (*Registry).Register
+	if register == nil {
+		t.Fatal("legacy Register method value is nil")
+	}
+}
+
+func TestRegistryLegacyRegisterDuplicatePreservesFirstRegistration(t *testing.T) {
+	reg := NewEmptyRegistry()
+	tool := ollama.Tool{Function: ollama.FunctionDef{Name: "legacy_duplicate"}}
+	reg.Register(tool, func(map[string]interface{}) (string, error) {
+		return "first", nil
+	})
+	reg.Register(tool, func(map[string]interface{}) (string, error) {
+		return "second", nil
+	})
+	if got, err := reg.Execute("legacy_duplicate", nil); err != nil || got != "first" {
+		t.Fatalf("legacy duplicate replaced first handler: %q, %v", got, err)
+	}
+}
+
+func TestRegistryLegacyRegisterDefaultMetadataIsNotWorkflowCallable(t *testing.T) {
+	reg := NewEmptyRegistry()
+	reg.Register(ollama.Tool{Function: ollama.FunctionDef{Name: "legacy_metadata"}}, func(map[string]interface{}) (string, error) {
+		return "ok", nil
+	})
+	metadata, ok := reg.GetMetadata("legacy_metadata")
+	if !ok || metadata.WorkflowCallable {
+		t.Fatalf("legacy registration should not be workflow callable: %#v, %v", metadata, ok)
 	}
 }
