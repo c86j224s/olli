@@ -38,6 +38,9 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	if cfg.IsWhitelisted("audio_generate") {
 		t.Fatal("expected audio_generate not to be whitelisted by default")
 	}
+	if !cfg.IsWhitelisted("inspect_image") {
+		t.Fatal("expected read-only inspect_image to be whitelisted by default")
+	}
 	if cfg.ImageGeneration.ComfyUI.Endpoint != "http://127.0.0.1:8188" {
 		t.Fatalf("expected default ComfyUI endpoint, got %s", cfg.ImageGeneration.ComfyUI.Endpoint)
 	}
@@ -52,6 +55,18 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	}
 	if len(cfg.ImageGeneration.ComfyUI.Workflows) != 0 {
 		t.Fatalf("expected no default ComfyUI workflows, got %d", len(cfg.ImageGeneration.ComfyUI.Workflows))
+	}
+	if cfg.ImageInspection.Ollama.Endpoint != "http://127.0.0.1:11434" {
+		t.Fatalf("expected default Ollama inspection endpoint, got %s", cfg.ImageInspection.Ollama.Endpoint)
+	}
+	if cfg.ImageInspection.Ollama.Model != "gemma4:12b" {
+		t.Fatalf("expected default inspection model gemma4:12b, got %s", cfg.ImageInspection.Ollama.Model)
+	}
+	if cfg.ImageInspection.Ollama.TimeoutSeconds != 300 {
+		t.Fatalf("expected default inspection timeout 300, got %d", cfg.ImageInspection.Ollama.TimeoutSeconds)
+	}
+	if cfg.ImageInspection.Ollama.MaxImageBytes != 67108864 {
+		t.Fatalf("expected default inspection max bytes, got %d", cfg.ImageInspection.Ollama.MaxImageBytes)
 	}
 	if cfg.AudioGeneration.ACEStep.Endpoint != "http://127.0.0.1:8001" {
 		t.Fatalf("expected default ACE-Step endpoint, got %s", cfg.AudioGeneration.ACEStep.Endpoint)
@@ -124,6 +139,31 @@ func TestConfigImageGenerationDefaultsFilledForPartialConfig(t *testing.T) {
 	}
 	if cfg.ImageGeneration.ComfyUI.Workflows["fast"].Path != "workflow.json" {
 		t.Fatalf("expected configured workflow to be preserved")
+	}
+}
+
+func TestConfigImageInspectionDefaultsFilledForPartialConfig(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"default_mode":"ask","num_ctx":4096,"whitelist_tools":["calculator"],"image_inspection":{"ollama":{"model":"custom-vision"}}}`), 0600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if cfg.ImageInspection.Ollama.Endpoint != "http://127.0.0.1:11434" {
+		t.Fatalf("expected default inspection endpoint, got %s", cfg.ImageInspection.Ollama.Endpoint)
+	}
+	if cfg.ImageInspection.Ollama.Model != "custom-vision" {
+		t.Fatalf("expected configured inspection model to be preserved, got %s", cfg.ImageInspection.Ollama.Model)
+	}
+	if cfg.ImageInspection.Ollama.TimeoutSeconds != 300 {
+		t.Fatalf("expected default inspection timeout, got %d", cfg.ImageInspection.Ollama.TimeoutSeconds)
+	}
+	if cfg.ImageInspection.Ollama.MaxImageBytes != 67108864 {
+		t.Fatalf("expected default inspection max bytes, got %d", cfg.ImageInspection.Ollama.MaxImageBytes)
 	}
 }
 

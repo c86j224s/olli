@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://olli.local/schemas/oaw.schema.json",
+  "title": "O.L.L.I. Agent Workflow Protocol",
+  "description": "Schema for OAW v0.1 workflow declarations. Runtime semantic validation still applies after schema validation, including reference resolution, forward-only control flow, tool registration, and resolved tool-argument validation.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["oaw_version", "name", "description", "inputs", "limits", "steps", "outputs", "on_failure"],
+  "properties": {
+    "oaw_version": {"type": "string", "const": "0.1"},
+    "name": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+    "description": {"type": "string", "minLength": 1},
+    "inputs": {
+      "type": "object",
+      "propertyNames": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+      "additionalProperties": {"$ref": "#/$defs/input"}
+    },
+    "limits": {"$ref": "#/$defs/limits"},
+    "steps": {"type": "array", "minItems": 1, "maxItems": 64, "items": {"$ref": "#/$defs/step"}},
+    "outputs": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+      "additionalProperties": {"$ref": "#/$defs/value"}
+    },
+    "on_failure": {"type": "string", "enum": ["stop", "report"]}
+  },
+  "$defs": {
+    "value": {},
+    "input": {
+      "oneOf": [
+        {"$ref": "#/$defs/string_input"},
+        {"$ref": "#/$defs/integer_input"},
+        {"$ref": "#/$defs/number_input"},
+        {"$ref": "#/$defs/boolean_input"}
+      ]
+    },
+    "input_common": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "description": {"type": "string"},
+        "required": {"type": "boolean", "default": false}
+      }
+    },
+    "string_input": {
+      "allOf": [
+        {"$ref": "#/$defs/input_common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "type": {"type": "string", "const": "string"}, "description": {"type": "string"}, "required": {"type": "boolean", "default": false},
+          "default": {"type": "string"}, "enum": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+          "min_length": {"type": "integer", "minimum": 0}, "max_length": {"type": "integer", "minimum": 0}
+        }},
+        {"if": {"properties": {"required": {"const": true}}, "required": ["required"]}, "then": {"not": {"required": ["default"]}}}
+      ]
+    },
+    "integer_input": {
+      "allOf": [
+        {"$ref": "#/$defs/input_common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "type": {"type": "string", "const": "integer"}, "description": {"type": "string"}, "required": {"type": "boolean", "default": false},
+          "default": {"type": "integer"}, "enum": {"type": "array", "minItems": 1, "items": {"type": "integer"}},
+          "minimum": {"type": "integer"}, "maximum": {"type": "integer"}
+        }},
+        {"if": {"properties": {"required": {"const": true}}, "required": ["required"]}, "then": {"not": {"required": ["default"]}}}
+      ]
+    },
+    "number_input": {
+      "allOf": [
+        {"$ref": "#/$defs/input_common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "type": {"type": "string", "const": "number"}, "description": {"type": "string"}, "required": {"type": "boolean", "default": false},
+          "default": {"type": "number"}, "enum": {"type": "array", "minItems": 1, "items": {"type": "number"}},
+          "minimum": {"type": "number"}, "maximum": {"type": "number"}
+        }},
+        {"if": {"properties": {"required": {"const": true}}, "required": ["required"]}, "then": {"not": {"required": ["default"]}}}
+      ]
+    },
+    "boolean_input": {
+      "allOf": [
+        {"$ref": "#/$defs/input_common"},
+        {"type": "object", "additionalProperties": false, "properties": {
+          "type": {"type": "string", "const": "boolean"}, "description": {"type": "string"}, "required": {"type": "boolean", "default": false},
+          "default": {"type": "boolean"}, "enum": {"type": "array", "minItems": 1, "items": {"type": "boolean"}}
+        }},
+        {"if": {"properties": {"required": {"const": true}}, "required": ["required"]}, "then": {"not": {"required": ["default"]}}}
+      ]
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_steps", "max_tool_calls", "max_attempts_per_step", "timeout_seconds"],
+      "properties": {
+        "max_steps": {"type": "integer", "minimum": 1, "maximum": 64},
+        "max_tool_calls": {"type": "integer", "minimum": 0, "maximum": 64},
+        "max_attempts_per_step": {"type": "integer", "minimum": 1, "maximum": 3},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+      }
+    },
+    "step_id": {"type": "string", "pattern": "^[a-z][a-z0-9_-]{0,63}$"},
+    "step": {"oneOf": [{"$ref": "#/$defs/tool_step"}, {"$ref": "#/$defs/decision_step"}, {"$ref": "#/$defs/return_step"}]},
+    "tool_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "tool", "arguments"],
+      "properties": {
+        "id": {"$ref": "#/$defs/step_id"},
+        "kind": {"type": "string", "const": "tool"},
+        "tool": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+        "arguments": {"type": "object"},
+        "retry": {"$ref": "#/$defs/retry"}
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts", "when"],
+      "properties": {
+        "max_attempts": {"type": "integer", "minimum": 1, "maximum": 3},
+        "when": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "enum": ["tool_error", "timeout"]}}
+      }
+    },
+    "decision_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "condition", "on_true", "on_false"],
+      "properties": {
+        "id": {"$ref": "#/$defs/step_id"},
+        "kind": {"type": "string", "const": "decision"},
+        "condition": {"$ref": "#/$defs/condition"},
+        "on_true": {"anyOf": [{"$ref": "#/$defs/step_id"}, {"type": "string", "const": "stop"}]},
+        "on_false": {"anyOf": [{"$ref": "#/$defs/step_id"}, {"type": "string", "const": "stop"}]}
+      }
+    },
+    "condition": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ref": {"type": "string", "pattern": "^\\{\\{(inputs\\.[a-z][a-z0-9_-]{0,63}|steps\\.[a-z][a-z0-9_-]{0,63}\\.(result\\.[a-zA-Z0-9_.-]+|status|attempt))\\}\\}$"},
+        "operator": {"type": "string", "enum": ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "exists", "in"]},
+        "value": {}
+      },
+      "oneOf": [
+        {
+          "required": ["ref", "operator"],
+          "properties": {"operator": {"const": "exists"}},
+          "not": {"required": ["value"]}
+        },
+        {
+          "required": ["ref", "operator", "value"],
+          "properties": {"operator": {"enum": ["eq", "neq", "gt", "gte", "lt", "lte", "contains", "in"]}}
+        }
+      ]
+    },
+    "return_step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind"],
+      "properties": {
+        "id": {"$ref": "#/$defs/step_id"},
+        "kind": {"type": "string", "const": "return"}
+      }
+    }
+  }
+}

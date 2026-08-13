@@ -138,6 +138,45 @@ func (r *Registry) SetImageGenerationConfig(cfg ImageGenerationConfig) {
 	}
 	cfg.ComfyUI.Workflows = workflows
 	r.imageGeneration = cfg
+	r.updateImageGenerateToolDefinition()
+}
+
+func configuredWorkflowAliases(workflows map[string]ComfyUIWorkflowConfig) []string {
+	aliases := make([]string, 0, len(workflows))
+	for alias := range workflows {
+		aliases = append(aliases, alias)
+	}
+	sort.Strings(aliases)
+	return aliases
+}
+
+func workflowAliasProperty(workflows map[string]ComfyUIWorkflowConfig) ollama.FunctionParamProperty {
+	aliases := configuredWorkflowAliases(workflows)
+	description := "Configured ComfyUI workflow alias from image_generation.comfyui.workflows."
+	switch len(aliases) {
+	case 0:
+		description += " No workflow aliases are currently configured."
+	case 1:
+		description += fmt.Sprintf(" Use %q.", aliases[0])
+	default:
+		description += fmt.Sprintf(" Allowed values: %s.", strings.Join(aliases, ", "))
+	}
+	return ollama.FunctionParamProperty{
+		Type:        "string",
+		Description: description,
+		Enum:        aliases,
+	}
+}
+
+func (r *Registry) updateImageGenerateToolDefinition() {
+	for i := range r.definitions {
+		if r.definitions[i].Function.Name != imageGenerateToolName {
+			continue
+		}
+		properties := r.definitions[i].Function.Parameters.Properties
+		properties["workflow_alias"] = workflowAliasProperty(r.imageGeneration.ComfyUI.Workflows)
+		return
+	}
 }
 
 func validateImageGenerationRuntimeConfig(cfg ImageGenerationConfig) error {
@@ -155,7 +194,7 @@ func (r *Registry) registerImageGenerateTool() {
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        imageGenerateToolName,
-			Description: "Generate an image through a configured local ComfyUI workflow and save the first output image as a workspace artifact",
+			Description: "Generate an image through a configured local ComfyUI workflow and save the first output image as a workspace artifact. After success, call inspect_image when visual quality or prompt compliance must be verified.",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
@@ -219,7 +258,7 @@ func (r *Registry) executeImageGenerate(args map[string]interface{}) (string, er
 		return "", fmt.Errorf("image generation config error: no ComfyUI workflows configured; add image_generation.comfyui.workflows entries in config.json")
 	}
 
-	workflowAlias, err := requiredStringArg(args, "workflow_alias")
+	workflowAlias, err := imageWorkflowAliasArg(args, cfg.ComfyUI.Workflows)
 	if err != nil {
 		return "", err
 	}
@@ -346,6 +385,29 @@ func (r *Registry) executeImageGenerate(args map[string]interface{}) (string, er
 		return "", fmt.Errorf("failed to marshal image generation result: %w", err)
 	}
 	return string(data), nil
+}
+
+func imageWorkflowAliasArg(args map[string]interface{}, workflows map[string]ComfyUIWorkflowConfig) (string, error) {
+	aliases := configuredWorkflowAliases(workflows)
+	value, ok := args["workflow_alias"]
+	if !ok || value == nil {
+		if len(aliases) == 1 {
+			return aliases[0], nil
+		}
+		return "", fmt.Errorf("invalid workflow_alias argument: choose one of %s", strings.Join(aliases, ", "))
+	}
+	alias, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("invalid workflow_alias argument")
+	}
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		if len(aliases) == 1 {
+			return aliases[0], nil
+		}
+		return "", fmt.Errorf("invalid workflow_alias argument: choose one of %s", strings.Join(aliases, ", "))
+	}
+	return alias, nil
 }
 
 func requiredStringArg(args map[string]interface{}, key string) (string, error) {

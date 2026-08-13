@@ -41,9 +41,9 @@ type FunctionParamProperty struct {
 }
 
 type FunctionParamSchema struct {
-	Type       string                          `json:"type"`
+	Type       string                           `json:"type"`
 	Properties map[string]FunctionParamProperty `json:"properties"`
-	Required   []string                        `json:"required,omitempty"`
+	Required   []string                         `json:"required,omitempty"`
 }
 
 type FunctionDef struct {
@@ -70,6 +70,7 @@ type ToolCall struct {
 type Message struct {
 	Role            string     `json:"role"` // "system", "user", "assistant", "tool"
 	Content         string     `json:"content"`
+	Images          []string   `json:"images,omitempty"`
 	Thinking        string     `json:"thinking,omitempty"`
 	ToolCalls       []ToolCall `json:"tool_calls,omitempty"`
 	PromptEvalCount int        `json:"prompt_eval_count,omitempty"`
@@ -77,20 +78,21 @@ type Message struct {
 }
 
 type ChatRequest struct {
-	Model    string    `json:"model"`
-	Messages []Message `json:"messages"`
-	Tools    []Tool    `json:"tools,omitempty"`
-	Options  *Options  `json:"options,omitempty"`
-	Stream   bool      `json:"stream"`
+	Model    string      `json:"model"`
+	Messages []Message   `json:"messages"`
+	Tools    []Tool      `json:"tools,omitempty"`
+	Format   interface{} `json:"format,omitempty"`
+	Options  *Options    `json:"options,omitempty"`
+	Stream   bool        `json:"stream"`
 }
 
 type ChatResponseChunk struct {
-	Model           string   `json:"model"`
-	CreatedAt       string   `json:"created_at"`
-	Message         Message  `json:"message"`
-	Done            bool     `json:"done"`
-	PromptEvalCount int      `json:"prompt_eval_count,omitempty"`
-	EvalCount       int      `json:"eval_count,omitempty"`
+	Model           string  `json:"model"`
+	CreatedAt       string  `json:"created_at"`
+	Message         Message `json:"message"`
+	Done            bool    `json:"done"`
+	PromptEvalCount int     `json:"prompt_eval_count,omitempty"`
+	EvalCount       int     `json:"eval_count,omitempty"`
 }
 
 type ModelItem struct {

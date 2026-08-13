@@ -13,6 +13,7 @@ type Config struct {
 	NumCtx          int                   `json:"num_ctx"`
 	WhitelistTools  []string              `json:"whitelist_tools"`
 	ImageGeneration ImageGenerationConfig `json:"image_generation"`
+	ImageInspection ImageInspectionConfig `json:"image_inspection"`
 	AudioGeneration AudioGenerationConfig `json:"audio_generation"`
 	filePath        string
 	mu              sync.RWMutex
@@ -44,6 +45,17 @@ type ComfyUIWorkflowConfig struct {
 	StepsInput           string `json:"steps_input"`
 	SeedNodeID           string `json:"seed_node_id"`
 	SeedInput            string `json:"seed_input"`
+}
+
+type ImageInspectionConfig struct {
+	Ollama OllamaImageInspectionConfig `json:"ollama"`
+}
+
+type OllamaImageInspectionConfig struct {
+	Endpoint       string `json:"endpoint"`
+	Model          string `json:"model"`
+	TimeoutSeconds int    `json:"timeout_seconds"`
+	MaxImageBytes  int64  `json:"max_image_bytes"`
 }
 
 type AudioGenerationConfig struct {
@@ -78,11 +90,13 @@ func LoadConfig(filePath string) (*Config, error) {
 			"get_system_info",
 			"get_agent_status",
 			"search_session_history",
+			"inspect_image",
 			"view_file",
 			"list_dir",
 			"grep_search",
 		},
 		ImageGeneration: DefaultImageGenerationConfig(),
+		ImageInspection: DefaultImageInspectionConfig(),
 		AudioGeneration: DefaultAudioGenerationConfig(),
 		filePath:        absPath,
 	}
@@ -107,10 +121,11 @@ func LoadConfig(filePath string) (*Config, error) {
 	cfg.filePath = absPath
 	cfg.DefaultMode = safeDefaultMode(cfg.DefaultMode)
 	cfg.ImageGeneration = normalizeImageGenerationConfig(cfg.ImageGeneration)
+	cfg.ImageInspection = normalizeImageInspectionConfig(cfg.ImageInspection)
 	cfg.AudioGeneration = normalizeAudioGenerationConfig(cfg.AudioGeneration)
 
 	// Ensure default safe tools exist in whitelist
-	for _, defaultTool := range []string{"view_file", "list_dir", "grep_search", "get_agent_status"} {
+	for _, defaultTool := range []string{"view_file", "list_dir", "grep_search", "get_agent_status", "inspect_image"} {
 		if !cfg.IsWhitelisted(defaultTool) {
 			cfg.AddWhitelist(defaultTool)
 		}
@@ -127,6 +142,17 @@ func DefaultImageGenerationConfig() ImageGenerationConfig {
 			TimeoutSeconds: 300,
 			MaxImageBytes:  67108864,
 			Workflows:      map[string]ComfyUIWorkflowConfig{},
+		},
+	}
+}
+
+func DefaultImageInspectionConfig() ImageInspectionConfig {
+	return ImageInspectionConfig{
+		Ollama: OllamaImageInspectionConfig{
+			Endpoint:       "http://127.0.0.1:11434",
+			Model:          "gemma4:12b",
+			TimeoutSeconds: 300,
+			MaxImageBytes:  67108864,
 		},
 	}
 }
@@ -160,6 +186,23 @@ func normalizeImageGenerationConfig(cfg ImageGenerationConfig) ImageGenerationCo
 	}
 	if cfg.ComfyUI.Workflows == nil {
 		cfg.ComfyUI.Workflows = map[string]ComfyUIWorkflowConfig{}
+	}
+	return cfg
+}
+
+func normalizeImageInspectionConfig(cfg ImageInspectionConfig) ImageInspectionConfig {
+	defaults := DefaultImageInspectionConfig()
+	if cfg.Ollama.Endpoint == "" {
+		cfg.Ollama.Endpoint = defaults.Ollama.Endpoint
+	}
+	if cfg.Ollama.Model == "" {
+		cfg.Ollama.Model = defaults.Ollama.Model
+	}
+	if cfg.Ollama.TimeoutSeconds <= 0 {
+		cfg.Ollama.TimeoutSeconds = defaults.Ollama.TimeoutSeconds
+	}
+	if cfg.Ollama.MaxImageBytes <= 0 {
+		cfg.Ollama.MaxImageBytes = defaults.Ollama.MaxImageBytes
 	}
 	return cfg
 }

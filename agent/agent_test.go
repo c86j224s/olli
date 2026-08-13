@@ -156,6 +156,9 @@ func TestSensitiveToolsRequirePermissionEvenWhenWhitelisted(t *testing.T) {
 	if ag.ShouldRequirePermission("calculator") {
 		t.Fatal("expected calculator to remain auto-allowed in auto mode")
 	}
+	if ag.ShouldRequirePermission("inspect_image") {
+		t.Fatal("expected read-only inspect_image to remain auto-allowed in auto mode")
+	}
 }
 
 func TestLoadSessionIgnoresWorkspaceOutsideInitialRoot(t *testing.T) {

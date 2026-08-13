@@ -82,6 +82,7 @@ func New(client *ollama.Client, model string, systemMsg string, sessMgr *session
 	reg.SetWorkspace(initialDir)
 	if cfg != nil {
 		reg.SetImageGenerationConfig(toolsImageGenerationConfig(cfg.ImageGeneration))
+		reg.SetImageInspectionConfig(toolsImageInspectionConfig(cfg.ImageInspection))
 		reg.SetAudioGenerationConfig(toolsAudioGenerationConfig(cfg.AudioGeneration))
 	}
 
@@ -338,6 +339,17 @@ func toolsImageGenerationConfig(cfg config.ImageGenerationConfig) tools.ImageGen
 			TimeoutSeconds: cfg.ComfyUI.TimeoutSeconds,
 			MaxImageBytes:  cfg.ComfyUI.MaxImageBytes,
 			Workflows:      workflows,
+		},
+	}
+}
+
+func toolsImageInspectionConfig(cfg config.ImageInspectionConfig) tools.ImageInspectionConfig {
+	return tools.ImageInspectionConfig{
+		Ollama: tools.OllamaImageInspectionConfig{
+			Endpoint:       cfg.Ollama.Endpoint,
+			Model:          cfg.Ollama.Model,
+			TimeoutSeconds: cfg.Ollama.TimeoutSeconds,
+			MaxImageBytes:  cfg.Ollama.MaxImageBytes,
 		},
 	}
 }

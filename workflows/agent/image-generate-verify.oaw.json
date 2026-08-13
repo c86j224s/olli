@@ -1,0 +1,78 @@
+{
+  "oaw_version": "0.1",
+  "name": "image-generate-verify",
+  "description": "Generate an image and inspect the result.",
+  "inputs": {
+    "prompt": {
+      "type": "string",
+      "required": true
+    },
+    "verification_question": {
+      "type": "string",
+      "required": true
+    },
+    "width": {
+      "type": "integer",
+      "default": 1024,
+      "minimum": 16,
+      "maximum": 4096
+    },
+    "height": {
+      "type": "integer",
+      "default": 1024,
+      "minimum": 16,
+      "maximum": 4096
+    },
+    "steps": {
+      "type": "integer",
+      "default": 4,
+      "minimum": 1,
+      "maximum": 200
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "limits": {
+    "max_steps": 3,
+    "max_tool_calls": 2,
+    "max_attempts_per_step": 1,
+    "timeout_seconds": 600
+  },
+  "steps": [
+    {
+      "id": "generate",
+      "kind": "tool",
+      "tool": "image_generate",
+      "arguments": {
+        "backend_alias": "comfyui",
+        "workflow_alias": "default_workflow",
+        "prompt": "{{inputs.prompt}}",
+        "width": "{{inputs.width}}",
+        "height": "{{inputs.height}}",
+        "steps": "{{inputs.steps}}",
+        "seed": "{{inputs.seed}}"
+      }
+    },
+    {
+      "id": "inspect",
+      "kind": "tool",
+      "tool": "inspect_image",
+      "arguments": {
+        "path": "{{steps.generate.result.workspace_relative_path}}",
+        "question": "{{inputs.verification_question}}"
+      }
+    },
+    {
+      "id": "report",
+      "kind": "return"
+    }
+  ],
+  "outputs": {
+    "image_path": "{{steps.generate.result.workspace_relative_path}}",
+    "inspection": "{{steps.inspect.result.assessment}}",
+    "disclaimer": "{{steps.inspect.result.disclaimer}}"
+  },
+  "on_failure": "stop"
+}

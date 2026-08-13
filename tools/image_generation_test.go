@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/c86j224s/olli/ollama"
 )
 
 func TestImageGenerateRejectsUnsafeEndpointsTempOnlyNoNetwork(t *testing.T) {
@@ -66,6 +68,63 @@ func TestImageGenerateMissingWorkflowTempOnlyNoNetwork(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "no ComfyUI workflows configured") {
 		t.Fatalf("expected missing workflow config error, got: %v", err)
+	}
+}
+
+func TestImageGenerateToolExposesConfiguredWorkflowAliases(t *testing.T) {
+	reg := NewRegistry()
+	reg.SetImageGenerationConfig(ImageGenerationConfig{
+		ComfyUI: ComfyUIConfig{
+			Workflows: map[string]ComfyUIWorkflowConfig{
+				"zeta":  {Path: "zeta.json"},
+				"alpha": {Path: "alpha.json"},
+			},
+		},
+	})
+
+	var workflowProperty *ollama.FunctionParamProperty
+	for _, definition := range reg.GetDefinitions() {
+		if definition.Function.Name != imageGenerateToolName {
+			continue
+		}
+		property := definition.Function.Parameters.Properties["workflow_alias"]
+		workflowProperty = &property
+		break
+	}
+	if workflowProperty == nil {
+		t.Fatal("expected image_generate workflow_alias schema property")
+	}
+	if len(workflowProperty.Enum) != 2 || workflowProperty.Enum[0] != "alpha" || workflowProperty.Enum[1] != "zeta" {
+		t.Fatalf("expected sorted configured aliases in schema, got %v", workflowProperty.Enum)
+	}
+	if !strings.Contains(workflowProperty.Description, "alpha, zeta") {
+		t.Fatalf("expected configured aliases in description, got %q", workflowProperty.Description)
+	}
+}
+
+func TestImageWorkflowAliasArgDefaultsOnlyConfiguredAlias(t *testing.T) {
+	workflows := map[string]ComfyUIWorkflowConfig{
+		"default_workflow": {Path: "workflow.json"},
+	}
+
+	alias, err := imageWorkflowAliasArg(map[string]interface{}{}, workflows)
+	if err != nil {
+		t.Fatalf("expected single configured alias to be selected: %v", err)
+	}
+	if alias != "default_workflow" {
+		t.Fatalf("expected default_workflow, got %q", alias)
+	}
+}
+
+func TestImageWorkflowAliasArgRequiresChoiceForMultipleAliases(t *testing.T) {
+	workflows := map[string]ComfyUIWorkflowConfig{
+		"zeta":  {Path: "zeta.json"},
+		"alpha": {Path: "alpha.json"},
+	}
+
+	_, err := imageWorkflowAliasArg(map[string]interface{}{}, workflows)
+	if err == nil || !strings.Contains(err.Error(), "alpha, zeta") {
+		t.Fatalf("expected sorted alias choice error, got: %v", err)
 	}
 }
 
@@ -257,7 +316,6 @@ func TestImageGenerateComfyUISuccessPathTempOnlyHttptest(t *testing.T) {
 
 	resultJSON, err := reg.Execute("image_generate", map[string]interface{}{
 		"backend_alias":   "comfyui",
-		"workflow_alias":  "default",
 		"prompt":          "sunlit workspace",
 		"negative_prompt": "blur",
 		"width":           640,

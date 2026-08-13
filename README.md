@@ -23,7 +23,7 @@
 
 ## ComfyUI 이미지 생성
 
-메인 에이전트 도구 `image_generate`는 로컬 ComfyUI API 워크플로를 실행하고 첫 출력 이미지를 워크스페이스 내부 `artifacts/images`에 저장합니다. 이 도구는 항상 권한 확인이 필요하며 기본 whitelist에 추가되지 않습니다.
+메인 에이전트 도구 `image_generate`는 로컬 ComfyUI API 워크플로를 실행하고 첫 출력 이미지를 워크스페이스 내부 `artifacts/images`에 저장합니다. 이 도구는 민감 도구로 분류되어 whitelist 등록 여부와 관계없이 항상 권한 확인이 필요합니다.
 
 - prerequisite 설치 스크립트:
 
@@ -54,7 +54,7 @@
 
 - ComfyUI API 서버는 로컬 HTTP 엔드포인트만 허용됩니다: `http://127.0.0.1:8188`, `http://localhost:8188`, `http://[::1]:8188`
 - ComfyUI에서 API-format workflow JSON을 저장한 뒤, 워크스페이스 내부 경로만 `config.json`에 등록합니다.
-- 기본 `config.json`은 workflow alias를 비워 둡니다. 실제 파일을 추가한 경우에만 `workflows`에 alias를 등록하세요.
+- 현재 `config.json`은 `workflows/comfyui/flux2-klein-4b-distilled.json`을 `default_workflow` alias로 등록합니다. 다른 workflow를 추가할 때도 실제 API-format 파일과 정확한 node/input mapping이 준비된 alias만 등록하세요.
 
 예시:
 
@@ -85,6 +85,59 @@
   }
 }
 ```
+
+---
+
+## 생성 이미지 시각 검사
+
+메인 에이전트 도구 `inspect_image`는 `artifacts/images` 아래의 생성 이미지를 로컬 Ollama 비전 모델로 분석합니다. 이미지 생성과 검사는 분리되어 있으므로, 시각적 품질이나 프롬프트 준수를 확인해야 할 때 명시적으로 호출합니다.
+
+- 기본 모델: `gemma4:12b`
+- 입력 파일은 `artifacts/images` 아래의 일반 파일만 허용되며 symlink는 거부됩니다.
+- 이미지는 크기와 형식을 검증하고 PNG로 정규화한 뒤 loopback Ollama API로만 전송됩니다.
+- 결과는 설명, 질문에 대한 답변, 품질 문제, 불확실성, 신뢰도를 포함하는 JSON입니다.
+- 결과는 비전 모델의 평가이며 ground truth가 아닙니다. 중요한 세부 정보는 별도로 확인해야 합니다.
+
+설정 예시:
+
+```json
+"image_inspection": {
+  "ollama": {
+    "endpoint": "http://127.0.0.1:11434",
+    "model": "gemma4:12b",
+    "timeout_seconds": 300,
+    "max_image_bytes": 67108864
+  }
+}
+```
+
+호출 예시:
+
+```json
+{
+  "path": "artifacts/images/generated.png",
+  "question": "Does this image show a photorealistic snake with exactly four visible legs?"
+}
+```
+
+---
+
+## OAW 에이전트 워크플로 프로토콜
+
+OAW(**O.L.L.I. Agent Workflow Protocol**) v0.1은 O.L.L.I.가 등록된 도구를 제한된 순서와 명시적 데이터 바인딩으로 실행하기 위한 선언형 JSON 규약입니다.
+
+- 프로토콜 명세: `workflows/agent/OAW_PROTOCOL.md`
+- JSON Schema: `workflows/agent/oaw.schema.json`
+- 첫 예제: `workflows/agent/image-generate-verify.oaw.json`
+- 표준 확장자: `*.oaw.json`
+
+첫 예제는 다음 절차를 선언합니다.
+
+```text
+image_generate → inspect_image → 결과 반환
+```
+
+현재는 **프로토콜·스키마·예제만 정의된 상태**이며 OAW runner와 `/workflow` 명령은 아직 구현되지 않았습니다. 단계별 workflow engine 구현 계획은 `TODO.md`에 있습니다. 엔진이 구현되기 전에는 OAW JSON을 직접 실행할 수 없으며, 같은 절차를 사용하려면 자연어로 `image_generate` 후 `inspect_image`를 요청해야 합니다.
 
 ---
 

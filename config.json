@@ -7,6 +7,7 @@
     "get_system_info",
     "get_agent_status",
     "search_session_history",
+    "inspect_image",
     "execute_action",
     "cd",
     "change_directory",
@@ -15,7 +16,8 @@
     "grep_search",
     "delegate_coder",
     "delegate_documenter",
-    "delegate_presenter"
+    "delegate_presenter",
+    "image_generate"
   ],
   "image_generation": {
     "comfyui": {
@@ -23,7 +25,31 @@
       "output_dir": "artifacts/images",
       "timeout_seconds": 300,
       "max_image_bytes": 67108864,
-      "workflows": {}
+      "workflows": {
+        "default_workflow": {
+          "path": "workflows/comfyui/flux2-klein-4b-distilled.json",
+          "prompt_node_id": "4",
+          "prompt_input": "text",
+          "negative_prompt_node_id": "",
+          "negative_prompt_input": "",
+          "width_node_id": "6",
+          "width_input": "value",
+          "height_node_id": "7",
+          "height_input": "value",
+          "steps_node_id": "11",
+          "steps_input": "steps",
+          "seed_node_id": "9",
+          "seed_input": "noise_seed"
+        }
+      }
+    }
+  },
+  "image_inspection": {
+    "ollama": {
+      "endpoint": "http://127.0.0.1:11434",
+      "model": "gemma4:12b",
+      "timeout_seconds": 300,
+      "max_image_bytes": 67108864
     }
   },
   "audio_generation": {

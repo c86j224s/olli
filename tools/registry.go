@@ -24,6 +24,7 @@ type Registry struct {
 	workspaceRoot   string
 	sessionFile     string
 	imageGeneration ImageGenerationConfig
+	imageInspection ImageInspectionConfig
 	audioGeneration AudioGenerationConfig
 }
 
@@ -44,6 +45,7 @@ func NewEmptyRegistry() *Registry {
 		workspace:       wd,
 		workspaceRoot:   wd,
 		imageGeneration: DefaultImageGenerationConfig(),
+		imageInspection: DefaultImageInspectionConfig(),
 		audioGeneration: DefaultAudioGenerationConfig(),
 	}
 }
@@ -261,6 +263,7 @@ func (r *Registry) registerDefaultTools() {
 	})
 
 	r.registerImageGenerateTool()
+	r.registerImageInspectTool()
 	r.registerAudioGenerateTool()
 }
 
