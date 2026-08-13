@@ -7,6 +7,7 @@ import (
 
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/subagent"
+	"github.com/c86j224s/olli/tools"
 )
 
 func (a *Agent) buildSubagentCallbacks() subagent.SubagentCallbacks {
@@ -96,9 +97,9 @@ func validateRequiredSubagentArtifacts(label string, report *subagent.ResultRepo
 	return nil
 }
 
-func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
+func (a *Agent) registerSubagentTools() {
 	// 1. delegate_researcher
-	a.registry.Register(ollama.Tool{
+	a.mustRegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_researcher",
@@ -114,7 +115,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 				Required: []string{"task_description"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
@@ -127,7 +128,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 	})
 
 	// 2. delegate_coder
-	a.registry.Register(ollama.Tool{
+	a.mustRegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_coder",
@@ -143,7 +144,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 				Required: []string{"task_description"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
@@ -156,7 +157,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 	})
 
 	// 3. delegate_tester
-	a.registry.Register(ollama.Tool{
+	a.mustRegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_tester",
@@ -172,7 +173,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 				Required: []string{"task_description"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
@@ -185,7 +186,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 	})
 
 	// 4. delegate_reviewer
-	a.registry.Register(ollama.Tool{
+	a.mustRegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_reviewer",
@@ -201,7 +202,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 				Required: []string{"task_description"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
@@ -214,7 +215,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 	})
 
 	// 5. delegate_documenter
-	a.registry.Register(ollama.Tool{
+	a.mustRegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_documenter",
@@ -230,7 +231,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 				Required: []string{"task_description"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
@@ -246,7 +247,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 	})
 
 	// 6. delegate_presenter
-	a.registry.Register(ollama.Tool{
+	a.mustRegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_presenter",
@@ -262,7 +263,7 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 				Required: []string{"task_description"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
 		subCB := a.buildSubagentCallbacks()
@@ -276,4 +277,10 @@ func (a *Agent) registerSubagentToolsWithContext(ctx context.Context) {
 		}
 		return formatSubagentReport("📊 [Presenter Subagent Report]", report), nil
 	})
+}
+
+func (a *Agent) mustRegisterContext(tool ollama.Tool, metadata tools.ToolMetadata, handler tools.ContextToolHandler) {
+	if err := a.registry.RegisterContext(tool, metadata, handler); err != nil {
+		panic(err)
+	}
 }

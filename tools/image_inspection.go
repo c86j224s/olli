@@ -109,7 +109,7 @@ func validateImageInspectionRuntimeConfig(cfg ImageInspectionConfig) error {
 }
 
 func (r *Registry) registerImageInspectTool() {
-	r.Register(ollama.Tool{
+	r.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        imageInspectToolName,
@@ -129,12 +129,15 @@ func (r *Registry) registerImageInspectTool() {
 				Required: []string{"path"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
-		return r.executeImageInspect(args)
+	}, ToolMetadata{RetrySafe: true, WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
+		return r.executeImageInspect(ctx, args)
 	})
 }
 
-func (r *Registry) executeImageInspect(args map[string]interface{}) (string, error) {
+func (r *Registry) executeImageInspect(ctx context.Context, args map[string]interface{}) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	cfg := r.imageInspection.withDefaults()
 	if err := validateImageInspectionRuntimeConfig(cfg); err != nil {
 		return "", err
@@ -170,7 +173,7 @@ func (r *Registry) executeImageInspect(args map[string]interface{}) (string, err
 	}
 
 	timeout := time.Duration(cfg.Ollama.TimeoutSeconds) * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	client := newLocalImageInspectionHTTPClient(timeout)
 	if err := requireOllamaVisionModel(ctx, client, endpoint, cfg.Ollama.Model); err != nil {

@@ -113,6 +113,7 @@ func New(client *ollama.Client, model string, systemMsg string, sessMgr *session
 
 	ag.registerBuiltinTools()
 	ag.registerGoalTools()
+	ag.registerSubagentTools()
 
 	if sessMgr != nil {
 		sessInfo, err := sessMgr.CreateSession("", model)
@@ -470,7 +471,6 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 
 func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbacks) (string, error) {
 	a.activeCB = cb
-	a.registerSubagentToolsWithContext(ctx)
 
 	userMsg := ollama.Message{Role: "user", Content: userInput}
 	a.history = append(a.history, userMsg)
@@ -562,13 +562,13 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 						if !allowed {
 							tErr = fmt.Errorf("user denied execution of tool '%s'", tc.Function.Name)
 						} else {
-							toolRes, tErr = a.registry.Execute(tc.Function.Name, tc.Function.Arguments)
+							toolRes, tErr = a.registry.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
 						}
 					} else {
 						tErr = fmt.Errorf("permission check required for '%s' but no prompt callback set", tc.Function.Name)
 					}
 				} else {
-					toolRes, tErr = a.registry.Execute(tc.Function.Name, tc.Function.Arguments)
+					toolRes, tErr = a.registry.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
 				}
 
 				if cb.OnToolCall != nil {

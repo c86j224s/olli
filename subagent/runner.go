@@ -222,7 +222,7 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 
 				toolCallsRun++
 				candidatePath, existedBefore, isArtifactCandidate := artifactCandidatePath(tc.Function.Arguments, r.workspace, r.workspaceRoot)
-				toolRes, tErr := reg.Execute(tc.Function.Name, tc.Function.Arguments)
+				toolRes, tErr := reg.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
 				resContent := toolRes
 				if tErr != nil {
 					resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)

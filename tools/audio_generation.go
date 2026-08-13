@@ -138,7 +138,7 @@ func validateAudioGenerationRuntimeConfig(cfg AudioGenerationConfig) error {
 }
 
 func (r *Registry) registerAudioGenerateTool() {
-	r.Register(ollama.Tool{
+	r.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        audioGenerateToolName,
@@ -183,12 +183,15 @@ func (r *Registry) registerAudioGenerateTool() {
 				Required: []string{"backend_alias", "prompt"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
-		return r.executeAudioGenerate(args)
+	}, ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
+		return r.executeAudioGenerate(ctx, args)
 	})
 }
 
-func (r *Registry) executeAudioGenerate(args map[string]interface{}) (string, error) {
+func (r *Registry) executeAudioGenerate(ctx context.Context, args map[string]interface{}) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	cfg := r.audioGeneration.withDefaults()
 	if err := validateAudioGenerationRuntimeConfig(cfg); err != nil {
 		return "", err
@@ -272,7 +275,7 @@ func (r *Registry) executeAudioGenerate(args map[string]interface{}) (string, er
 	}
 
 	timeout := time.Duration(cfg.ACEStep.TimeoutSeconds) * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	client := newLocalACEStepHTTPClient(timeout)

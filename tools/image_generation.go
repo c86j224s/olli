@@ -190,7 +190,7 @@ func validateImageGenerationRuntimeConfig(cfg ImageGenerationConfig) error {
 }
 
 func (r *Registry) registerImageGenerateTool() {
-	r.Register(ollama.Tool{
+	r.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        imageGenerateToolName,
@@ -235,12 +235,15 @@ func (r *Registry) registerImageGenerateTool() {
 				Required: []string{"backend_alias", "workflow_alias", "prompt"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
-		return r.executeImageGenerate(args)
+	}, ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
+		return r.executeImageGenerate(ctx, args)
 	})
 }
 
-func (r *Registry) executeImageGenerate(args map[string]interface{}) (string, error) {
+func (r *Registry) executeImageGenerate(ctx context.Context, args map[string]interface{}) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	cfg := r.imageGeneration.withDefaults()
 	if err := validateImageGenerationRuntimeConfig(cfg); err != nil {
 		return "", err
@@ -344,7 +347,7 @@ func (r *Registry) executeImageGenerate(args map[string]interface{}) (string, er
 	}
 
 	timeout := time.Duration(cfg.ComfyUI.TimeoutSeconds) * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	client := newLocalComfyHTTPClient(timeout)

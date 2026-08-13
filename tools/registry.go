@@ -16,10 +16,18 @@ import (
 )
 
 type ToolHandler func(args map[string]interface{}) (string, error)
+type ContextToolHandler func(context.Context, map[string]interface{}) (string, error)
+
+type ToolMetadata struct {
+	RetrySafe        bool
+	WorkflowCallable bool
+}
 
 type Registry struct {
-	definitions     []ollama.Tool
-	handlers        map[string]ToolHandler
+	definitions     map[string]ollama.Tool
+	handlers        map[string]ContextToolHandler
+	metadata        map[string]ToolMetadata
+	order           []string
 	workspace       string
 	workspaceRoot   string
 	sessionFile     string
@@ -40,8 +48,10 @@ func NewEmptyRegistry() *Registry {
 		wd = "."
 	}
 	return &Registry{
-		definitions:     make([]ollama.Tool, 0),
-		handlers:        make(map[string]ToolHandler),
+		definitions:     make(map[string]ollama.Tool),
+		handlers:        make(map[string]ContextToolHandler),
+		metadata:        make(map[string]ToolMetadata),
+		order:           make([]string, 0),
 		workspace:       wd,
 		workspaceRoot:   wd,
 		imageGeneration: DefaultImageGenerationConfig(),
@@ -98,21 +108,77 @@ func (r *Registry) ResolvePathSafe(targetPath string) (string, error) {
 	return IsPathSafeFrom(targetPath, r.workspace, r.GetWorkspaceRoot())
 }
 
-func (r *Registry) Register(tool ollama.Tool, handler ToolHandler) {
-	r.definitions = append(r.definitions, tool)
-	r.handlers[tool.Function.Name] = handler
+func (r *Registry) Register(tool ollama.Tool, handler ToolHandler) error {
+	return r.RegisterContext(tool, ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
+		return handler(args)
+	})
+}
+
+func (r *Registry) RegisterContext(tool ollama.Tool, metadata ToolMetadata, handler ContextToolHandler) error {
+	name := tool.Function.Name
+	if _, exists := r.handlers[name]; exists {
+		return fmt.Errorf("tool '%s' already registered", name)
+	}
+	r.definitions[name] = cloneTool(tool)
+	r.order = append(r.order, name)
+	r.handlers[name] = handler
+	r.metadata[name] = metadata
+	return nil
 }
 
 func (r *Registry) GetDefinitions() []ollama.Tool {
-	return r.definitions
+	definitions := make([]ollama.Tool, 0, len(r.order))
+	for _, name := range r.order {
+		definitions = append(definitions, cloneTool(r.definitions[name]))
+	}
+	return definitions
+}
+
+func (r *Registry) GetDefinition(name string) (ollama.Tool, bool) {
+	tool, ok := r.definitions[name]
+	if !ok {
+		return ollama.Tool{}, false
+	}
+	return cloneTool(tool), true
+}
+
+func (r *Registry) GetToolDefinition(name string) (ollama.Tool, bool) {
+	return r.GetDefinition(name)
+}
+
+func (r *Registry) GetMetadata(name string) (ToolMetadata, bool) {
+	metadata, ok := r.metadata[name]
+	return metadata, ok
+}
+
+func (r *Registry) GetToolMetadata(name string) (ToolMetadata, bool) {
+	return r.GetMetadata(name)
 }
 
 func (r *Registry) Execute(name string, args map[string]interface{}) (string, error) {
+	return r.ExecuteContext(context.Background(), name, args)
+}
+
+func (r *Registry) ExecuteContext(ctx context.Context, name string, args map[string]interface{}) (string, error) {
+	if ctx == nil {
+		return "", fmt.Errorf("tool execution context cannot be nil")
+	}
 	handler, ok := r.handlers[name]
 	if !ok {
 		return "", fmt.Errorf("tool '%s' not registered", name)
 	}
-	return handler(args)
+	return handler(ctx, args)
+}
+
+func cloneTool(tool ollama.Tool) ollama.Tool {
+	clone := tool
+	clone.Function.Parameters.Properties = make(map[string]ollama.FunctionParamProperty, len(tool.Function.Parameters.Properties))
+	for name, property := range tool.Function.Parameters.Properties {
+		property.Enum = append([]string(nil), property.Enum...)
+		clone.Function.Parameters.Properties[name] = property
+	}
+	clone.Function.Parameters.Required = append([]string(nil), tool.Function.Parameters.Required...)
+	return clone
 }
 
 func (r *Registry) registerDefaultTools() {
@@ -133,7 +199,7 @@ func (r *Registry) registerDefaultTools() {
 	})
 
 	// Tool 2: calculator
-	r.Register(ollama.Tool{
+	r.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "calculator",
@@ -149,7 +215,7 @@ func (r *Registry) registerDefaultTools() {
 				Required: []string{"expression"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, ToolMetadata{RetrySafe: true, WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		expr, ok := args["expression"].(string)
 		if !ok || expr == "" {
 			return "", fmt.Errorf("invalid expression argument")
@@ -162,7 +228,7 @@ func (r *Registry) registerDefaultTools() {
 	})
 
 	// Tool 3: get_system_info
-	r.Register(ollama.Tool{
+	r.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "get_system_info",
@@ -172,7 +238,7 @@ func (r *Registry) registerDefaultTools() {
 				Properties: map[string]ollama.FunctionParamProperty{},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, ToolMetadata{RetrySafe: true, WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		info := map[string]string{
 			"os":         runtime.GOOS,
 			"arch":       runtime.GOARCH,
@@ -185,7 +251,7 @@ func (r *Registry) registerDefaultTools() {
 	})
 
 	// Tool 4: execute_action (using ExecuteActionWithWorkspace)
-	r.Register(ollama.Tool{
+	r.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "execute_action",
@@ -213,17 +279,17 @@ func (r *Registry) registerDefaultTools() {
 				Required: []string{"action"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		action, _ := args["action"].(string)
 		target, _ := args["target"].(string)
 		startLine := ParseOptionalInt(args, "start_line")
 		endLine := ParseOptionalInt(args, "end_line")
 
-		return ExecuteActionWithWorkspace(context.Background(), action, target, startLine, endLine, r.workspace, r.GetWorkspaceRoot())
+		return ExecuteActionWithWorkspace(ctx, action, target, startLine, endLine, r.workspace, r.GetWorkspaceRoot())
 	})
 
 	// Tool 5: search_session_history (Scoped to active session file or sessions dir)
-	r.Register(ollama.Tool{
+	r.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "search_session_history",
@@ -239,7 +305,7 @@ func (r *Registry) registerDefaultTools() {
 				Required: []string{"query"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, ToolMetadata{RetrySafe: true, WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		query, ok := args["query"].(string)
 		if !ok || query == "" {
 			return "", fmt.Errorf("query argument required")

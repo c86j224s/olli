@@ -1,6 +1,9 @@
 package tools
 
 import (
+	"context"
+	"sync/atomic"
+
 	"encoding/base64"
 	"encoding/json"
 	"image"
@@ -33,6 +36,39 @@ func TestImageInspectRejectsUnsafeEndpointsTempOnlyNoNetwork(t *testing.T) {
 		if err == nil || !strings.Contains(err.Error(), "endpoint") {
 			t.Fatalf("expected endpoint rejection for %q, got: %v", endpoint, err)
 		}
+	}
+}
+
+func TestImageInspectCanceledContextMakesNoHTTPCalls(t *testing.T) {
+	// Blast radius if the guard regresses: one temp image and a loopback request counter only.
+	root := testSafeTempRoot(t)
+	imageDir := filepath.Join(root, "artifacts", "images")
+	if err := os.MkdirAll(imageDir, 0755); err != nil {
+		t.Fatalf("failed to create image artifact directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(imageDir, "generated.png"), testPNGBytes(t), 0600); err != nil {
+		t.Fatalf("failed to write image fixture: %v", err)
+	}
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "unexpected request", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	reg := NewRegistry()
+	reg.SetWorkspaceRoot(root)
+	reg.SetWorkspace(root)
+	reg.SetImageInspectionConfig(ImageInspectionConfig{Ollama: OllamaImageInspectionConfig{
+		Endpoint: server.URL, Model: "vision-test", TimeoutSeconds: 2, MaxImageBytes: 1024,
+	}})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := reg.ExecuteContext(ctx, "inspect_image", map[string]interface{}{"path": "artifacts/images/generated.png"}); err == nil {
+		t.Fatal("expected canceled context error")
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("canceled image inspection made %d HTTP requests", got)
 	}
 }
 
