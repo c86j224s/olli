@@ -56,8 +56,16 @@ type Agent struct {
 	registry            *tools.Registry
 	sessMgr             *session.Manager
 	cfg                 *config.Config
-	activeCB            Callbacks
 	lastPromptEvalCount int
+}
+
+type callbackContextKey struct{}
+
+func callbacksFromContext(ctx context.Context) Callbacks {
+	if cb, ok := ctx.Value(callbackContextKey{}).(Callbacks); ok {
+		return cb
+	}
+	return Callbacks{}
 }
 
 func FormatArgs(args map[string]interface{}) string {
@@ -470,7 +478,7 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 }
 
 func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbacks) (string, error) {
-	a.activeCB = cb
+	ctx = context.WithValue(ctx, callbackContextKey{}, cb)
 
 	userMsg := ollama.Message{Role: "user", Content: userInput}
 	a.history = append(a.history, userMsg)

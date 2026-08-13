@@ -91,6 +91,7 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 		return nil, fmt.Errorf("failed to create subagent jsonl: %w", err)
 	}
 	defer jsonlFile.Close()
+	var logErr error
 
 	logEvent := func(role string, content string, toolCalls []ollama.ToolCall) {
 		evt := session.Event{
@@ -100,8 +101,16 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 			ToolCalls: toolCalls,
 		}
 		data, _ := json.Marshal(evt)
-		jsonlFile.Write(append(data, '\n'))
-		jsonlFile.Sync()
+		if logErr != nil {
+			return
+		}
+		if _, err := jsonlFile.Write(append(data, '\n')); err != nil {
+			logErr = err
+			return
+		}
+		if err := jsonlFile.Sync(); err != nil {
+			logErr = err
+		}
 	}
 
 	messages := []ollama.Message{
@@ -110,6 +119,9 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 	}
 	logEvent("system", sysPrompt, nil)
 	logEvent("user", task, nil)
+	if logErr != nil {
+		return nil, fmt.Errorf("failed to write subagent jsonl: %w", logErr)
+	}
 
 	numCtx := 32768
 	if r.cfg != nil && r.cfg.NumCtx > 0 {
@@ -204,7 +216,7 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 			logEvent("assistant", resp.Content, resp.ToolCalls)
 
 			for _, tc := range resp.ToolCalls {
-				if ctx.Err() == context.Canceled {
+				if ctx.Err() != nil {
 					logEvent("system", "⚠️ Subagent tool execution canceled by user interrupt (ESC Key)", nil)
 					return &ResultReport{
 						SubagentID:    subID,
@@ -294,6 +306,9 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 		CreatedFiles:  createdFiles,
 	}
 
+	if logErr != nil {
+		return nil, fmt.Errorf("failed to write subagent jsonl: %w", logErr)
+	}
 	return report, nil
 }
 
@@ -309,7 +324,7 @@ func openSubagentLogFileNoFollow(path string) (*os.File, error) {
 		return nil, fmt.Errorf("failed to inspect subagent log file: %w", err)
 	}
 
-	fd, err := unix.Open(path, unix.O_CREAT|unix.O_WRONLY|unix.O_TRUNC|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_EXCL|unix.O_WRONLY|unix.O_NOFOLLOW|unix.O_CLOEXEC, 0600)
 	if err != nil {
 		return nil, err
 	}

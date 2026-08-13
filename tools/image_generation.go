@@ -363,7 +363,10 @@ func (r *Registry) executeImageGenerate(ctx context.Context, args map[string]int
 	if err != nil {
 		return "", err
 	}
-	artifactPath, err := writeImageArtifact(cfg.ComfyUI.OutputDir, root, promptID, imageRef.Filename, imageExt, imageBytes)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	artifactPath, err := writeImageArtifact(ctx, cfg.ComfyUI.OutputDir, root, promptID, imageRef.Filename, imageExt, imageBytes)
 	if err != nil {
 		return "", err
 	}
@@ -911,7 +914,10 @@ func downloadComfyImage(ctx context.Context, client *http.Client, endpoint *url.
 	return canonicalData, ext, nil
 }
 
-func writeImageArtifact(outputDirSetting string, root string, promptID string, remoteFilename string, imageExt string, data []byte) (string, error) {
+func writeImageArtifact(ctx context.Context, outputDirSetting string, root string, promptID string, remoteFilename string, imageExt string, data []byte) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	remoteSegment := sanitizeArtifactSegment(remoteFilename, "image", maxArtifactNameSegmentRunes)
 	remoteBase := strings.TrimSuffix(remoteSegment, filepath.Ext(remoteSegment))
 	remoteBase = strings.Trim(remoteBase, "._-")

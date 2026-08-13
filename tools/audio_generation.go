@@ -292,7 +292,10 @@ func (r *Registry) executeAudioGenerate(ctx context.Context, args map[string]int
 	if err != nil {
 		return "", err
 	}
-	artifactPath, err := writeAudioArtifact(cfg.ACEStep.OutputDir, root, taskID, generated.File, audioBytes)
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	artifactPath, err := writeAudioArtifact(ctx, cfg.ACEStep.OutputDir, root, taskID, generated.File, audioBytes)
 	if err != nil {
 		return "", err
 	}
@@ -722,7 +725,10 @@ func formatAudioOpenDirAtError(label string, component string, err error) error 
 	}
 }
 
-func writeAudioArtifact(outputDirSetting string, root string, taskID string, remoteFile string, data []byte) (string, error) {
+func writeAudioArtifact(ctx context.Context, outputDirSetting string, root string, taskID string, remoteFile string, data []byte) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	remoteSegment := sanitizeArtifactSegment(remoteAudioFilename(remoteFile), "audio", maxArtifactNameSegmentRunes)
 	remoteBase := strings.TrimSuffix(remoteSegment, filepath.Ext(remoteSegment))
 	remoteBase = strings.Trim(remoteBase, "._-")

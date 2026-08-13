@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -13,6 +14,10 @@ import (
 
 // ReadURLContent fetches a web URL and converts HTML to clean readable text
 func ReadURLContent(targetURL string) (string, error) {
+	return ReadURLContentWithContext(context.Background(), targetURL)
+}
+
+func ReadURLContentWithContext(ctx context.Context, targetURL string) (string, error) {
 	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
 		targetURL = "https://" + targetURL
 	}
@@ -21,7 +26,7 @@ func ReadURLContent(targetURL string) (string, error) {
 		Timeout: 30 * time.Second, // 30s timeout to prevent context deadline exceeded
 	}
 
-	req, err := http.NewRequest("GET", targetURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create http request: %w", err)
 	}
@@ -57,13 +62,17 @@ func ReadURLContent(targetURL string) (string, error) {
 
 // WebSearch performs web search via DuckDuckGo HTML endpoint
 func WebSearch(query string) (string, error) {
+	return WebSearchWithContext(context.Background(), query)
+}
+
+func WebSearchWithContext(ctx context.Context, query string) (string, error) {
 	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
 
 	client := &http.Client{
 		Timeout: 30 * time.Second, // 30s timeout
 	}
 
-	req, err := http.NewRequest("GET", searchURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("failed to create search request: %w", err)
 	}

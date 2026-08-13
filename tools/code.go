@@ -593,15 +593,24 @@ func handleActionGrep(ctx context.Context, keyword string, safeWorkspace string,
 	if err == nil {
 		return out, nil
 	}
-	return searchFilesLineByLine(keyword, safeWorkspace, safeRoot)
+	if ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	return searchFilesLineByLine(ctx, keyword, safeWorkspace, safeRoot)
 }
 
-func searchFilesLineByLine(keyword string, workspace string, root string) (string, error) {
+func searchFilesLineByLine(ctx context.Context, keyword string, workspace string, root string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	kwLower := strings.ToLower(keyword)
 	var matches []string
 	maxMatches := 100
 
 	err := filepath.Walk(workspace, func(path string, info os.FileInfo, err error) error {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if err != nil {
 			return nil
 		}
@@ -632,6 +641,9 @@ func searchFilesLineByLine(keyword string, workspace string, root string) (strin
 		scanner := bufio.NewScanner(file)
 		lineNo := 0
 		for scanner.Scan() {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			lineNo++
 			text := scanner.Text()
 			if strings.Contains(strings.ToLower(text), kwLower) {

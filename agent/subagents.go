@@ -10,26 +10,27 @@ import (
 	"github.com/c86j224s/olli/tools"
 )
 
-func (a *Agent) buildSubagentCallbacks() subagent.SubagentCallbacks {
+func (a *Agent) buildSubagentCallbacks(ctx context.Context) subagent.SubagentCallbacks {
+	cb := callbacksFromContext(ctx)
 	return subagent.SubagentCallbacks{
 		OnThinkingStart: func(subType string) {
-			if a.activeCB.OnSubagentThinkingStart != nil {
-				a.activeCB.OnSubagentThinkingStart(subType)
+			if cb.OnSubagentThinkingStart != nil {
+				cb.OnSubagentThinkingStart(subType)
 			}
 		},
 		OnThinkingToken: func(token string) {
-			if a.activeCB.OnSubagentThinkingToken != nil {
-				a.activeCB.OnSubagentThinkingToken(token)
+			if cb.OnSubagentThinkingToken != nil {
+				cb.OnSubagentThinkingToken(token)
 			}
 		},
 		OnThinkingEnd: func() {
-			if a.activeCB.OnSubagentThinkingEnd != nil {
-				a.activeCB.OnSubagentThinkingEnd()
+			if cb.OnSubagentThinkingEnd != nil {
+				cb.OnSubagentThinkingEnd()
 			}
 		},
 		OnToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
-			if a.activeCB.OnSubagentToolCall != nil {
-				a.activeCB.OnSubagentToolCall(subType, toolName, args, result, execErr)
+			if cb.OnSubagentToolCall != nil {
+				cb.OnSubagentToolCall(subType, toolName, args, result, execErr)
 			}
 		},
 	}
@@ -118,7 +119,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks()
+		subCB := a.buildSubagentCallbacks(ctx)
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunResearcherWithContext(ctx, enrichedTask)
 		if err != nil {
@@ -147,7 +148,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks()
+		subCB := a.buildSubagentCallbacks(ctx)
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunCoderWithContext(ctx, enrichedTask)
 		if err != nil {
@@ -176,7 +177,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks()
+		subCB := a.buildSubagentCallbacks(ctx)
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunTesterWithContext(ctx, enrichedTask)
 		if err != nil {
@@ -205,7 +206,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks()
+		subCB := a.buildSubagentCallbacks(ctx)
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunReviewerWithContext(ctx, enrichedTask)
 		if err != nil {
@@ -234,7 +235,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks()
+		subCB := a.buildSubagentCallbacks(ctx)
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunDocumenterWithContext(ctx, enrichedTask)
 		if err != nil {
@@ -266,7 +267,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks()
+		subCB := a.buildSubagentCallbacks(ctx)
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
 		report, err := runner.RunPresenterWithContext(ctx, enrichedTask)
 		if err != nil {

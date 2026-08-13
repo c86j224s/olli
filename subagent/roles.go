@@ -2,9 +2,10 @@ package subagent
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"path/filepath"
-	"time"
 
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/tools"
@@ -15,12 +16,12 @@ func (r *SubagentRunner) RunResearcher(task string) (*ResultReport, error) {
 }
 
 func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task string) (*ResultReport, error) {
-	subID := fmt.Sprintf("subagent_researcher_%s", time.Now().Format("20060102_150405"))
+	subID := newSubagentID("researcher")
 	sysPrompt := "You are a specialized Web Researcher Subagent. Your goal is to gather information using web search, URL content reading, subagent report inspection, and past session log retrieval, then synthesize a clear report."
 
 	reg := r.newRoleRegistry()
 
-	reg.Register(ollama.Tool{
+	reg.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "web_search",
@@ -33,12 +34,12 @@ func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task stri
 				Required: []string{"query"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		q, _ := args["query"].(string)
-		return tools.WebSearch(q)
+		return tools.WebSearchWithContext(ctx, q)
 	})
 
-	reg.Register(ollama.Tool{
+	reg.RegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "read_url_content",
@@ -51,9 +52,9 @@ func (r *SubagentRunner) RunResearcherWithContext(ctx context.Context, task stri
 				Required: []string{"url"},
 			},
 		},
-	}, func(args map[string]interface{}) (string, error) {
+	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		u, _ := args["url"].(string)
-		return tools.ReadURLContent(u)
+		return tools.ReadURLContentWithContext(ctx, u)
 	})
 
 	reg.Register(ollama.Tool{
@@ -125,7 +126,7 @@ func (r *SubagentRunner) RunCoder(task string) (*ResultReport, error) {
 }
 
 func (r *SubagentRunner) RunCoderWithContext(ctx context.Context, task string) (*ResultReport, error) {
-	subID := fmt.Sprintf("subagent_coder_%s", time.Now().Format("20060102_150405"))
+	subID := newSubagentID("coder")
 	sysPrompt := "You are a specialized Software Coder Subagent. Your goal is to inspect code, search files, query session history and past subagent investigation reports, and perform targeted edits, middle insertions ('insert_content'), incremental appends ('append_file'), or code refactoring as requested."
 
 	reg := r.newRoleRegistry()
@@ -324,7 +325,7 @@ func (r *SubagentRunner) RunTester(task string) (*ResultReport, error) {
 }
 
 func (r *SubagentRunner) RunTesterWithContext(ctx context.Context, task string) (*ResultReport, error) {
-	subID := fmt.Sprintf("subagent_tester_%s", time.Now().Format("20060102_150405"))
+	subID := newSubagentID("tester")
 	sysPrompt := "You are a specialized Software Tester Subagent. Your goal is to dynamically execute test commands (e.g. go test ./...), build scripts, query session history, and verify runtime correctness."
 
 	reg := r.newRoleRegistry()
@@ -413,7 +414,7 @@ func (r *SubagentRunner) RunReviewer(task string) (*ResultReport, error) {
 }
 
 func (r *SubagentRunner) RunReviewerWithContext(ctx context.Context, task string) (*ResultReport, error) {
-	subID := fmt.Sprintf("subagent_reviewer_%s", time.Now().Format("20060102_150405"))
+	subID := newSubagentID("reviewer")
 	sysPrompt := "You are a specialized Code Reviewer Subagent. Your goal is to inspect code style, security vulnerabilities, edge cases, session history, and architectural clean code principles."
 
 	reg := r.newRoleRegistry()
@@ -497,7 +498,7 @@ func (r *SubagentRunner) RunDocumenter(task string) (*ResultReport, error) {
 }
 
 func (r *SubagentRunner) RunDocumenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
-	subID := fmt.Sprintf("subagent_documenter_%s", time.Now().Format("20060102_150405"))
+	subID := newSubagentID("documenter")
 	sysPrompt := "You are a specialized Technical Documenter Subagent. Your goal is to write comprehensive Markdown documentation, API specs, and READMEs. FLEXIBLE EDITING INSTRUCTION: You can view specific line ranges with 'view_file(path, start, end)', replace targeted sections with 'edit_file(path, target_content, replacement_content)', insert new sections in the middle with 'insert_content(path, anchor_content, insert_position, new_content)', or append new sections to the end with 'append_file(path, append_content)'. Before writing, inspect subagent investigation findings ('list_subagent_reports' / 'view_subagent_report'), active session history ('search_session_history'), and real source code. You must create or update at least one Markdown artifact (*.md) and include its path in your final answer."
 
 	reg := r.newRoleRegistry()
@@ -696,7 +697,7 @@ func (r *SubagentRunner) RunPresenter(task string) (*ResultReport, error) {
 }
 
 func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task string) (*ResultReport, error) {
-	subID := fmt.Sprintf("subagent_presenter_%s", time.Now().Format("20060102_150405"))
+	subID := newSubagentID("presenter")
 	sysPrompt := "You are a specialized Presenter Subagent. Your goal is to generate interactive HTML presentation slides with modern CSS, animations, and query session logs for content. You must create or update at least one HTML artifact (*.html) and include its path in your final answer."
 
 	reg := r.newRoleRegistry()
@@ -753,4 +754,12 @@ func (r *SubagentRunner) RunPresenterWithContext(ctx context.Context, task strin
 	})
 
 	return r.executeSubagentLoopWithContext(ctx, subID, string(TypePresenter), task, sysPrompt, reg)
+}
+
+func newSubagentID(role string) string {
+	var suffix [16]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		panic(fmt.Errorf("failed to generate subagent ID: %w", err))
+	}
+	return fmt.Sprintf("subagent_%s_%s", role, hex.EncodeToString(suffix[:]))
 }
