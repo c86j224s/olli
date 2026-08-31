@@ -81,6 +81,64 @@ func TestRegistryLegacyRegisterUsesConvenienceContextAndMetadataDefaults(t *test
 	}
 }
 
+func TestRegistryOptionsDisableMediaTools(t *testing.T) {
+	reg := NewRegistryWithOptions(RegistryOptions{})
+
+	for _, toolName := range []string{"image_generate", "inspect_image", "audio_generate"} {
+		if _, ok := reg.GetDefinition(toolName); ok {
+			t.Fatalf("expected %s definition to be disabled", toolName)
+		}
+		if _, err := reg.Execute(toolName, map[string]interface{}{}); err == nil {
+			t.Fatalf("expected disabled tool %s execution to be rejected", toolName)
+		}
+	}
+	if _, ok := reg.GetDefinition("calculator"); !ok {
+		t.Fatal("expected non-media tools to remain registered")
+	}
+}
+
+func TestRegistryOptionsEnableMediaToolsIndependently(t *testing.T) {
+	tests := []struct {
+		name     string
+		options  RegistryOptions
+		enabled  string
+		disabled []string
+	}{
+		{
+			name:     "image generation",
+			options:  RegistryOptions{EnableImageGeneration: true},
+			enabled:  "image_generate",
+			disabled: []string{"inspect_image", "audio_generate"},
+		},
+		{
+			name:     "image inspection",
+			options:  RegistryOptions{EnableImageInspection: true},
+			enabled:  "inspect_image",
+			disabled: []string{"image_generate", "audio_generate"},
+		},
+		{
+			name:     "audio generation",
+			options:  RegistryOptions{EnableAudioGeneration: true},
+			enabled:  "audio_generate",
+			disabled: []string{"image_generate", "inspect_image"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := NewRegistryWithOptions(tt.options)
+			if _, ok := reg.GetDefinition(tt.enabled); !ok {
+				t.Fatalf("expected %s definition to be enabled", tt.enabled)
+			}
+			for _, toolName := range tt.disabled {
+				if _, ok := reg.GetDefinition(toolName); ok {
+					t.Fatalf("expected %s definition to be disabled", toolName)
+				}
+			}
+		})
+	}
+}
+
 func TestRegistryLegacyRegisterMethodShape(t *testing.T) {
 	var _ interface {
 		Register(ollama.Tool, ToolHandler)

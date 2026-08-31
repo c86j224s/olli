@@ -25,6 +25,8 @@
 
 메인 에이전트 도구 `image_generate`는 로컬 ComfyUI API 워크플로를 실행하고 첫 출력 이미지를 워크스페이스 내부 `artifacts/images`에 저장합니다. 이 도구는 민감 도구로 분류되어 whitelist 등록 여부와 관계없이 항상 권한 확인이 필요합니다.
 
+각 멀티미디어 설정의 `enabled`를 `false`로 두면 해당 도구는 시작 시 등록되지 않습니다. 변경 사항은 O.L.L.I.를 다시 시작한 뒤 적용됩니다. 기존 설정 파일처럼 `enabled`가 생략된 경우에는 호환성을 위해 활성화됩니다.
+
 - prerequisite 설치 스크립트:
 
 ```bash
@@ -60,6 +62,7 @@
 
 ```json
 "image_generation": {
+  "enabled": true,
   "comfyui": {
     "endpoint": "http://127.0.0.1:8188",
     "output_dir": "artifacts/images",
@@ -102,6 +105,7 @@
 
 ```json
 "image_inspection": {
+  "enabled": true,
   "ollama": {
     "endpoint": "http://127.0.0.1:11434",
     "model": "gemma4:12b",
@@ -177,6 +181,7 @@ ACE-Step만 확인/실행하려면:
 
 ```json
 "audio_generation": {
+  "enabled": true,
   "ace_step": {
     "endpoint": "http://127.0.0.1:8001",
     "output_dir": "artifacts/audio",

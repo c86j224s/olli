@@ -87,6 +87,30 @@ func TestAgentHonorsConfigDefaultMode(t *testing.T) {
 	}
 }
 
+func TestAgentHonorsDisabledMediaTools(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg, err := config.LoadConfig(filepath.Join(tempDir, "config.json"))
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	cfg.ImageGeneration.Enabled = false
+	cfg.ImageInspection.Enabled = false
+	cfg.AudioGeneration.Enabled = false
+
+	client := ollama.NewClient("http://localhost:11434")
+	ag := agent.New(client, "qwen3.5:0.8b", "Test prompt", nil, cfg)
+	reg := ag.GetRegistry()
+
+	for _, toolName := range []string{"image_generate", "inspect_image", "audio_generate"} {
+		if _, ok := reg.GetDefinition(toolName); ok {
+			t.Fatalf("expected %s to be disabled by config", toolName)
+		}
+	}
+	if _, ok := reg.GetDefinition("calculator"); !ok {
+		t.Fatal("expected non-media tools to remain registered")
+	}
+}
+
 func TestAgentRegistersGoalTools(t *testing.T) {
 	tempDir := t.TempDir()
 	originalWD, err := os.Getwd()

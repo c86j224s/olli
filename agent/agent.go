@@ -90,7 +90,17 @@ func New(client *ollama.Client, model string, systemMsg string, sessMgr *session
 		initialDir = "."
 	}
 
-	reg := tools.NewRegistry()
+	registryOptions := tools.RegistryOptions{
+		EnableImageGeneration: true,
+		EnableImageInspection: true,
+		EnableAudioGeneration: true,
+	}
+	if cfg != nil {
+		registryOptions.EnableImageGeneration = cfg.ImageGeneration.Enabled
+		registryOptions.EnableImageInspection = cfg.ImageInspection.Enabled
+		registryOptions.EnableAudioGeneration = cfg.AudioGeneration.Enabled
+	}
+	reg := tools.NewRegistryWithOptions(registryOptions)
 	reg.SetWorkspaceRoot(initialDir)
 	reg.SetWorkspace(initialDir)
 	if cfg != nil {

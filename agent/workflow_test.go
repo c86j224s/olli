@@ -176,6 +176,8 @@ func TestBundledImageWorkflowValidatesAgainstRegisteredTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cfg.ImageGeneration.Enabled = true
+	cfg.ImageInspection.Enabled = true
 	ag := New(ollama.NewClient("http://127.0.0.1:1"), "test", "test", nil, cfg)
 	if err := ag.EnableWorkflows(root); err != nil {
 		t.Fatal(err)
@@ -183,6 +185,34 @@ func TestBundledImageWorkflowValidatesAgainstRegisteredTools(t *testing.T) {
 	t.Cleanup(func() { _ = ag.Close() })
 	if err := ag.ValidateWorkflow("image-generate-verify"); err != nil {
 		t.Fatalf("bundled workflow does not match the registered tool catalog: %v", err)
+	}
+}
+
+func TestListWorkflowsHidesWorkflowsWithDisabledTools(t *testing.T) {
+	root, err := filepath.Abs("..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(filepath.Join(root, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.ImageGeneration.Enabled = false
+	cfg.ImageInspection.Enabled = false
+	ag := New(ollama.NewClient("http://127.0.0.1:1"), "test", "test", nil, cfg)
+	if err := ag.EnableWorkflows(root); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ag.Close() })
+
+	names, err := ag.ListWorkflows()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		if name == "image-generate-verify" {
+			t.Fatal("workflow requiring disabled media tools must not be listed")
+		}
 	}
 }
 

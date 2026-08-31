@@ -20,6 +20,7 @@ type Config struct {
 }
 
 type ImageGenerationConfig struct {
+	Enabled bool          `json:"enabled"`
 	ComfyUI ComfyUIConfig `json:"comfyui"`
 }
 
@@ -48,7 +49,8 @@ type ComfyUIWorkflowConfig struct {
 }
 
 type ImageInspectionConfig struct {
-	Ollama OllamaImageInspectionConfig `json:"ollama"`
+	Enabled bool                        `json:"enabled"`
+	Ollama  OllamaImageInspectionConfig `json:"ollama"`
 }
 
 type OllamaImageInspectionConfig struct {
@@ -59,6 +61,7 @@ type OllamaImageInspectionConfig struct {
 }
 
 type AudioGenerationConfig struct {
+	Enabled bool          `json:"enabled"`
 	ACEStep ACEStepConfig `json:"ace_step"`
 }
 
@@ -125,7 +128,11 @@ func LoadConfig(filePath string) (*Config, error) {
 	cfg.AudioGeneration = normalizeAudioGenerationConfig(cfg.AudioGeneration)
 
 	// Ensure default safe tools exist in whitelist
-	for _, defaultTool := range []string{"view_file", "list_dir", "grep_search", "get_agent_status", "inspect_image"} {
+	defaultTools := []string{"view_file", "list_dir", "grep_search", "get_agent_status"}
+	if cfg.ImageInspection.Enabled {
+		defaultTools = append(defaultTools, "inspect_image")
+	}
+	for _, defaultTool := range defaultTools {
 		if !cfg.IsWhitelisted(defaultTool) {
 			cfg.AddWhitelist(defaultTool)
 		}
@@ -136,6 +143,7 @@ func LoadConfig(filePath string) (*Config, error) {
 
 func DefaultImageGenerationConfig() ImageGenerationConfig {
 	return ImageGenerationConfig{
+		Enabled: true,
 		ComfyUI: ComfyUIConfig{
 			Endpoint:       "http://127.0.0.1:8188",
 			OutputDir:      "artifacts/images",
@@ -148,6 +156,7 @@ func DefaultImageGenerationConfig() ImageGenerationConfig {
 
 func DefaultImageInspectionConfig() ImageInspectionConfig {
 	return ImageInspectionConfig{
+		Enabled: true,
 		Ollama: OllamaImageInspectionConfig{
 			Endpoint:       "http://127.0.0.1:11434",
 			Model:          "gemma4:12b",
@@ -159,6 +168,7 @@ func DefaultImageInspectionConfig() ImageInspectionConfig {
 
 func DefaultAudioGenerationConfig() AudioGenerationConfig {
 	return AudioGenerationConfig{
+		Enabled: true,
 		ACEStep: ACEStepConfig{
 			Endpoint:           "http://127.0.0.1:8001",
 			OutputDir:          "artifacts/audio",

@@ -44,6 +44,9 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	if cfg.ImageGeneration.ComfyUI.Endpoint != "http://127.0.0.1:8188" {
 		t.Fatalf("expected default ComfyUI endpoint, got %s", cfg.ImageGeneration.ComfyUI.Endpoint)
 	}
+	if !cfg.ImageGeneration.Enabled {
+		t.Fatal("expected image generation to be enabled by default")
+	}
 	if cfg.ImageGeneration.ComfyUI.OutputDir != "artifacts/images" {
 		t.Fatalf("expected default image output dir, got %s", cfg.ImageGeneration.ComfyUI.OutputDir)
 	}
@@ -59,6 +62,9 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	if cfg.ImageInspection.Ollama.Endpoint != "http://127.0.0.1:11434" {
 		t.Fatalf("expected default Ollama inspection endpoint, got %s", cfg.ImageInspection.Ollama.Endpoint)
 	}
+	if !cfg.ImageInspection.Enabled {
+		t.Fatal("expected image inspection to be enabled by default")
+	}
 	if cfg.ImageInspection.Ollama.Model != "gemma4:12b" {
 		t.Fatalf("expected default inspection model gemma4:12b, got %s", cfg.ImageInspection.Ollama.Model)
 	}
@@ -70,6 +76,9 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	}
 	if cfg.AudioGeneration.ACEStep.Endpoint != "http://127.0.0.1:8001" {
 		t.Fatalf("expected default ACE-Step endpoint, got %s", cfg.AudioGeneration.ACEStep.Endpoint)
+	}
+	if !cfg.AudioGeneration.Enabled {
+		t.Fatal("expected audio generation to be enabled by default")
 	}
 	if cfg.AudioGeneration.ACEStep.OutputDir != "artifacts/audio" {
 		t.Fatalf("expected default audio output dir, got %s", cfg.AudioGeneration.ACEStep.OutputDir)
@@ -128,6 +137,9 @@ func TestConfigImageGenerationDefaultsFilledForPartialConfig(t *testing.T) {
 	if cfg.ImageGeneration.ComfyUI.Endpoint != "http://127.0.0.1:8188" {
 		t.Fatalf("expected default endpoint to be filled, got %s", cfg.ImageGeneration.ComfyUI.Endpoint)
 	}
+	if !cfg.ImageGeneration.Enabled {
+		t.Fatal("expected omitted image generation enabled flag to preserve legacy enabled behavior")
+	}
 	if cfg.ImageGeneration.ComfyUI.OutputDir != "artifacts/images" {
 		t.Fatalf("expected default output dir to be filled, got %s", cfg.ImageGeneration.ComfyUI.OutputDir)
 	}
@@ -156,6 +168,9 @@ func TestConfigImageInspectionDefaultsFilledForPartialConfig(t *testing.T) {
 	if cfg.ImageInspection.Ollama.Endpoint != "http://127.0.0.1:11434" {
 		t.Fatalf("expected default inspection endpoint, got %s", cfg.ImageInspection.Ollama.Endpoint)
 	}
+	if !cfg.ImageInspection.Enabled {
+		t.Fatal("expected omitted image inspection enabled flag to preserve legacy enabled behavior")
+	}
 	if cfg.ImageInspection.Ollama.Model != "custom-vision" {
 		t.Fatalf("expected configured inspection model to be preserved, got %s", cfg.ImageInspection.Ollama.Model)
 	}
@@ -181,6 +196,9 @@ func TestConfigAudioGenerationDefaultsFilledForPartialConfig(t *testing.T) {
 	if cfg.AudioGeneration.ACEStep.Endpoint != "http://localhost:8001" {
 		t.Fatalf("expected configured ACE-Step endpoint to be preserved, got %s", cfg.AudioGeneration.ACEStep.Endpoint)
 	}
+	if !cfg.AudioGeneration.Enabled {
+		t.Fatal("expected omitted audio generation enabled flag to preserve legacy enabled behavior")
+	}
 	if cfg.AudioGeneration.ACEStep.OutputDir != "artifacts/audio" {
 		t.Fatalf("expected default audio output dir to be filled, got %s", cfg.AudioGeneration.ACEStep.OutputDir)
 	}
@@ -195,6 +213,33 @@ func TestConfigAudioGenerationDefaultsFilledForPartialConfig(t *testing.T) {
 	}
 	if cfg.AudioGeneration.ACEStep.MaxDurationSeconds != 600 {
 		t.Fatalf("expected default max duration to be filled, got %d", cfg.AudioGeneration.ACEStep.MaxDurationSeconds)
+	}
+}
+
+func TestConfigMediaToolsCanBeDisabled(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	data := []byte(`{
+		"default_mode":"ask",
+		"num_ctx":4096,
+		"whitelist_tools":["calculator"],
+		"image_generation":{"enabled":false},
+		"image_inspection":{"enabled":false},
+		"audio_generation":{"enabled":false}
+	}`)
+	if err := os.WriteFile(cfgPath, data, 0600); err != nil {
+		t.Fatalf("failed to write config: %v", err)
+	}
+
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatalf("failed to load config: %v", err)
+	}
+	if cfg.ImageGeneration.Enabled || cfg.ImageInspection.Enabled || cfg.AudioGeneration.Enabled {
+		t.Fatal("expected all media tools to remain disabled")
+	}
+	if cfg.IsWhitelisted("inspect_image") {
+		t.Fatal("expected disabled image inspection not to be added to the default whitelist")
 	}
 }
 

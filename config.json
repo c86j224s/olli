@@ -7,7 +7,6 @@
     "get_system_info",
     "get_agent_status",
     "search_session_history",
-    "inspect_image",
     "execute_action",
     "cd",
     "change_directory",
@@ -16,10 +15,10 @@
     "grep_search",
     "delegate_coder",
     "delegate_documenter",
-    "delegate_presenter",
-    "image_generate"
+    "delegate_presenter"
   ],
   "image_generation": {
+    "enabled": false,
     "comfyui": {
       "endpoint": "http://127.0.0.1:8188",
       "output_dir": "artifacts/images",
@@ -45,6 +44,7 @@
     }
   },
   "image_inspection": {
+    "enabled": false,
     "ollama": {
       "endpoint": "http://127.0.0.1:11434",
       "model": "gemma4:12b",
@@ -53,6 +53,7 @@
     }
   },
   "audio_generation": {
+    "enabled": false,
     "ace_step": {
       "endpoint": "http://127.0.0.1:8001",
       "output_dir": "artifacts/audio",

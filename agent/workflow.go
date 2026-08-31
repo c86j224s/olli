@@ -193,7 +193,17 @@ func (a *Agent) ListWorkflows() ([]string, error) {
 	if a.workflowEngine == nil {
 		return nil, errWorkflowsDisabled
 	}
-	return a.workflowEngine.List()
+	names, err := a.workflowEngine.List()
+	if err != nil {
+		return nil, err
+	}
+	available := names[:0]
+	for _, name := range names {
+		if err := a.workflowEngine.Validate(name); err == nil {
+			available = append(available, name)
+		}
+	}
+	return available, nil
 }
 
 func (a *Agent) GetWorkflow(name string) (map[string]any, error) {

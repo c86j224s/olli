@@ -36,9 +36,23 @@ type Registry struct {
 	audioGeneration AudioGenerationConfig
 }
 
+type RegistryOptions struct {
+	EnableImageGeneration bool
+	EnableImageInspection bool
+	EnableAudioGeneration bool
+}
+
 func NewRegistry() *Registry {
+	return NewRegistryWithOptions(RegistryOptions{
+		EnableImageGeneration: true,
+		EnableImageInspection: true,
+		EnableAudioGeneration: true,
+	})
+}
+
+func NewRegistryWithOptions(options RegistryOptions) *Registry {
 	r := NewEmptyRegistry()
-	r.registerDefaultTools()
+	r.registerDefaultTools(options)
 	return r
 }
 
@@ -181,7 +195,7 @@ func cloneTool(tool ollama.Tool) ollama.Tool {
 	return clone
 }
 
-func (r *Registry) registerDefaultTools() {
+func (r *Registry) registerDefaultTools(options RegistryOptions) {
 	// Tool 1: get_current_time
 	r.RegisterContext(ollama.Tool{
 		Type: "function",
@@ -331,9 +345,15 @@ func (r *Registry) registerDefaultTools() {
 		return fmt.Sprintf("Found %d session log matches for '%s':\n%s", len(matches), query, strings.Join(matches, "\n")), nil
 	})
 
-	r.registerImageGenerateTool()
-	r.registerImageInspectTool()
-	r.registerAudioGenerateTool()
+	if options.EnableImageGeneration {
+		r.registerImageGenerateTool()
+	}
+	if options.EnableImageInspection {
+		r.registerImageInspectTool()
+	}
+	if options.EnableAudioGeneration {
+		r.registerAudioGenerateTool()
+	}
 }
 
 func evalMathExpr(expr string) (string, error) {
