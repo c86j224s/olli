@@ -239,6 +239,13 @@ func TestConfigMediaToolsCanBeDisabled(t *testing.T) {
 	}
 }
 
+func TestDevelopmentTeamConfigUsesConfiguredModelsAndFallback(t *testing.T) {
+	cfg := config.DevelopmentTeamConfig{PlannerModel: "gemma4:e4b", ReviewerModel: "gemma4:12b"}.WithFallback("fallback")
+	if cfg.PlannerModel != "gemma4:e4b" || cfg.ReviewerModel != "gemma4:12b" || cfg.CoderModel != "fallback" || cfg.TesterModel != "fallback" {
+		t.Fatalf("unexpected development team config: %#v", cfg)
+	}
+}
+
 func TestConfigInvalidDefaultModeFallsBackToAsk(t *testing.T) {
 	tempDir := t.TempDir()
 	cfgPath := filepath.Join(tempDir, "config.json")

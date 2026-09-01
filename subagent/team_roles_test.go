@@ -123,6 +123,13 @@ func TestRequireExecutedActionEvidenceMatchesActionAndTarget(t *testing.T) {
 	}
 }
 
+func TestTeamModelsUseRoleOverridesAndFallback(t *testing.T) {
+	models := (TeamModels{Planner: "planner", Tester: "tester"}).withFallback("fallback")
+	if models.Planner != "planner" || models.Tester != "tester" || models.Coder != "fallback" || models.Reviewer != "fallback" {
+		t.Fatalf("unexpected model selection: %#v", models)
+	}
+}
+
 func TestNewModelTeamRolesRequiresRunnerClient(t *testing.T) {
 	if _, err := NewModelTeamRoles(nil); err == nil {
 		t.Fatal("nil team role runner accepted")

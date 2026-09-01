@@ -12,11 +12,35 @@ type Config struct {
 	DefaultMode     string                `json:"default_mode"`
 	NumCtx          int                   `json:"num_ctx"`
 	WhitelistTools  []string              `json:"whitelist_tools"`
+	DevelopmentTeam DevelopmentTeamConfig `json:"development_team"`
 	ImageGeneration ImageGenerationConfig `json:"image_generation"`
 	ImageInspection ImageInspectionConfig `json:"image_inspection"`
 	AudioGeneration AudioGenerationConfig `json:"audio_generation"`
 	filePath        string
 	mu              sync.RWMutex
+}
+
+type DevelopmentTeamConfig struct {
+	PlannerModel  string `json:"planner_model"`
+	CoderModel    string `json:"coder_model"`
+	TesterModel   string `json:"tester_model"`
+	ReviewerModel string `json:"reviewer_model"`
+}
+
+func (c DevelopmentTeamConfig) WithFallback(fallback string) DevelopmentTeamConfig {
+	if c.PlannerModel == "" {
+		c.PlannerModel = fallback
+	}
+	if c.CoderModel == "" {
+		c.CoderModel = fallback
+	}
+	if c.TesterModel == "" {
+		c.TesterModel = fallback
+	}
+	if c.ReviewerModel == "" {
+		c.ReviewerModel = fallback
+	}
+	return c
 }
 
 type ImageGenerationConfig struct {

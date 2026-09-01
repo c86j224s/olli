@@ -39,6 +39,10 @@ type PlanStep struct {
 }
 
 func parseDevelopmentPlan(raw string) (*DevelopmentPlan, error) {
+	return parseDevelopmentPlanForWorkspace(raw, "")
+}
+
+func parseDevelopmentPlanForWorkspace(raw string, workspace string) (*DevelopmentPlan, error) {
 	var plan DevelopmentPlan
 	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(raw)))
 	decoder.DisallowUnknownFields()
@@ -52,10 +56,50 @@ func parseDevelopmentPlan(raw string) (*DevelopmentPlan, error) {
 	if err := decoder.Decode(&trailing); err == nil {
 		return nil, fmt.Errorf("planner output contains trailing JSON")
 	}
+	if strings.TrimSpace(workspace) != "" {
+		if err := relativizeDevelopmentPlanPaths(&plan, workspace); err != nil {
+			return nil, err
+		}
+	}
 	if err := validateDevelopmentPlan(&plan); err != nil {
 		return nil, err
 	}
 	return &plan, nil
+}
+
+func relativizeDevelopmentPlanPaths(plan *DevelopmentPlan, workspace string) error {
+	workspace, err := filepath.Abs(workspace)
+	if err != nil {
+		return fmt.Errorf("planner workspace is invalid: %w", err)
+	}
+	convert := func(path string) (string, error) {
+		path = strings.TrimSpace(path)
+		if !filepath.IsAbs(path) {
+			return path, nil
+		}
+		relative, err := filepath.Rel(workspace, filepath.Clean(path))
+		if err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) || filepath.IsAbs(relative) {
+			return "", fmt.Errorf("planner path %q is outside workspace", path)
+		}
+		return filepath.Clean(relative), nil
+	}
+	for index, path := range plan.Files {
+		converted, err := convert(path)
+		if err != nil {
+			return err
+		}
+		plan.Files[index] = converted
+	}
+	for stepIndex := range plan.Steps {
+		for fileIndex, path := range plan.Steps[stepIndex].AllowedFiles {
+			converted, err := convert(path)
+			if err != nil {
+				return err
+			}
+			plan.Steps[stepIndex].AllowedFiles[fileIndex] = converted
+		}
+	}
+	return nil
 }
 
 func validateDevelopmentPlan(plan *DevelopmentPlan) error {
@@ -86,6 +130,7 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 	}
 
 	seenIDs := make(map[string]struct{}, len(plan.Steps))
+	seenObjectives := make(map[string]struct{}, len(plan.Steps))
 	for index := range plan.Files {
 		path, err := normalizePlanPath(plan.Files[index])
 		if err != nil {
@@ -108,9 +153,15 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 			return fmt.Errorf("development plan has duplicate step id %q", step.ID)
 		}
 		seenIDs[step.ID] = struct{}{}
-		if strings.TrimSpace(step.Objective) == "" {
+		step.Objective = strings.TrimSpace(step.Objective)
+		if step.Objective == "" {
 			return fmt.Errorf("development plan step %s requires an objective", step.ID)
 		}
+		objectiveKey := strings.ToLower(step.Objective)
+		if _, exists := seenObjectives[objectiveKey]; exists {
+			return fmt.Errorf("development plan has duplicate objective %q", step.Objective)
+		}
+		seenObjectives[objectiveKey] = struct{}{}
 		if len(step.AllowedFiles) == 0 {
 			return fmt.Errorf("development plan step %s requires allowed_files", step.ID)
 		}

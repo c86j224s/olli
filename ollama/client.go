@@ -139,6 +139,9 @@ func (c *Client) ChatStreamFull(req ChatRequest, cb StreamCallbacks) (*Message, 
 }
 
 func (c *Client) ChatStreamFullWithContext(ctx context.Context, req ChatRequest, cb StreamCallbacks) (*Message, error) {
+	if req.Format != nil && len(req.Tools) == 0 {
+		return c.chatOnceWithContext(ctx, req, cb)
+	}
 	req.Stream = true
 
 	bodyBytes, err := json.Marshal(req)
@@ -245,4 +248,44 @@ func (c *Client) ChatStreamFullWithContext(ctx context.Context, req ChatRequest,
 	}
 
 	return fullMsg, nil
+}
+
+func (c *Client) chatOnceWithContext(ctx context.Context, req ChatRequest, cb StreamCallbacks) (*Message, error) {
+	req.Stream = false
+	bodyBytes, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to marshal request: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+"/api/chat", bytes.NewReader(bodyBytes))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create http request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.HTTPClient.Do(httpReq)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		return nil, fmt.Errorf("http request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Ollama error (status %d): %s", resp.StatusCode, string(body))
+	}
+	var chunk ChatResponseChunk
+	if err := json.NewDecoder(resp.Body).Decode(&chunk); err != nil {
+		return nil, fmt.Errorf("failed to decode Ollama response: %w", err)
+	}
+	if chunk.Message.Thinking != "" && cb.OnThinking != nil {
+		cb.OnThinking(chunk.Message.Thinking)
+	}
+	if chunk.Message.Content != "" && cb.OnContent != nil {
+		cb.OnContent(chunk.Message.Content)
+	}
+	message := chunk.Message
+	message.Role = "assistant"
+	message.PromptEvalCount = chunk.PromptEvalCount
+	message.EvalCount = chunk.EvalCount
+	return &message, nil
 }

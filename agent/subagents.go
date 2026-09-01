@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/c86j224s/olli/config"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/subagent"
 	"github.com/c86j224s/olli/tools"
@@ -117,7 +118,14 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: false}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), a.buildSubagentCallbacks(ctx), a.getWorkspaceRoot())
-		roles, err := subagent.NewModelTeamRoles(runner)
+		teamConfig := config.DevelopmentTeamConfig{}.WithFallback(a.model)
+		if a.cfg != nil {
+			teamConfig = a.cfg.DevelopmentTeam.WithFallback(a.model)
+		}
+		roles, err := subagent.NewModelTeamRolesWithModels(runner, subagent.TeamModels{
+			Planner: teamConfig.PlannerModel, Reviewer: teamConfig.ReviewerModel,
+			Coder: teamConfig.CoderModel, Tester: teamConfig.TesterModel,
+		})
 		if err != nil {
 			return "", err
 		}

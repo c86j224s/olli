@@ -80,6 +80,18 @@ func TestParseDevelopmentPlanRejectsUnknownFields(t *testing.T) {
 	}
 }
 
+func TestNormalizePlannerToolPathRejectsOutsideAbsoluteRetargeting(t *testing.T) {
+	workspace := filepath.Join(string(filepath.Separator), "workspace")
+	outside := filepath.Join(string(filepath.Separator), "outside", "file.go")
+	if got := normalizePlannerToolPath(outside, workspace); got != outside {
+		t.Fatalf("outside absolute path was retargeted: %q", got)
+	}
+	inside := filepath.Join(workspace, "file.go")
+	if got := normalizePlannerToolPath(inside, workspace); got != "file.go" {
+		t.Fatalf("inside absolute path was not normalized: %q", got)
+	}
+}
+
 func TestPlannerRegistryIsReadOnly(t *testing.T) {
 	root := t.TempDir()
 	workspace := filepath.Join(root, "workspace")

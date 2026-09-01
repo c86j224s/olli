@@ -41,19 +41,48 @@ RULES:
 - Do not report style preferences or vague concerns.
 - Return JSON only, matching ReviewReport.`
 
+type TeamModels struct {
+	Planner  string
+	Coder    string
+	Tester   string
+	Reviewer string
+}
+
 type ModelTeamRoles struct {
 	runner *SubagentRunner
+	models TeamModels
 }
 
 func NewModelTeamRoles(runner *SubagentRunner) (*ModelTeamRoles, error) {
+	return NewModelTeamRolesWithModels(runner, TeamModels{})
+}
+
+func NewModelTeamRolesWithModels(runner *SubagentRunner, models TeamModels) (*ModelTeamRoles, error) {
 	if runner == nil || runner.client == nil {
 		return nil, fmt.Errorf("subagent runner with client is required")
 	}
-	return &ModelTeamRoles{runner: runner}, nil
+	models = models.withFallback(runner.model)
+	return &ModelTeamRoles{runner: runner, models: models}, nil
+}
+
+func (m TeamModels) withFallback(fallback string) TeamModels {
+	if strings.TrimSpace(m.Planner) == "" {
+		m.Planner = fallback
+	}
+	if strings.TrimSpace(m.Coder) == "" {
+		m.Coder = fallback
+	}
+	if strings.TrimSpace(m.Tester) == "" {
+		m.Tester = fallback
+	}
+	if strings.TrimSpace(m.Reviewer) == "" {
+		m.Reviewer = fallback
+	}
+	return m
 }
 
 func (m *ModelTeamRoles) Plan(ctx context.Context, objective string) (*DevelopmentPlan, error) {
-	_, plan, err := m.runner.RunPlannerWithContext(ctx, objective)
+	_, plan, err := m.runner.withModel(m.models.Planner).RunPlannerWithContext(ctx, objective)
 	return plan, err
 }
 
@@ -66,7 +95,7 @@ func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, 
 	registerTeamCoderTools(reg, task.Step.AllowedFiles)
 	temperature := 0.1
 	evidence := &executionEvidence{}
-	report, err := m.runner.executeSubagentLoopWithFormat(ctx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderTeamPrompt, reg, codeReportSchema(), &temperature, evidence)
+	report, err := m.runner.withModel(m.models.Coder).executeSubagentLoopWithFormat(ctx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderTeamPrompt, reg, codeReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -104,7 +133,7 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 	registerTeamTesterTools(reg)
 	temperature := 0.0
 	evidence := &executionEvidence{}
-	report, err := m.runner.executeSubagentLoopWithFormat(ctx, newSubagentID(role), string(TypeTester), string(payload), testerTeamPrompt, reg, testReportSchema(), &temperature, evidence)
+	report, err := m.runner.withModel(m.models.Tester).executeSubagentLoopWithFormat(ctx, newSubagentID(role), string(TypeTester), string(payload), testerTeamPrompt, reg, testReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +165,7 @@ func (m *ModelTeamRoles) Review(ctx context.Context, plan *DevelopmentPlan, code
 	registerTeamReviewerTools(reg)
 	temperature := 0.1
 	evidence := &executionEvidence{}
-	report, err := m.runner.executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer"), string(TypeReviewer), string(payload), reviewerTeamPrompt, reg, reviewReportSchema(), &temperature, evidence)
+	report, err := m.runner.withModel(m.models.Reviewer).executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer"), string(TypeReviewer), string(payload), reviewerTeamPrompt, reg, reviewReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}

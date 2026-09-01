@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    SOURCE_DIR="$(cd -P -- "$(/usr/bin/dirname -- "$SOURCE")" && /bin/pwd)"
+    SOURCE="$(/usr/bin/readlink "$SOURCE")"
+    case "$SOURCE" in
+        /*) ;;
+        *) SOURCE="$SOURCE_DIR/$SOURCE" ;;
+    esac
+done
+SCRIPT_DIR="$(cd -P -- "$(/usr/bin/dirname -- "$SOURCE")" && /bin/pwd)"
+
+models=("$@")
+if [ "${#models[@]}" -eq 0 ]; then
+    models=("gemma4:e4b")
+fi
+
+for model in "${models[@]}"; do
+    case "$model" in
+        *[!A-Za-z0-9._:/-]*)
+            printf '[model-smoke] refusing unsafe model name: %s\n' "$model" >&2
+            exit 1
+            ;;
+    esac
+    printf '[model-smoke] planner contract: %s\n' "$model"
+    OLLI_SAFE_NETWORK_MODE=ollama OLLI_SMOKE_MODEL="$model" \
+        "$SCRIPT_DIR/safe-exec" __GO__ test ./subagent -run '^Test(Planner|Coder|Tester|Reviewer)SmallModelSmoke$' -count=1 -v
+done

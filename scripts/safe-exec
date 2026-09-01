@@ -251,6 +251,25 @@ real_repo_escaped="$(escape_profile_string "$REPO_ROOT")"
 real_home_escaped="$(escape_profile_string "$HOST_HOME")"
 tmp_parent_escaped="$(escape_profile_string "$TMP_PARENT")"
 
+NETWORK_RULES='(deny network*)'
+if [ "${OLLI_SAFE_NETWORK_MODE:-}" = "ollama" ]; then
+    NETWORK_RULES='(deny network*)
+(allow network-outbound (remote ip "localhost:11434"))'
+    CHILD_ENV+=("OLLI_MODEL_SMOKE=1")
+    if [ -n "${OLLI_SMOKE_MODEL:-}" ]; then
+        case "$OLLI_SMOKE_MODEL" in
+            *[!A-Za-z0-9._:/-]*)
+                printf '[safe-exec] refusing unsafe smoke model name: %s\n' "$OLLI_SMOKE_MODEL" >&2
+                exit 1
+                ;;
+        esac
+        CHILD_ENV+=("OLLI_SMOKE_MODEL=$OLLI_SMOKE_MODEL")
+    fi
+elif [ -n "${OLLI_SAFE_NETWORK_MODE:-}" ]; then
+    printf '[safe-exec] refusing unknown network mode: %s\n' "$OLLI_SAFE_NETWORK_MODE" >&2
+    exit 1
+fi
+
 PROFILE="$RUN_ROOT/profile.sb"
 cat > "$PROFILE" <<EOF
 (version 1)
@@ -266,11 +285,15 @@ cat > "$PROFILE" <<EOF
 (allow file-read* (subpath "$run_root_escaped"))
 (allow file-write* (literal "/dev/null"))
 (allow file-write* (subpath "$run_root_escaped"))
-(deny network*)
+$NETWORK_RULES
 EOF
 
 printf '[safe-exec] disposable workspace: %s\n' "$WORKSPACE"
-printf '[safe-exec] network denied; real home and checkout denied; writes limited to run directory\n'
+if [ "${OLLI_SAFE_NETWORK_MODE:-}" = "ollama" ]; then
+    printf '[safe-exec] network limited to localhost:11434; real home and checkout denied; writes limited to run directory\n'
+else
+    printf '[safe-exec] network denied; real home and checkout denied; writes limited to run directory\n'
+fi
 
 cd "$WORKSPACE"
 /usr/bin/env -i "${CHILD_ENV[@]}" "$SANDBOX_EXEC" -p "$(<"$PROFILE")" "$@"

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -67,6 +68,14 @@ func (r *SubagentRunner) GetSessionFile() string {
 
 func (r *SubagentRunner) GetWorkspaceRoot() string {
 	return r.workspaceRoot
+}
+
+func (r *SubagentRunner) withModel(model string) *SubagentRunner {
+	clone := *r
+	if strings.TrimSpace(model) != "" {
+		clone.model = strings.TrimSpace(model)
+	}
+	return &clone
 }
 
 func (r *SubagentRunner) newRoleRegistry() *tools.Registry {
@@ -172,7 +181,11 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		},
 	}
 
-	for turn := 0; turn < 5; turn++ {
+	maxTurns := 5
+	if format != nil {
+		maxTurns = 8
+	}
+	for turn := 0; turn < maxTurns; turn++ {
 		select {
 		case <-ctx.Done():
 			logEvent("system", "⚠️ Subagent execution canceled by user interrupt (ESC Key)", nil)
@@ -269,6 +282,14 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			}
 
 			req.Messages = messages
+			if turn == maxTurns-1 && format != nil {
+				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
+				if err != nil {
+					return nil, err
+				}
+				logEvent("assistant", finalAnswer, nil)
+				break
+			}
 			continue
 		}
 
@@ -277,6 +298,13 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		break
 	}
 
+	if format != nil && evidence != nil && evidence.ToolCallsSucceeded > 0 && !looksLikeJSONObject(finalAnswer) {
+		finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
+		if err != nil {
+			return nil, err
+		}
+		logEvent("assistant", finalAnswer, nil)
+	}
 	if finalAnswer == "" {
 		finalAnswer = "Subagent task completed tool execution."
 	}
@@ -320,6 +348,31 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		return nil, fmt.Errorf("failed to write subagent jsonl: %w", logErr)
 	}
 	return report, nil
+}
+
+func looksLikeJSONObject(value string) bool {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, "{") || !strings.HasSuffix(value, "}") {
+		return false
+	}
+	var decoded map[string]any
+	decoder := json.NewDecoder(strings.NewReader(value))
+	if err := decoder.Decode(&decoded); err != nil || decoded == nil {
+		return false
+	}
+	var trailing any
+	return decoder.Decode(&trailing) == io.EOF
+}
+
+func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, req ollama.ChatRequest, messages []ollama.Message, streamCB ollama.StreamCallbacks) (string, error) {
+	completionReq := req
+	completionReq.Tools = nil
+	completionReq.Messages = append(append([]ollama.Message(nil), messages...), ollama.Message{Role: "system", Content: "Tool use is complete. Return only the final JSON object matching the required schema now. Do not call tools."})
+	completion, err := r.client.ChatStreamFullWithContext(ctx, completionReq, streamCB)
+	if err != nil {
+		return "", fmt.Errorf("subagent final structured response failed: %w", err)
+	}
+	return completion.Content, nil
 }
 
 func openSubagentLogFileNoFollow(path string) (*os.File, error) {
