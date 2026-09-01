@@ -13,7 +13,7 @@ import (
 func validDevelopmentPlan() *DevelopmentPlan {
 	return &DevelopmentPlan{
 		Goal:  "Add a read-only planner role",
-		Files: []string{"subagent/planner.go", "agent/subagents.go"},
+		Files: []string{"subagent/planner.go", "subagent/contracts.go", "agent/subagents.go"},
 		Steps: []PlanStep{{
 			ID:           "step-1",
 			Objective:    "Add validated planner output",
@@ -46,6 +46,7 @@ func TestValidateDevelopmentPlanRejectsUnsafeOrAmbiguousPlans(t *testing.T) {
 		{name: "missing files", mutate: func(plan *DevelopmentPlan) { plan.Files = nil }, wantErr: "requires files"},
 		{name: "blank final verification", mutate: func(plan *DevelopmentPlan) { plan.FinalVerification = []string{" "} }, wantErr: "non-empty final_verification"},
 		{name: "blank acceptance", mutate: func(plan *DevelopmentPlan) { plan.Steps[0].Acceptance = []string{" "} }, wantErr: "non-empty acceptance"},
+		{name: "step file missing from plan", mutate: func(plan *DevelopmentPlan) { plan.Files = []string{"other.go"} }, wantErr: "missing from plan files"},
 		{name: "missing acceptance", mutate: func(plan *DevelopmentPlan) { plan.Steps[0].Acceptance = nil }, wantErr: "acceptance"},
 		{name: "too many steps", mutate: func(plan *DevelopmentPlan) {
 			step := plan.Steps[0]

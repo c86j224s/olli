@@ -82,10 +82,10 @@ func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task 
 }
 
 func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, subID string, subType string, task string, sysPrompt string, reg *tools.Registry) (*ResultReport, error) {
-	return r.executeSubagentLoopWithFormat(ctx, subID, subType, task, sysPrompt, reg, nil, nil)
+	return r.executeSubagentLoopWithFormat(ctx, subID, subType, task, sysPrompt, reg, nil, nil, nil)
 }
 
-func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subID string, subType string, task string, sysPrompt string, reg *tools.Registry, format any, temperature *float64) (*ResultReport, error) {
+func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subID string, subType string, task string, sysPrompt string, reg *tools.Registry, format any, temperature *float64, evidence *executionEvidence) (*ResultReport, error) {
 	if r.outputDir == "" {
 		return nil, fmt.Errorf("subagent output directory is not safely contained within the workspace root")
 	}
@@ -242,6 +242,9 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 				toolCallsRun++
 				candidatePath, existedBefore, isArtifactCandidate := artifactCandidatePath(tc.Function.Arguments, r.workspace, r.workspaceRoot)
 				toolRes, tErr := reg.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
+				if tErr == nil && evidence != nil {
+					evidence.ToolCallsSucceeded++
+				}
 				resContent := toolRes
 				if tErr != nil {
 					resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)

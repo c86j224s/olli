@@ -32,15 +32,16 @@ func (r *SubagentRunner) RunPlannerWithContext(ctx context.Context, task string)
 	registerPlannerTools(reg)
 
 	temperature := 0.1
-	report, err := r.executeSubagentLoopWithFormat(ctx, subID, string(TypePlanner), task, plannerSystemPrompt, reg, developmentPlanSchema(), &temperature)
+	evidence := &executionEvidence{}
+	report, err := r.executeSubagentLoopWithFormat(ctx, subID, string(TypePlanner), task, plannerSystemPrompt, reg, developmentPlanSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, nil, err
 	}
 	if report.Status != "SUCCESS" {
 		return report, nil, fmt.Errorf("planner returned %s: %s", report.Status, report.Summary)
 	}
-	if report.ToolCallsRun == 0 {
-		return report, nil, fmt.Errorf("planner returned a plan without inspecting workspace evidence")
+	if evidence.ToolCallsSucceeded == 0 {
+		return report, nil, fmt.Errorf("planner returned a plan without successfully inspecting workspace evidence")
 	}
 	plan, err := parseDevelopmentPlan(report.Summary)
 	if err != nil {

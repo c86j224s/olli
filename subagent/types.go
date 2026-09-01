@@ -19,6 +19,10 @@ type SubagentCallbacks struct {
 	OnToolCall      func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
 }
 
+type executionEvidence struct {
+	ToolCallsSucceeded int
+}
+
 type ResultReport struct {
 	SubagentID    string   `json:"subagent_id"`
 	Type          string   `json:"type"`

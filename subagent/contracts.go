@@ -80,6 +80,10 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 		plan.Files[index] = path
 	}
 	plan.Files = uniqueStrings(plan.Files)
+	plannedFiles := make(map[string]struct{}, len(plan.Files))
+	for _, path := range plan.Files {
+		plannedFiles[path] = struct{}{}
+	}
 
 	for index := range plan.Steps {
 		step := &plan.Steps[index]
@@ -105,6 +109,9 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 			path, err := normalizePlanPath(step.AllowedFiles[fileIndex])
 			if err != nil {
 				return fmt.Errorf("development plan step %s file %q: %w", step.ID, step.AllowedFiles[fileIndex], err)
+			}
+			if _, exists := plannedFiles[path]; !exists {
+				return fmt.Errorf("development plan step %s file %q is missing from plan files", step.ID, path)
 			}
 			step.AllowedFiles[fileIndex] = path
 		}
