@@ -109,6 +109,30 @@ func TestAgentHonorsDisabledMediaTools(t *testing.T) {
 	}
 }
 
+func TestAgentRegistersDevelopmentTeamTool(t *testing.T) {
+	tempDir := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(originalWD)
+
+	cfg, err := config.LoadConfig(filepath.Join(tempDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := agent.New(ollama.NewClient("http://localhost:11434"), "qwen3.5:0.8b", "test", nil, cfg)
+	if _, ok := ag.GetRegistry().GetDefinition("delegate_dev_team"); !ok {
+		t.Fatal("expected delegate_dev_team to be registered")
+	}
+	if !ag.ShouldRequirePermission("delegate_dev_team") {
+		t.Fatal("development team delegation should require permission")
+	}
+}
+
 func TestAgentRegistersPlannerTool(t *testing.T) {
 	tempDir := t.TempDir()
 	originalWD, err := os.Getwd()

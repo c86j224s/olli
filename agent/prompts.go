@@ -13,8 +13,9 @@ func (a *Agent) buildMessagesPayload() []ollama.Message {
 	fullSystemPrompt := a.systemMsg
 
 	subagentProtocol := "\n\n🤖 [SUBAGENT DELEGATION PROTOCOL]:\n" +
-		"- For multi-file development or uncertain architecture: Call 'delegate_planner(task_description)' before coding.\n" +
-		"- For writing, editing, or refactoring code: Call 'delegate_coder(task_description)'.\n" +
+		"- For end-to-end development with planning, coding, testing, review, and verification: Prefer 'delegate_dev_team(task_description)'.\n" +
+		"- For planning only: Call 'delegate_planner(task_description)'.\n" +
+		"- For a narrowly scoped manual edit only: Call 'delegate_coder(task_description)'.\n" +
 		"- For running tests (go test), build verification, or runtime testing: Call 'delegate_tester(task_description)'.\n" +
 		"- For static code review, code style checks, or architecture inspection: Call 'delegate_reviewer(task_description)'.\n" +
 		"- For technical Markdown documentation, READMEs, or manuals: Call 'delegate_documenter(task_description)'.\n" +

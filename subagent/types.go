@@ -19,8 +19,31 @@ type SubagentCallbacks struct {
 	OnToolCall      func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
 }
 
+type successfulToolCall struct {
+	Name      string
+	Arguments map[string]interface{}
+}
+
 type executionEvidence struct {
 	ToolCallsSucceeded int
+	SuccessfulTools    map[string]int
+	SuccessfulCalls    []successfulToolCall
+}
+
+func (e *executionEvidence) recordSuccess(toolName string, arguments map[string]interface{}) {
+	if e == nil {
+		return
+	}
+	e.ToolCallsSucceeded++
+	if e.SuccessfulTools == nil {
+		e.SuccessfulTools = make(map[string]int)
+	}
+	e.SuccessfulTools[toolName]++
+	copied := make(map[string]interface{}, len(arguments))
+	for key, value := range arguments {
+		copied[key] = value
+	}
+	e.SuccessfulCalls = append(e.SuccessfulCalls, successfulToolCall{Name: toolName, Arguments: copied})
 }
 
 type ResultReport struct {

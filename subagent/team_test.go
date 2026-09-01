@@ -59,8 +59,24 @@ func teamTestPlan() *DevelopmentPlan {
 	return &DevelopmentPlan{
 		Goal:              "Implement feature",
 		Files:             []string{"feature.go", "feature_test.go"},
-		Steps:             []PlanStep{{ID: "step-1", Objective: "Implement", AllowedFiles: []string{"feature.go", "feature_test.go"}, Acceptance: []string{"feature works"}, Verification: []string{"safe-test ./..."}}},
-		FinalVerification: []string{"safe-test ./...", "safe-vet ./..."},
+		Steps:             []PlanStep{{ID: "step-1", Objective: "Implement", AllowedFiles: []string{"feature.go", "feature_test.go"}, Acceptance: []string{"feature works"}, Verification: []string{"go_test ./..."}}},
+		FinalVerification: []string{"go_test ./...", "go_vet ./..."},
+	}
+}
+
+func TestDevelopmentTeamRunnerSkipsEmptyStepVerification(t *testing.T) {
+	plan := teamTestPlan()
+	plan.Steps[0].Verification = nil
+	roles := &scriptedTeamRoles{
+		plan:         plan,
+		codeReports:  []*CodeReport{{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"done"}}},
+		reviews:      []*ReviewReport{{Findings: nil}},
+		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
+	}
+	runner, _ := NewDevelopmentTeamRunner(roles, 2)
+	report := runner.Run(context.Background(), "implement feature")
+	if report.Status != "SUCCESS" || roles.testCalls != 0 {
+		t.Fatalf("empty step verification should be deferred to final verification: %#v", report)
 	}
 }
 
@@ -68,9 +84,9 @@ func TestDevelopmentTeamRunnerSuccessOrder(t *testing.T) {
 	roles := &scriptedTeamRoles{
 		plan:         teamTestPlan(),
 		codeReports:  []*CodeReport{{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"feature works"}}},
-		testReports:  []*TestReport{{Passed: true, Commands: []CommandResult{passingCommand("safe-test ./...")}}},
+		testReports:  []*TestReport{{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}}},
 		reviews:      []*ReviewReport{{Findings: nil, Summary: "clean"}},
-		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("safe-test ./..."), passingCommand("safe-vet ./...")}},
+		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
 	}
 	runner, err := NewDevelopmentTeamRunner(roles, 2)
 	if err != nil {
@@ -94,14 +110,14 @@ func TestDevelopmentTeamRunnerFixesReviewedFindingOnce(t *testing.T) {
 			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"nil case fixed"}},
 		},
 		testReports: []*TestReport{
-			{Passed: true, Commands: []CommandResult{passingCommand("safe-test ./...")}},
-			{Passed: true, Commands: []CommandResult{passingCommand("safe-test ./...")}},
+			{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}},
+			{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}},
 		},
 		reviews: []*ReviewReport{
 			{Findings: []Finding{{Severity: "high", File: "feature.go", Line: 10, Summary: "nil input panics", FailureScenario: "nil input reaches dereference"}}},
 			{Findings: nil, Summary: "clean"},
 		},
-		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("safe-test ./..."), passingCommand("safe-vet ./...")}},
+		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
 	}
 	runner, _ := NewDevelopmentTeamRunner(roles, 2)
 	report := runner.Run(context.Background(), "implement feature")
@@ -114,7 +130,7 @@ func TestDevelopmentTeamRunnerRejectsCoderScopeEscape(t *testing.T) {
 	roles := &scriptedTeamRoles{
 		plan:         teamTestPlan(),
 		codeReports:  []*CodeReport{{StepID: "step-1", ChangedFiles: []string{"unplanned.go"}, Completed: []string{"done"}}},
-		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("safe-test ./..."), passingCommand("safe-vet ./...")}},
+		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
 	}
 	runner, _ := NewDevelopmentTeamRunner(roles, 2)
 	report := runner.Run(context.Background(), "implement feature")
@@ -127,9 +143,9 @@ func TestDevelopmentTeamRunnerRequiresEveryFinalVerificationCommand(t *testing.T
 	roles := &scriptedTeamRoles{
 		plan:         teamTestPlan(),
 		codeReports:  []*CodeReport{{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"done"}}},
-		testReports:  []*TestReport{{Passed: true, Commands: []CommandResult{passingCommand("safe-test ./...")}}},
+		testReports:  []*TestReport{{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}}},
 		reviews:      []*ReviewReport{{Findings: nil}},
-		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("safe-test ./...")}},
+		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}},
 	}
 	runner, _ := NewDevelopmentTeamRunner(roles, 2)
 	report := runner.Run(context.Background(), "implement feature")
@@ -139,7 +155,7 @@ func TestDevelopmentTeamRunnerRequiresEveryFinalVerificationCommand(t *testing.T
 }
 
 func TestValidateTestReportTrustsExitCodesNotSelfAssessment(t *testing.T) {
-	report := &TestReport{Passed: true, Commands: []CommandResult{{Command: "safe-test ./...", ExitCode: 1}}}
+	report := &TestReport{Passed: true, Commands: []CommandResult{{Command: "go_test ./...", ExitCode: 1}}}
 	if err := validateTestReport(report); err == nil {
 		t.Fatal("passing report with failing exit code was accepted")
 	}
@@ -154,8 +170,8 @@ func TestDevelopmentTeamRunnerStopsAfterFixLimit(t *testing.T) {
 			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"fix one"}},
 		},
 		testReports: []*TestReport{
-			{Passed: true, Commands: []CommandResult{passingCommand("safe-test")}},
-			{Passed: true, Commands: []CommandResult{passingCommand("safe-test")}},
+			{Passed: true, Commands: []CommandResult{passingCommand("go_test")}},
+			{Passed: true, Commands: []CommandResult{passingCommand("go_test")}},
 		},
 		reviews: []*ReviewReport{{Findings: []Finding{finding}}, {Findings: []Finding{finding}}},
 	}

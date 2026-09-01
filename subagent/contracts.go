@@ -12,6 +12,13 @@ const maxPlanSteps = 6
 
 var planStepIDPattern = regexp.MustCompile(`^step-[1-9][0-9]*$`)
 
+var allowedVerificationActions = map[string]struct{}{
+	"go_test":    {},
+	"go_vet":     {},
+	"git_diff":   {},
+	"git_status": {},
+}
+
 // DevelopmentPlan is the validated handoff from a read-only planner to the
 // deterministic development-team orchestrator.
 type DevelopmentPlan struct {
@@ -65,6 +72,13 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 	if len(plan.FinalVerification) == 0 {
 		return fmt.Errorf("development plan requires non-empty final_verification")
 	}
+	for index, command := range plan.FinalVerification {
+		canonical, err := normalizeVerificationCommand(command)
+		if err != nil {
+			return fmt.Errorf("final verification %q: %w", command, err)
+		}
+		plan.FinalVerification[index] = canonical
+	}
 	plan.Assumptions = uniqueStrings(plan.Assumptions)
 	plan.Risks = uniqueStrings(plan.Risks)
 	if len(plan.Files) == 0 {
@@ -105,6 +119,13 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 			return fmt.Errorf("development plan step %s requires non-empty acceptance criteria", step.ID)
 		}
 		step.Verification = uniqueStrings(step.Verification)
+		for verificationIndex, command := range step.Verification {
+			canonical, err := normalizeVerificationCommand(command)
+			if err != nil {
+				return fmt.Errorf("development plan step %s verification %q: %w", step.ID, command, err)
+			}
+			step.Verification[verificationIndex] = canonical
+		}
 		for fileIndex := range step.AllowedFiles {
 			path, err := normalizePlanPath(step.AllowedFiles[fileIndex])
 			if err != nil {
@@ -118,6 +139,25 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 		step.AllowedFiles = uniqueStrings(step.AllowedFiles)
 	}
 	return nil
+}
+
+func normalizeVerificationCommand(command string) (string, error) {
+	fields := strings.Fields(strings.TrimSpace(command))
+	if len(fields) == 0 || len(fields) > 2 {
+		return "", fmt.Errorf("command must be action or action target")
+	}
+	action := fields[0]
+	if _, allowed := allowedVerificationActions[action]; !allowed {
+		return "", fmt.Errorf("action %q is not allowed for team verification", action)
+	}
+	if len(fields) == 1 {
+		return action, nil
+	}
+	target := fields[1]
+	if strings.ContainsAny(target, ";&|><$`\r\n\t") || strings.HasPrefix(target, "-") {
+		return "", fmt.Errorf("target contains unsafe syntax")
+	}
+	return action + " " + target, nil
 }
 
 func normalizePlanPath(path string) (string, error) {

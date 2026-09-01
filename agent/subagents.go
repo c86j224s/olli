@@ -100,7 +100,40 @@ func validateRequiredSubagentArtifacts(label string, report *subagent.ResultRepo
 }
 
 func (a *Agent) registerSubagentTools() {
-	// 1. delegate_planner
+	// 1. delegate_dev_team
+	a.mustRegisterContext(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "delegate_dev_team",
+			Description: "[PREFERRED TOOL FOR END-TO-END DEVELOPMENT] Run a deterministic Planner -> Coder -> Tester -> Reviewer -> Verifier team with one writer and bounded fix rounds",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"task_description": {Type: "string", Description: "Focused implementation objective, constraints, and acceptance criteria"},
+				},
+				Required: []string{"task_description"},
+			},
+		},
+	}, tools.ToolMetadata{WorkflowCallable: false}, func(ctx context.Context, args map[string]interface{}) (string, error) {
+		task, _ := args["task_description"].(string)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), a.buildSubagentCallbacks(ctx), a.getWorkspaceRoot())
+		roles, err := subagent.NewModelTeamRoles(runner)
+		if err != nil {
+			return "", err
+		}
+		team, err := subagent.NewDevelopmentTeamRunner(roles, 2)
+		if err != nil {
+			return "", err
+		}
+		report := team.Run(ctx, a.buildEnrichedSubagentTask(task))
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("development team result serialization failed: %w", err)
+		}
+		return string(data), nil
+	})
+
+	// 2. delegate_planner
 	a.mustRegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{

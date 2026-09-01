@@ -394,7 +394,7 @@ func toolsAudioGenerationConfig(cfg config.AudioGenerationConfig) tools.AudioGen
 func isSensitiveTool(toolName string) bool {
 	switch toolName {
 	case "execute_action", "cd", "change_directory",
-		"delegate_planner", "delegate_coder", "delegate_tester", "delegate_documenter", "delegate_presenter",
+		"delegate_dev_team", "delegate_planner", "delegate_coder", "delegate_tester", "delegate_documenter", "delegate_presenter",
 		"image_generate", "audio_generate":
 		return true
 	default:

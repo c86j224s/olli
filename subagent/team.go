@@ -141,17 +141,19 @@ func (r *DevelopmentTeamRunner) Run(ctx context.Context, objective string) Devel
 		}
 		report.CodeReports = append(report.CodeReports, *codeReport)
 
-		transition(TeamPhaseTesting)
-		testReport, err := r.roles.Test(ctx, step)
-		if err != nil {
-			return fail("testing %s failed: %v", step.ID, err)
-		}
-		if err := validateTestReport(testReport); err != nil {
-			return fail("testing %s produced an invalid report: %v", step.ID, err)
-		}
-		report.TestReports = append(report.TestReports, *testReport)
-		if !testReport.Passed {
-			return fail("testing %s did not pass: %s", step.ID, testReport.Summary)
+		if len(step.Verification) > 0 {
+			transition(TeamPhaseTesting)
+			testReport, err := r.roles.Test(ctx, step)
+			if err != nil {
+				return fail("testing %s failed: %v", step.ID, err)
+			}
+			if err := validateTestReport(testReport); err != nil {
+				return fail("testing %s produced an invalid report: %v", step.ID, err)
+			}
+			report.TestReports = append(report.TestReports, *testReport)
+			if !testReport.Passed {
+				return fail("testing %s did not pass: %s", step.ID, testReport.Summary)
+			}
 		}
 	}
 
