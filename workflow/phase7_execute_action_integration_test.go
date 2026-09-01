@@ -69,6 +69,12 @@ func TestPhase7ExecuteActionCallerDeadlineKillsSandboxedChild(t *testing.T) {
 }
 
 func phase7ExecuteActionCallerDeadlineKillsSandboxedChild(t *testing.T) {
+	if os.Getenv("OLLI_VM_SECURITY_INTEGRATION") != "1" {
+		t.Skip("requires an explicitly authorized disposable macOS VM")
+	}
+	if os.Getenv("OLLI_OUTER_SANDBOX") == "1" {
+		t.Fatal("macOS sandbox-exec integration cannot run inside the outer test sandbox")
+	}
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec integration is macOS-only")
 	}

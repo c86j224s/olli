@@ -98,15 +98,26 @@ func TestIsPathSafeFromRejectsEscapesAndSymlinks(t *testing.T) {
 	}
 }
 
-func TestIsWorkspaceLocationSafeRejectsAccountHome(t *testing.T) {
+func TestIsWorkspaceLocationSafeRejectsConfiguredHome(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	if err := IsWorkspaceLocationSafe(fakeHome); err == nil {
+		t.Fatal("expected configured home directory to be rejected as workspace root")
+	}
+}
+
+func TestKnownHomeDirsIncludesAccountHomeWithoutMutatingIt(t *testing.T) {
 	current, err := accountuser.Current()
 	if err != nil || strings.TrimSpace(current.HomeDir) == "" {
 		t.Skipf("account home unavailable: %v", err)
 	}
 	t.Setenv("HOME", t.TempDir())
-	if err := IsWorkspaceLocationSafe(current.HomeDir); err == nil {
-		t.Fatal("expected account home directory to be rejected as workspace root")
+	for _, home := range knownHomeDirs() {
+		if home == current.HomeDir {
+			return
+		}
 	}
+	t.Fatalf("account home %q was omitted from protected homes", current.HomeDir)
 }
 
 func TestValidateCommandSafetyBlocksDestructiveCommands(t *testing.T) {
@@ -181,6 +192,27 @@ func TestExecuteCommandWithWorkspaceRequiresExplicitCDPath(t *testing.T) {
 
 func TestExecuteCommandWithWorkspaceRebindsGoCacheUnderRoot(t *testing.T) {
 	workspace := t.TempDir()
+	if os.Getenv("OLLI_OUTER_SANDBOX") == "1" {
+		env, err := sandboxEnv(workspace)
+		if err != nil {
+			t.Fatalf("sandboxEnv failed: %v", err)
+		}
+		values := map[string]string{}
+		for _, entry := range env {
+			key, value, ok := strings.Cut(entry, "=")
+			if ok {
+				values[key] = value
+			}
+		}
+		wantPrefix, err := filepath.EvalSymlinks(filepath.Join(workspace, ".olli_sandbox"))
+		if err != nil {
+			t.Fatalf("failed to canonicalize sandbox path: %v", err)
+		}
+		if got := values["GOCACHE"]; !strings.HasPrefix(got, wantPrefix) {
+			t.Fatalf("expected GOCACHE under %s, got %s", wantPrefix, got)
+		}
+		return
+	}
 	output, _, err := ExecuteCommandWithWorkspace(context.Background(), "go env GOCACHE", workspace, workspace)
 	if err != nil {
 		t.Fatalf("go env GOCACHE failed: %v\n%s", err, output)
@@ -331,7 +363,27 @@ func TestSandboxEnvDropsCommandHelperVariables(t *testing.T) {
 	}
 }
 
+func TestDarwinSandboxProfileRestrictsWritesAndAllowsNoNetwork(t *testing.T) {
+	root := t.TempDir()
+	profile := darwinSandboxProfile(root, []string{"go", "test", "./..."})
+	if !strings.Contains(profile, "(deny default)") {
+		t.Fatal("sandbox profile must deny by default")
+	}
+	if !strings.Contains(profile, `(allow file-write* (subpath "`+escapeSandboxProfileString(root)+`"))`) {
+		t.Fatalf("sandbox profile does not restrict writes to root: %s", profile)
+	}
+	if strings.Contains(profile, "network") {
+		t.Fatalf("application command sandbox must not grant network access: %s", profile)
+	}
+}
+
 func TestExecuteCommandWithWorkspaceDarwinSandboxBlocksAbsoluteOutsideWrites(t *testing.T) {
+	if os.Getenv("OLLI_VM_SECURITY_INTEGRATION") != "1" {
+		t.Skip("requires an explicitly authorized disposable macOS VM")
+	}
+	if os.Getenv("OLLI_OUTER_SANDBOX") == "1" {
+		t.Fatal("macOS sandbox-exec integration cannot run inside the outer test sandbox")
+	}
 	if runtime.GOOS != "darwin" {
 		t.Skip("sandbox-exec is macOS-specific")
 	}

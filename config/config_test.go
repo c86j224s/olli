@@ -9,11 +9,7 @@ import (
 )
 
 func TestConfigWhitelistManagement(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "config_test_*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	cfgPath := filepath.Join(tempDir, "config.json")
 	cfg, err := config.LoadConfig(cfgPath)

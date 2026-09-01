@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    SOURCE_DIR="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    case "$SOURCE" in
+        /*) ;;
+        *) SOURCE="$SOURCE_DIR/$SOURCE" ;;
+    esac
+done
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+
+printf '[safe-run] refusing host execution: interactive O.L.L.I. runs require a dedicated disposable VM without host mounts, credentials, or external network access.\n' >&2
+exit 1

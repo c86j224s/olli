@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"image"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,7 +31,7 @@ func TestImageInspectRejectsUnsafeEndpointsTempOnlyNoNetwork(t *testing.T) {
 		reg.SetImageInspectionConfig(ImageInspectionConfig{
 			Ollama: OllamaImageInspectionConfig{Endpoint: endpoint, Model: "vision-test"},
 		})
-		_, err := reg.Execute("inspect_image", map[string]interface{}{"path": "artifacts/images/generated.png"})
+		_, err := reg.ExecuteContext(mediaTestContext(reg), "inspect_image", map[string]interface{}{"path": "artifacts/images/generated.png"})
 		if err == nil || !strings.Contains(err.Error(), "endpoint") {
 			t.Fatalf("expected endpoint rejection for %q, got: %v", endpoint, err)
 		}
@@ -50,7 +49,7 @@ func TestImageInspectCanceledContextMakesNoHTTPCalls(t *testing.T) {
 		t.Fatalf("failed to write image fixture: %v", err)
 	}
 	var requests atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		http.Error(w, "unexpected request", http.StatusInternalServerError)
 	}))
@@ -62,7 +61,8 @@ func TestImageInspectCanceledContextMakesNoHTTPCalls(t *testing.T) {
 	reg.SetImageInspectionConfig(ImageInspectionConfig{Ollama: OllamaImageInspectionConfig{
 		Endpoint: server.URL, Model: "vision-test", TimeoutSeconds: 2, MaxImageBytes: 1024,
 	}})
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx := mediaTestContext(reg, server.Config.Handler)
+	ctx, cancel := context.WithCancel(ctx)
 	cancel()
 	if _, err := reg.ExecuteContext(ctx, "inspect_image", map[string]interface{}{"path": "artifacts/images/generated.png"}); err == nil {
 		t.Fatal("expected canceled context error")
@@ -139,7 +139,7 @@ func TestImageInspectSuccessPathTempOnlyHttptest(t *testing.T) {
 
 	var sawShow bool
 	var sawChat bool
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/api/show":
 			sawShow = true
@@ -206,7 +206,7 @@ func TestImageInspectSuccessPathTempOnlyHttptest(t *testing.T) {
 		},
 	})
 
-	resultJSON, err := reg.Execute("inspect_image", map[string]interface{}{
+	resultJSON, err := reg.ExecuteContext(mediaTestContext(reg, server.Config.Handler), "inspect_image", map[string]interface{}{
 		"path":     "artifacts/images/generated.png",
 		"question": "What is visible?",
 	})
@@ -248,7 +248,7 @@ func TestImageInspectRejectsOutsideArtifactRootTempOnlyNoNetwork(t *testing.T) {
 	reg := NewRegistry()
 	reg.SetWorkspaceRoot(root)
 	reg.SetWorkspace(root)
-	_, err := reg.Execute("inspect_image", map[string]interface{}{"path": "outside.png"})
+	_, err := reg.ExecuteContext(mediaTestContext(reg), "inspect_image", map[string]interface{}{"path": "outside.png"})
 	if err == nil || !strings.Contains(err.Error(), "artifacts/images") {
 		t.Fatalf("expected artifact containment rejection, got: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestImageInspectRejectsSymlinkTempOnlyNoNetwork(t *testing.T) {
 	reg := NewRegistry()
 	reg.SetWorkspaceRoot(root)
 	reg.SetWorkspace(root)
-	_, err := reg.Execute("inspect_image", map[string]interface{}{"path": "artifacts/images/link.png"})
+	_, err := reg.ExecuteContext(mediaTestContext(reg), "inspect_image", map[string]interface{}{"path": "artifacts/images/link.png"})
 	if err == nil {
 		t.Fatal("expected symlink image to be rejected")
 	}
@@ -288,7 +288,7 @@ func TestImageInspectRejectsNonVisionModelTempOnlyHttptest(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(imageDir, "generated.png"), testPNGBytes(t), 0600); err != nil {
 		t.Fatalf("failed to write image fixture: %v", err)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/show" {
 			t.Errorf("unexpected request path: %s", r.URL.Path)
 		}
@@ -303,7 +303,7 @@ func TestImageInspectRejectsNonVisionModelTempOnlyHttptest(t *testing.T) {
 	reg.SetImageInspectionConfig(ImageInspectionConfig{
 		Ollama: OllamaImageInspectionConfig{Endpoint: server.URL, Model: "text-only", TimeoutSeconds: 2, MaxImageBytes: 1024},
 	})
-	_, err := reg.Execute("inspect_image", map[string]interface{}{"path": "artifacts/images/generated.png"})
+	_, err := reg.ExecuteContext(mediaTestContext(reg, server.Config.Handler), "inspect_image", map[string]interface{}{"path": "artifacts/images/generated.png"})
 	if err == nil || !strings.Contains(err.Error(), "does not advertise vision") {
 		t.Fatalf("expected vision capability rejection, got: %v", err)
 	}

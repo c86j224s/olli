@@ -176,6 +176,9 @@ func (r *Registry) executeImageInspect(ctx context.Context, args map[string]inte
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	client := newLocalImageInspectionHTTPClient(timeout)
+	if transport := r.mediaTransportFromContext(ctx); transport != nil {
+		client.Transport = transport
+	}
 	if err := requireOllamaVisionModel(ctx, client, endpoint, cfg.Ollama.Model); err != nil {
 		return "", err
 	}

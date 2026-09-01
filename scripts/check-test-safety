@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    SOURCE_DIR="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+    SOURCE="$(readlink "$SOURCE")"
+    case "$SOURCE" in
+        /*) ;;
+        *) SOURCE="$SOURCE_DIR/$SOURCE" ;;
+    esac
+done
+REPO_ROOT="$(cd -P -- "$(dirname -- "$SOURCE")/.." && pwd)"
+
+if ! command -v git >/dev/null 2>&1 || ! git -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf '[test-safety] refusing to scan outside the repository: %s\n' "$REPO_ROOT" >&2
+    exit 1
+fi
+if ! command -v rg >/dev/null 2>&1; then
+    printf '[test-safety] ripgrep is required\n' >&2
+    exit 1
+fi
+
+cd "$REPO_ROOT"
+failed=0
+check() {
+    local description="$1"
+    local pattern="$2"
+    local matches
+    matches="$(RIPGREP_CONFIG_PATH= rg --no-config -n --glob '*_test.go' "$pattern" . || true)"
+    if [ -n "$matches" ]; then
+        printf '[test-safety] forbidden %s:\n%s\n' "$description" "$matches" >&2
+        failed=1
+    fi
+}
+
+check 'recursive removal in tests' 'os\.RemoveAll\s*\('
+check 'real home environment lookup in tests' 'os\.UserHomeDir\s*\(|os\.Getenv\s*\(\s*"HOME"'
+account_home_lookups="$(RIPGREP_CONFIG_PATH= rg --no-config -n --glob '*_test.go' '(os/user|user\.Current\s*\()' . || true)"
+account_home_allow='tools/security_test.go'
+while IFS= read -r match; do
+    [ -n "$match" ] || continue
+    case "$match" in
+        *"$account_home_allow"*) ;;
+        *)
+            printf '[test-safety] forbidden account-home lookup in tests:\n%s\n' "$match" >&2
+            failed=1
+            ;;
+    esac
+done <<< "$account_home_lookups"
+check 'absolute home path in tests' '(/Users/|/home/)'
+process_calls="$(/usr/bin/perl -0777 -ne 'while (/exec\.Command(?:Context)?\s*\((.*?)\)/sg) { $call = $&; $args = $1; $flat = $call; $flat =~ s/\s+/ /g; if ($args =~ /^\s*(?:[^,]+,\s*)?"(?:[^"]*\/)?(?:rm|find|sh|bash|zsh)"\s*(?:,|$)/ || $args !~ /^\s*(?:[^,]+,\s*)?"/) { print "$ARGV: $flat\n"; } }' $(find . -name '*_test.go' -type f -print))"
+if [ -n "$process_calls" ]; then
+    printf '[test-safety] forbidden direct or computed process execution in tests:\n%s\n' "$process_calls" >&2
+    failed=1
+fi
+
+if [ "$failed" -ne 0 ]; then
+    printf '[test-safety] move destructive strings to pure validators and use t.TempDir decoys for execution tests.\n' >&2
+    exit 1
+fi
+printf '[test-safety] no forbidden high-blast-radius test patterns found\n'

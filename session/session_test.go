@@ -10,11 +10,7 @@ import (
 )
 
 func TestSessionManager(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "session_test_*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	mgr, err := session.NewManager(tempDir)
 	if err != nil {

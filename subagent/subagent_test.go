@@ -13,11 +13,7 @@ import (
 )
 
 func TestSubagentRunnerAllTypes(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "subagent_test_*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	client := ollama.NewClient("http://localhost:11434")
 	cfg, _ := config.LoadConfig(filepath.Join(tempDir, "config.json"))

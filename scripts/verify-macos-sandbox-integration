@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    SOURCE_DIR="$(cd -P -- "$(/usr/bin/dirname -- "$SOURCE")" && /bin/pwd)"
+    SOURCE="$(/usr/bin/readlink "$SOURCE")"
+    case "$SOURCE" in
+        /*) ;;
+        *) SOURCE="$SOURCE_DIR/$SOURCE" ;;
+    esac
+done
+REPO_ROOT="$(cd -P -- "$(/usr/bin/dirname -- "$SOURCE")/.." && /bin/pwd)"
+
+if [ "${OLLI_VM_SECURITY_INTEGRATION:-}" != "1" ]; then
+    printf '%s\n' '[macos-security-integration] refusing host execution.' >&2
+    printf "%s\n" "These tests launch O.L.L.I.'s own sandbox-exec and cannot be nested under the outer test sandbox." >&2
+    printf '%s\n' 'Run this target only inside a disposable macOS VM with no host mounts, credentials, sockets, or external network:' >&2
+    printf '  %s\n' 'OLLI_VM_SECURITY_INTEGRATION=1 make macos-security-integration' >&2
+    printf 'Repository: %s\n' "$REPO_ROOT" >&2
+    exit 1
+fi
+if [ -n "${OLLI_OUTER_SANDBOX:-}" ]; then
+    printf '%s\n' '[macos-security-integration] refusing nested outer sandbox execution.' >&2
+    exit 1
+fi
+
+GO_BIN="$(command -v go || true)"
+if [ -z "$GO_BIN" ] || [ ! -x "$GO_BIN" ]; then
+    printf '%s\n' '[macos-security-integration] Go executable unavailable.' >&2
+    exit 1
+fi
+cd "$REPO_ROOT"
+"$GO_BIN" test ./tools -run '^TestExecuteCommandWithWorkspaceDarwinSandboxBlocksAbsoluteOutsideWrites$'
+"$GO_BIN" test ./workflow -run '^TestPhase7ExecuteActionCallerDeadlineKillsSandboxedChild$'

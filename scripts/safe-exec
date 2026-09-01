@@ -1,0 +1,276 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "${OSTYPE:-}" in
+    darwin*) ;;
+    *)
+        printf '[safe-exec] refusing to run: no sandbox backend for %s\n' "${OSTYPE:-unknown}" >&2
+        exit 1
+        ;;
+esac
+
+SANDBOX_EXEC=/usr/bin/sandbox-exec
+GIT=/usr/bin/git
+RSYNC=/usr/bin/rsync
+
+for dependency in "$SANDBOX_EXEC" "$GIT" "$RSYNC"; do
+    if [ ! -x "$dependency" ]; then
+        printf '[safe-exec] refusing to run: required executable unavailable: %s\n' "$dependency" >&2
+        exit 1
+    fi
+done
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    SOURCE_DIR="$(cd -P -- "$(/usr/bin/dirname -- "$SOURCE")" && /bin/pwd)"
+    SOURCE="$(/usr/bin/readlink "$SOURCE")"
+    case "$SOURCE" in
+        /*) ;;
+        *) SOURCE="$SOURCE_DIR/$SOURCE" ;;
+    esac
+done
+REPO_ROOT="$(cd -P -- "$(/usr/bin/dirname -- "$SOURCE")/.." && /bin/pwd)"
+
+if [ ! -f "$REPO_ROOT/go.mod" ] || ! "$GIT" -C "$REPO_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf '[safe-exec] refusing to run outside the O.L.L.I. repository: %s\n' "$REPO_ROOT" >&2
+    exit 1
+fi
+if [ "$#" -eq 0 ]; then
+    printf 'usage: scripts/safe-exec <command> [args...]\n' >&2
+    exit 2
+fi
+
+for candidate in /opt/homebrew/bin/go /usr/local/bin/go /usr/local/go/bin/go; do
+    if [ -x "$candidate" ]; then
+        GO_BIN="$candidate"
+        break
+    fi
+done
+GO_BIN="${GO_BIN:-}"
+if [ -z "$GO_BIN" ] || [ ! -x "$GO_BIN" ]; then
+    printf '[safe-exec] refusing to run: Go executable unavailable\n' >&2
+    exit 1
+fi
+GO_BIN="$(cd -P -- "$(/usr/bin/dirname -- "$GO_BIN")" && /bin/pwd)/$(/usr/bin/basename -- "$GO_BIN")"
+GO_BIN="$(/usr/bin/perl -MCwd=realpath -e 'print realpath($ARGV[0])' "$GO_BIN")"
+case "$GO_BIN" in
+    /*) ;;
+    *)
+        printf '[safe-exec] refusing unsafe Go executable path: %s\n' "$GO_BIN" >&2
+        exit 1
+        ;;
+esac
+
+ACCOUNT_NAME="$(/usr/bin/id -un)"
+case "$ACCOUNT_NAME" in
+    ''|*[!A-Za-z0-9._-]*)
+        printf '[safe-exec] refusing unsafe account name\n' >&2
+        exit 1
+        ;;
+esac
+ACCOUNT_RECORD="$(/usr/bin/dscl . -read "/Users/$ACCOUNT_NAME" NFSHomeDirectory 2>/dev/null || true)"
+HOST_HOME="${ACCOUNT_RECORD#NFSHomeDirectory: }"
+if [ "$HOST_HOME" = "$ACCOUNT_RECORD" ] || [ ! -d "$HOST_HOME" ]; then
+    printf '[safe-exec] refusing to run: account home could not be resolved\n' >&2
+    exit 1
+fi
+HOST_HOME="$(cd -P -- "$HOST_HOME" && /bin/pwd)"
+safe_path=/usr/bin:/bin:/usr/sbin:/sbin:/usr/local/bin:/opt/homebrew/bin:/usr/local/go/bin
+HOST_GOMODCACHE="$(/usr/bin/env -i HOME="$HOST_HOME" PATH="$safe_path" GOWORK=off GOPROXY=off GOSUMDB=off GOENV=off "$GO_BIN" env GOMODCACHE)"
+GOROOT="$(/usr/bin/env -i HOME="$HOST_HOME" PATH="$safe_path" GOENV=off "$GO_BIN" env GOROOT)"
+if [ ! -d "$GOROOT" ]; then
+    printf '[safe-exec] refusing to run: Go root could not be resolved\n' >&2
+    exit 1
+fi
+GOROOT="$(cd -P -- "$GOROOT" && /bin/pwd)"
+TMP_PARENT="${TMPDIR:-/private/tmp}"
+TMP_PARENT="${TMP_PARENT%/}"
+TMP_PARENT="$(cd -P -- "$TMP_PARENT" && /bin/pwd)"
+if [ -z "$HOST_HOME" ] || [ -z "$HOST_GOMODCACHE" ] || [ -z "$TMP_PARENT" ]; then
+    printf '[safe-exec] refusing to run: host paths could not be resolved\n' >&2
+    exit 1
+fi
+
+RUN_ROOT_RAW="$(/usr/bin/mktemp -d "$TMP_PARENT/olli-safe.XXXXXXXX")"
+RUN_ROOT="$(cd -P -- "$RUN_ROOT_RAW" && /bin/pwd)"
+case "$RUN_ROOT" in
+    "$TMP_PARENT"/olli-safe.*) ;;
+    *)
+        printf '[safe-exec] refusing unsafe run directory: %s\n' "$RUN_ROOT" >&2
+        exit 1
+        ;;
+esac
+WORKSPACE="$RUN_ROOT/workspace"
+HOME_DIR="$RUN_ROOT/home"
+TMP_DIR="$RUN_ROOT/tmp"
+GO_CACHE="$RUN_ROOT/go-cache"
+GO_MOD_CACHE="$RUN_ROOT/go-mod-cache"
+GO_PATH="$RUN_ROOT/go-path"
+XDG_CONFIG="$RUN_ROOT/xdg-config"
+XDG_CACHE="$RUN_ROOT/xdg-cache"
+
+cleanup() {
+    case "${RUN_ROOT:-}" in
+        "$TMP_PARENT"/olli-safe.*)
+            /bin/chmod -R u+rwX "$RUN_ROOT" 2>/dev/null || true
+            /bin/rm -rf -- "$RUN_ROOT"
+            ;;
+        *)
+            printf '[safe-exec] refusing unsafe cleanup path: %s\n' "${RUN_ROOT:-unset}" >&2
+            ;;
+    esac
+}
+trap cleanup EXIT HUP INT TERM
+
+/bin/mkdir -m 0700 "$WORKSPACE" "$HOME_DIR" "$TMP_DIR" "$GO_CACHE" "$GO_MOD_CACHE" "$GO_PATH" "$XDG_CONFIG" "$XDG_CACHE"
+
+# Copy only tracked files plus non-ignored working files. Git is invoked with
+# repository helpers disabled before the sandbox boundary is entered.
+(
+    cd "$REPO_ROOT"
+    /usr/bin/env -i HOME="$HOST_HOME" PATH=/usr/bin:/bin \
+        GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
+        "$GIT" -c core.fsmonitor=false -c core.hooksPath=/dev/null \
+        -c diff.external= -c core.pager=cat \
+        ls-files --cached --others --exclude-standard -z |
+        while IFS= read -r -d '' path; do
+            if [ -e "$path" ] || [ -L "$path" ]; then
+                printf '%s\0' "$path"
+            fi
+        done |
+        "$RSYNC" -a --from0 --files-from=- --relative ./ "$WORKSPACE/"
+)
+
+if [ "${1:-}" = "__GO__" ]; then
+    shift
+    set -- "$GO_BIN" "$@"
+fi
+
+CHILD_ENV=(
+    "HOME=$HOME_DIR"
+    "TMPDIR=$TMP_DIR"
+    "TMP=$TMP_DIR"
+    "TEMP=$TMP_DIR"
+    "GOCACHE=$GO_CACHE"
+    "GOMODCACHE=$GO_MOD_CACHE"
+    "GOPATH=$GO_PATH"
+    "XDG_CONFIG_HOME=$XDG_CONFIG"
+    "XDG_CACHE_HOME=$XDG_CACHE"
+    "PATH=$safe_path"
+    "GIT_CONFIG_NOSYSTEM=1"
+    "GIT_CONFIG_GLOBAL=/dev/null"
+    "GIT_CONFIG_SYSTEM=/dev/null"
+    "GIT_EXTERNAL_DIFF="
+    "GIT_PAGER=cat"
+    "PAGER=cat"
+    "RIPGREP_CONFIG_PATH="
+    "SSH_AUTH_SOCK="
+    "SSH_ASKPASS="
+    "GIT_TERMINAL_PROMPT=0"
+    "OLLI_OUTER_SANDBOX=1"
+    "OLLI_GO_BIN=$GO_BIN"
+    "TERM=${TERM:-xterm-256color}"
+    "LANG=${LANG:-C.UTF-8}"
+    "LC_ALL=${LC_ALL:-}"
+)
+
+# Seed exactly the pinned modules needed by this repository. This parser accepts
+# the simple direct/indirect require syntax used by go.mod and fails closed for
+# replacements or local paths rather than invoking Go or VCS on the host.
+if /usr/bin/grep -Eq '^[[:space:]]*replace[[:space:]]' "$REPO_ROOT/go.mod"; then
+    printf '[safe-exec] refusing to run: go.mod replace directives are not supported by the offline cache seeder\n' >&2
+    exit 1
+fi
+MODULES="$RUN_ROOT/modules"
+/usr/bin/awk '
+    $1 == "require" && NF >= 3 { print $2, $3; next }
+    $1 == "require" && $2 == "(" { block = 1; next }
+    block && $1 == ")" { block = 0; next }
+    block && NF >= 2 { print $1, $2 }
+' "$REPO_ROOT/go.mod" > "$MODULES"
+while read -r module version; do
+    [ -n "$module" ] && [ -n "$version" ] || continue
+    case "$module$version" in
+        *..*|*//*|*\\*|*:*|*' '*|*'\t'*)
+            printf '[safe-exec] refusing unsafe module entry: %s %s\n' "$module" "$version" >&2
+            exit 1
+            ;;
+    esac
+    escaped_module="$(printf '%s' "$module" | /usr/bin/awk '
+        BEGIN { ORS = "" }
+        {
+            for (i = 1; i <= length($0); i++) {
+                c = substr($0, i, 1)
+                if (c >= "A" && c <= "Z") {
+                    printf "!%s", tolower(c)
+                } else {
+                    printf "%s", c
+                }
+            }
+        }
+    ')"
+    escaped_version="$(printf '%s' "$version" | /usr/bin/awk '
+        BEGIN { ORS = "" }
+        {
+            for (i = 1; i <= length($0); i++) {
+                c = substr($0, i, 1)
+                if (c >= "A" && c <= "Z") {
+                    printf "!%s", tolower(c)
+                } else {
+                    printf "%s", c
+                }
+            }
+        }
+    ')"
+    archive_dir="$HOST_GOMODCACHE/cache/download/$escaped_module/@v"
+    module_dir="$HOST_GOMODCACHE/$escaped_module@$escaped_version"
+    if [ ! -d "$module_dir" ] || [ ! -f "$archive_dir/$escaped_version.mod" ] || [ ! -f "$archive_dir/$escaped_version.zip" ] || [ ! -f "$archive_dir/$escaped_version.ziphash" ]; then
+        printf '[safe-exec] required module is not cached offline: %s %s\n' "$module" "$version" >&2
+        exit 1
+    fi
+    /bin/mkdir -p "$GO_MOD_CACHE/$escaped_module@$escaped_version" "$GO_MOD_CACHE/cache/download/$escaped_module/@v"
+    "$RSYNC" -a "$module_dir/" "$GO_MOD_CACHE/$escaped_module@$escaped_version/"
+    for suffix in mod zip ziphash; do
+        /bin/cp "$archive_dir/$escaped_version.$suffix" "$GO_MOD_CACHE/cache/download/$escaped_module/@v/"
+    done
+    for suffix in info; do
+        if [ -f "$archive_dir/$escaped_version.$suffix" ]; then
+            /bin/cp "$archive_dir/$escaped_version.$suffix" "$GO_MOD_CACHE/cache/download/$escaped_module/@v/"
+        fi
+    done
+done < "$MODULES"
+/bin/chmod -R u+rwX "$GO_MOD_CACHE"
+
+escape_profile_string() {
+    printf '%s' "$1" | /usr/bin/sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+workspace_escaped="$(escape_profile_string "$WORKSPACE")"
+run_root_escaped="$(escape_profile_string "$RUN_ROOT")"
+real_repo_escaped="$(escape_profile_string "$REPO_ROOT")"
+real_home_escaped="$(escape_profile_string "$HOST_HOME")"
+tmp_parent_escaped="$(escape_profile_string "$TMP_PARENT")"
+
+PROFILE="$RUN_ROOT/profile.sb"
+cat > "$PROFILE" <<EOF
+(version 1)
+(deny default)
+(allow process*)
+(allow mach-lookup)
+(allow sysctl-read)
+(allow file-read*)
+(deny file-read* (subpath "$real_home_escaped"))
+(deny file-read* (subpath "$real_repo_escaped"))
+(deny file-read* (subpath "$tmp_parent_escaped"))
+(allow file-read-metadata (subpath "$tmp_parent_escaped"))
+(allow file-read* (subpath "$run_root_escaped"))
+(allow file-write* (literal "/dev/null"))
+(allow file-write* (subpath "$run_root_escaped"))
+(deny network*)
+EOF
+
+printf '[safe-exec] disposable workspace: %s\n' "$WORKSPACE"
+printf '[safe-exec] network denied; real home and checkout denied; writes limited to run directory\n'
+
+cd "$WORKSPACE"
+/usr/bin/env -i "${CHILD_ENV[@]}" "$SANDBOX_EXEC" -p "$(<"$PROFILE")" "$@"

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -21,6 +22,10 @@ type ContextToolHandler func(context.Context, map[string]interface{}) (string, e
 type ToolMetadata struct {
 	RetrySafe        bool
 	WorkflowCallable bool
+}
+
+type mediaTransportContextKey struct {
+	registry *Registry
 }
 
 type Registry struct {
@@ -167,6 +172,14 @@ func (r *Registry) GetMetadata(name string) (ToolMetadata, bool) {
 
 func (r *Registry) GetToolMetadata(name string) (ToolMetadata, bool) {
 	return r.GetMetadata(name)
+}
+
+func (r *Registry) mediaTransportFromContext(ctx context.Context) http.RoundTripper {
+	if ctx == nil {
+		return nil
+	}
+	transport, _ := ctx.Value(mediaTransportContextKey{registry: r}).(http.RoundTripper)
+	return transport
 }
 
 func (r *Registry) Execute(name string, args map[string]interface{}) (string, error) {

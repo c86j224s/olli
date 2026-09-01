@@ -12,18 +12,26 @@ import (
 	"time"
 )
 
+type webTransportContextKey struct{}
+
 // ReadURLContent fetches a web URL and converts HTML to clean readable text
 func ReadURLContent(targetURL string) (string, error) {
 	return ReadURLContentWithContext(context.Background(), targetURL)
 }
 
 func ReadURLContentWithContext(ctx context.Context, targetURL string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
 		targetURL = "https://" + targetURL
 	}
 
 	client := &http.Client{
 		Timeout: 30 * time.Second, // 30s timeout to prevent context deadline exceeded
+	}
+	if transport, ok := ctx.Value(webTransportContextKey{}).(http.RoundTripper); ok {
+		client.Transport = transport
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
@@ -66,10 +74,16 @@ func WebSearch(query string) (string, error) {
 }
 
 func WebSearchWithContext(ctx context.Context, query string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	searchURL := fmt.Sprintf("https://html.duckduckgo.com/html/?q=%s", url.QueryEscape(query))
 
 	client := &http.Client{
 		Timeout: 30 * time.Second, // 30s timeout
+	}
+	if transport, ok := ctx.Value(webTransportContextKey{}).(http.RoundTripper); ok {
+		client.Transport = transport
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, searchURL, nil)

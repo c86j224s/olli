@@ -279,6 +279,9 @@ func (r *Registry) executeAudioGenerate(ctx context.Context, args map[string]int
 	defer cancel()
 
 	client := newLocalACEStepHTTPClient(timeout)
+	if transport := r.mediaTransportFromContext(ctx); transport != nil {
+		client.Transport = transport
+	}
 	taskID, err := submitACEStepTask(ctx, client, endpoint, payload)
 	if err != nil {
 		return "", err

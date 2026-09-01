@@ -49,16 +49,22 @@ Regression tests must prove the guard without making the test itself dangerous.
 
 ## Verification
 
-For security-related changes, run the smallest relevant subset first, then the full checks when feasible:
+Never run `go test`, `go vet`, `go run`, or the O.L.L.I. binary directly on the host. All dynamic Go code must run through the repository's fail-closed macOS sandbox wrappers, which use a disposable checkout and fake home:
 
 ```bash
-go test ./...
-go vet ./...
-bash -n build.sh
+./scripts/check-test-safety
+./scripts/safe-test ./...
+./scripts/safe-vet ./...
+./scripts/safe-exec-test
+bash -n build.sh scripts/safe-exec scripts/safe-exec-test scripts/safe-test scripts/safe-vet scripts/safe-run scripts/check-test-safety scripts/verify-macos-sandbox-integration
 git diff --check
 ```
 
-If touching build cleanup or artifact paths, also run a symlink smoke test that proves `bin`, `bin/olli`, and `olli` symlinks are rejected without creating or modifying outside targets.
+`make test`, `make vet`, and `make build` route through those wrappers. `make run` and `make cross` fail closed until dedicated VM or platform sandboxes are implemented. `scripts/safe-exec` must refuse to run when `sandbox-exec` or another required boundary is unavailable; never bypass or weaken that failure. Do not add a host-direct fallback.
+
+The two tests guarded by `OLLI_VM_SECURITY_INTEGRATION=1` are intentionally excluded from the outer sandbox because macOS rejects nested `sandbox-exec`. Run `make macos-security-integration` only inside a disposable macOS VM; on a host it must refuse and print the VM-only commands.
+
+If touching build cleanup or artifact paths, also run a sandboxed symlink smoke test that proves `bin`, `bin/olli`, and `olli` symlinks are rejected without creating or modifying outside targets.
 
 ## Review Standard
 

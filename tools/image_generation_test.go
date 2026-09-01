@@ -8,7 +8,6 @@ import (
 	"image/color"
 	"image/png"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,7 +42,7 @@ func TestImageGenerateRejectsUnsafeEndpointsTempOnlyNoNetwork(t *testing.T) {
 			},
 		})
 
-		_, err := reg.Execute("image_generate", map[string]interface{}{
+		_, err := reg.ExecuteContext(mediaTestContext(reg), "image_generate", map[string]interface{}{
 			"backend_alias":  "comfyui",
 			"workflow_alias": "default",
 			"prompt":         "test prompt",
@@ -61,7 +60,7 @@ func TestImageGenerateMissingWorkflowTempOnlyNoNetwork(t *testing.T) {
 	reg.SetWorkspaceRoot(root)
 	reg.SetWorkspace(root)
 
-	_, err := reg.Execute("image_generate", map[string]interface{}{
+	_, err := reg.ExecuteContext(mediaTestContext(reg), "image_generate", map[string]interface{}{
 		"backend_alias":  "comfyui",
 		"workflow_alias": "default",
 		"prompt":         "test prompt",
@@ -151,7 +150,7 @@ func TestImageGenerateRejectsSymlinkWorkflowFileTempOnlyNoNetwork(t *testing.T) 
 		},
 	})
 
-	_, err := reg.Execute("image_generate", map[string]interface{}{
+	_, err := reg.ExecuteContext(mediaTestContext(reg), "image_generate", map[string]interface{}{
 		"backend_alias":  "comfyui",
 		"workflow_alias": "default",
 		"prompt":         "test prompt",
@@ -170,13 +169,13 @@ func TestImageGenerateRejectsRedirectsTempOnlyHttptest(t *testing.T) {
 	}
 
 	var redirectedHits int
-	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	redirectTarget := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		redirectedHits++
 		http.Error(w, "redirect target must not be reached", http.StatusInternalServerError)
 	}))
 	defer redirectTarget.Close()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirectTarget.URL+"/leak", http.StatusTemporaryRedirect)
 	}))
 	defer server.Close()
@@ -196,7 +195,7 @@ func TestImageGenerateRejectsRedirectsTempOnlyHttptest(t *testing.T) {
 		},
 	})
 
-	_, err := reg.Execute("image_generate", map[string]interface{}{
+	_, err := reg.ExecuteContext(mediaTestContext(reg, server.Config.Handler), "image_generate", map[string]interface{}{
 		"backend_alias":  "comfyui",
 		"workflow_alias": "default",
 		"prompt":         "test prompt",
@@ -230,7 +229,7 @@ func TestImageGenerateComfyUISuccessPathTempOnlyHttptest(t *testing.T) {
 		serverMu.Unlock()
 		http.Error(w, msg, http.StatusInternalServerError)
 	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/prompt":
 			if r.Method != http.MethodPost {
@@ -314,7 +313,7 @@ func TestImageGenerateComfyUISuccessPathTempOnlyHttptest(t *testing.T) {
 		},
 	})
 
-	resultJSON, err := reg.Execute("image_generate", map[string]interface{}{
+	resultJSON, err := reg.ExecuteContext(mediaTestContext(reg, server.Config.Handler), "image_generate", map[string]interface{}{
 		"backend_alias":   "comfyui",
 		"prompt":          "sunlit workspace",
 		"negative_prompt": "blur",
@@ -396,7 +395,7 @@ func TestImageGenerateRejectsInvalidImageBytesTempOnlyHttptest(t *testing.T) {
 		t.Fatalf("failed to write workflow fixture: %v", err)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/prompt":
 			w.Header().Set("Content-Type", "application/json")
@@ -428,7 +427,7 @@ func TestImageGenerateRejectsInvalidImageBytesTempOnlyHttptest(t *testing.T) {
 		},
 	})
 
-	_, err := reg.Execute("image_generate", map[string]interface{}{
+	_, err := reg.ExecuteContext(mediaTestContext(reg, server.Config.Handler), "image_generate", map[string]interface{}{
 		"backend_alias":  "comfyui",
 		"workflow_alias": "default",
 		"prompt":         "test prompt",
@@ -458,7 +457,7 @@ func TestImageGenerateRejectsSymlinkOutputComponentTempOnlyNoHTTP(t *testing.T) 
 	}
 
 	var httpHits int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		httpHits++
 		http.Error(w, "HTTP should not be reached when output_dir has a symlink component", http.StatusInternalServerError)
 	}))
@@ -479,7 +478,7 @@ func TestImageGenerateRejectsSymlinkOutputComponentTempOnlyNoHTTP(t *testing.T) 
 		},
 	})
 
-	_, err := reg.Execute("image_generate", map[string]interface{}{
+	_, err := reg.ExecuteContext(mediaTestContext(reg), "image_generate", map[string]interface{}{
 		"backend_alias":  "comfyui",
 		"workflow_alias": "default",
 		"prompt":         "test prompt",
@@ -555,7 +554,7 @@ func TestImageGenerateRejectsUnsafeResourceBoundsTempOnlyNoNetwork(t *testing.T)
 		for key, value := range extraArgs {
 			args[key] = value
 		}
-		if _, err := reg.Execute("image_generate", args); err == nil {
+		if _, err := reg.ExecuteContext(mediaTestContext(reg), "image_generate", args); err == nil {
 			t.Fatalf("expected resource bounds rejection for args %#v", extraArgs)
 		}
 	}
@@ -583,7 +582,7 @@ func TestImageGenerateRequiresPromptMappingTempOnlyNoNetwork(t *testing.T) {
 		},
 	})
 
-	_, err := reg.Execute("image_generate", map[string]interface{}{
+	_, err := reg.ExecuteContext(mediaTestContext(reg), "image_generate", map[string]interface{}{
 		"backend_alias":  "comfyui",
 		"workflow_alias": "default",
 		"prompt":         "test prompt",

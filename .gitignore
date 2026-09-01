@@ -5,6 +5,7 @@ olli
 
 # Temporary files
 *.tmp
+.olli_sandbox/
 .toy_agent_readline_history
 .local/
 artifacts/

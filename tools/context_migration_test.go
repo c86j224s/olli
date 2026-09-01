@@ -2,28 +2,27 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 )
 
 func TestReadURLContentWithCanceledContextMakesNoRequest(t *testing.T) {
-	var requests atomic.Int64
-	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
-		requests.Add(1)
-	}))
-	defer server.Close()
-
-	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	transport := roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("unexpected request")
+	})
+	ctx := context.WithValue(context.Background(), webTransportContextKey{}, http.RoundTripper(transport))
+	ctx, cancel := context.WithCancel(ctx)
 	cancel()
-	if _, err := ReadURLContentWithContext(ctx, server.URL); err == nil {
+	if _, err := ReadURLContentWithContext(ctx, "http://127.0.0.1:1"); err == nil {
 		t.Fatal("expected canceled request error")
 	}
-	if got := requests.Load(); got != 0 {
-		t.Fatalf("canceled request reached server %d times", got)
+	if calls != 0 {
+		t.Fatalf("canceled request reached transport %d times", calls)
 	}
 }
 

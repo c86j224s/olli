@@ -351,6 +351,9 @@ func (r *Registry) executeImageGenerate(ctx context.Context, args map[string]int
 	defer cancel()
 
 	client := newLocalComfyHTTPClient(timeout)
+	if transport := r.mediaTransportFromContext(ctx); transport != nil {
+		client.Transport = transport
+	}
 	promptID, err := submitComfyPrompt(ctx, client, endpoint, workflow)
 	if err != nil {
 		return "", err

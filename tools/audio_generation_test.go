@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -36,7 +35,7 @@ func TestAudioGenerateRejectsUnsafeEndpointsTempOnlyNoNetwork(t *testing.T) {
 			},
 		})
 
-		_, err := reg.Execute("audio_generate", map[string]interface{}{
+		_, err := reg.ExecuteContext(mediaTestContext(reg), "audio_generate", map[string]interface{}{
 			"backend_alias": "ace_step",
 			"prompt":        "test prompt",
 		})
@@ -51,13 +50,13 @@ func TestAudioGenerateRejectsRedirectsTempOnlyHttptest(t *testing.T) {
 	root := testSafeTempRoot(t)
 
 	var redirectedHits int
-	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	redirectTarget := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		redirectedHits++
 		http.Error(w, "redirect target must not be reached", http.StatusInternalServerError)
 	}))
 	defer redirectTarget.Close()
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, redirectTarget.URL+"/leak", http.StatusTemporaryRedirect)
 	}))
 	defer server.Close()
@@ -75,7 +74,7 @@ func TestAudioGenerateRejectsRedirectsTempOnlyHttptest(t *testing.T) {
 		},
 	})
 
-	_, err := reg.Execute("audio_generate", map[string]interface{}{
+	_, err := reg.ExecuteContext(mediaTestContext(reg, server.Config.Handler), "audio_generate", map[string]interface{}{
 		"backend_alias": "ace_step",
 		"prompt":        "test prompt",
 	})
@@ -106,7 +105,7 @@ func TestAudioGenerateACEStepSuccessPathTempOnlyHttptest(t *testing.T) {
 		http.Error(w, msg, http.StatusInternalServerError)
 	}
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/release_task":
 			if r.Method != http.MethodPost {
@@ -217,7 +216,7 @@ func TestAudioGenerateACEStepSuccessPathTempOnlyHttptest(t *testing.T) {
 		},
 	})
 
-	resultJSON, err := reg.Execute("audio_generate", map[string]interface{}{
+	resultJSON, err := reg.ExecuteContext(mediaTestContext(reg, server.Config.Handler), "audio_generate", map[string]interface{}{
 		"backend_alias":    "ace_step",
 		"prompt":           "slow synth pop",
 		"lyrics":           "hello",
@@ -292,7 +291,7 @@ func TestCanonicalizeWAVAudioStripsTrailingPayloadTempOnly(t *testing.T) {
 func TestAudioGenerateRejectsInvalidAudioBytesTempOnlyHttptest(t *testing.T) {
 	// Blast radius if the guard regresses: temp workspace artifacts only; all ACE-Step calls use httptest.
 	root := testSafeTempRoot(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/release_task":
 			w.Header().Set("Content-Type", "application/json")
@@ -327,7 +326,7 @@ func TestAudioGenerateRejectsInvalidAudioBytesTempOnlyHttptest(t *testing.T) {
 		},
 	})
 
-	_, err := reg.Execute("audio_generate", map[string]interface{}{
+	_, err := reg.ExecuteContext(mediaTestContext(reg, server.Config.Handler), "audio_generate", map[string]interface{}{
 		"backend_alias": "ace_step",
 		"prompt":        "test prompt",
 	})
@@ -352,7 +351,7 @@ func TestAudioGenerateRejectsSymlinkOutputComponentTempOnlyNoHTTP(t *testing.T) 
 	}
 
 	var httpHits int
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := newInProcessTestServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		httpHits++
 		http.Error(w, "HTTP should not be reached when output_dir has a symlink component", http.StatusInternalServerError)
 	}))
@@ -371,7 +370,7 @@ func TestAudioGenerateRejectsSymlinkOutputComponentTempOnlyNoHTTP(t *testing.T) 
 		},
 	})
 
-	_, err := reg.Execute("audio_generate", map[string]interface{}{
+	_, err := reg.ExecuteContext(mediaTestContext(reg), "audio_generate", map[string]interface{}{
 		"backend_alias": "ace_step",
 		"prompt":        "test prompt",
 	})
@@ -438,7 +437,7 @@ func TestAudioGenerateRejectsUnsafeResourceBoundsTempOnlyNoNetwork(t *testing.T)
 		for key, value := range extraArgs {
 			args[key] = value
 		}
-		if _, err := reg.Execute("audio_generate", args); err == nil {
+		if _, err := reg.ExecuteContext(mediaTestContext(reg), "audio_generate", args); err == nil {
 			t.Fatalf("expected resource bounds rejection for args %#v", extraArgs)
 		}
 	}

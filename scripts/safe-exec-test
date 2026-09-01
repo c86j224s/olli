@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+while [ -L "$SOURCE" ]; do
+    SOURCE_DIR="$(cd -P -- "$(/usr/bin/dirname -- "$SOURCE")" && /bin/pwd)"
+    SOURCE="$(/usr/bin/readlink "$SOURCE")"
+    case "$SOURCE" in
+        /*) ;;
+        *) SOURCE="$SOURCE_DIR/$SOURCE" ;;
+    esac
+done
+REPO_ROOT="$(cd -P -- "$(/usr/bin/dirname -- "$SOURCE")/.." && /bin/pwd)"
+RUNNER="$REPO_ROOT/scripts/safe-exec"
+
+REAL_MARKER="$REPO_ROOT/.safe-exec-host-marker"
+TMP_PARENT="${TMPDIR:-/private/tmp}"
+TMP_PARENT="${TMP_PARENT%/}"
+TMP_PARENT="$(cd -P -- "$TMP_PARENT" && /bin/pwd)"
+DECOY_DIR="$(/usr/bin/mktemp -d "$TMP_PARENT/olli-safe-decoy.XXXXXXXX")"
+DECOY_DIR="$(cd -P -- "$DECOY_DIR" && /bin/pwd)"
+case "$DECOY_DIR" in
+    "$TMP_PARENT"/olli-safe-decoy.*) ;;
+    *)
+        printf '[safe-exec-test] refusing unsafe decoy directory: %s\n' "$DECOY_DIR" >&2
+        exit 1
+        ;;
+esac
+DECOY_MARKER="$DECOY_DIR/preserve"
+READ_DECOY="$DECOY_DIR/read-secret"
+PROBE="$REPO_ROOT/.safe-exec-probe.sh"
+PROBE_NAME="${PROBE##*/}"
+for target in "$REAL_MARKER" "$PROBE"; do
+    if [ -e "$target" ] || [ -L "$target" ]; then
+        printf '[safe-exec-test] refusing to overwrite existing path: %s\n' "$target" >&2
+        exit 1
+    fi
+done
+cleanup() {
+    case "${DECOY_DIR:-}" in
+        "$TMP_PARENT"/olli-safe-decoy.*)
+            /bin/rm -f -- "$REAL_MARKER" "$DECOY_MARKER" "$READ_DECOY" "${PROBE:-}"
+            /bin/rmdir -- "$DECOY_DIR" 2>/dev/null || true
+            ;;
+        *)
+            printf '[safe-exec-test] refusing unsafe cleanup path: %s\n' "${DECOY_DIR:-unset}" >&2
+            ;;
+    esac
+}
+trap cleanup EXIT HUP INT TERM
+printf 'preserve\n' > "$REAL_MARKER"
+printf 'preserve\n' > "$DECOY_MARKER"
+printf 'secret\n' > "$READ_DECOY"
+
+cat > "$PROBE" <<EOF
+#!/usr/bin/env bash
+set -e
+[ "\$OLLI_OUTER_SANDBOX" = 1 ]
+[ "\$HOME" != "$HOME" ] || exit 20
+[ ! -e "$REAL_MARKER" ] || exit 21
+printf changed > "$REAL_MARKER" 2>/dev/null && exit 22 || true
+printf changed > "$DECOY_MARKER" 2>/dev/null && exit 23 || true
+/bin/cat "$READ_DECOY" >/dev/null 2>&1 && exit 24 || true
+printf local > workspace-marker
+[ -z "\${GH_TOKEN:-}" ] || exit 25
+[ -z "\${ANTHROPIC_API_KEY:-}" ] || exit 26
+[ -x /usr/bin/nc ] || exit 27
+/usr/bin/nc -z -w 1 1.1.1.1 80 2>/dev/null && exit 29 || true
+/usr/bin/nc -z -w 1 127.0.0.1 9 2>/dev/null && exit 28 || true
+EOF
+/bin/chmod 0700 "$PROBE"
+
+"$RUNNER" /bin/bash "$PROBE_NAME"
+
+if [ "$(<"$REAL_MARKER")" != "preserve" ]; then
+    printf '[safe-exec-test] real checkout marker was modified\n' >&2
+    exit 1
+fi
+if [ "$(<"$DECOY_MARKER")" != "preserve" ]; then
+    printf '[safe-exec-test] external decoy marker was modified\n' >&2
+    exit 1
+fi
+printf '[safe-exec-test] boundary smoke test passed\n'
