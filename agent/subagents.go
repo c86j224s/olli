@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -99,7 +100,36 @@ func validateRequiredSubagentArtifacts(label string, report *subagent.ResultRepo
 }
 
 func (a *Agent) registerSubagentTools() {
-	// 1. delegate_researcher
+	// 1. delegate_planner
+	a.mustRegisterContext(ollama.Tool{
+		Type: "function",
+		Function: ollama.FunctionDef{
+			Name:        "delegate_planner",
+			Description: "[PREFERRED FIRST STEP FOR MULTI-FILE DEVELOPMENT] Delegate read-only code inspection and produce a validated step-by-step implementation plan",
+			Parameters: ollama.FunctionParamSchema{
+				Type: "object",
+				Properties: map[string]ollama.FunctionParamProperty{
+					"task_description": {Type: "string", Description: "Focused development objective and constraints to plan"},
+				},
+				Required: []string{"task_description"},
+			},
+		},
+	}, tools.ToolMetadata{WorkflowCallable: false}, func(ctx context.Context, args map[string]interface{}) (string, error) {
+		task, _ := args["task_description"].(string)
+		enrichedTask := a.buildEnrichedSubagentTask(task)
+		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), a.buildSubagentCallbacks(ctx), a.getWorkspaceRoot())
+		report, plan, err := runner.RunPlannerWithContext(ctx, enrichedTask)
+		if err != nil {
+			return "", fmt.Errorf("planner subagent failed: %w", err)
+		}
+		planJSON, err := json.MarshalIndent(plan, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("planner result serialization failed: %w", err)
+		}
+		return formatSubagentReport("🧭 [Planner Subagent Report]", report) + "\nValidated Plan:\n" + string(planJSON), nil
+	})
+
+	// 2. delegate_researcher
 	a.mustRegisterContext(ollama.Tool{
 		Type: "function",
 		Function: ollama.FunctionDef{

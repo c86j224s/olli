@@ -82,6 +82,10 @@ func (r *SubagentRunner) executeSubagentLoop(subID string, subType string, task 
 }
 
 func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, subID string, subType string, task string, sysPrompt string, reg *tools.Registry) (*ResultReport, error) {
+	return r.executeSubagentLoopWithFormat(ctx, subID, subType, task, sysPrompt, reg, nil, nil)
+}
+
+func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subID string, subType string, task string, sysPrompt string, reg *tools.Registry, format any, temperature *float64) (*ResultReport, error) {
 	if r.outputDir == "" {
 		return nil, fmt.Errorf("subagent output directory is not safely contained within the workspace root")
 	}
@@ -128,13 +132,16 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 		numCtx = r.cfg.NumCtx
 	}
 
+	options := &ollama.Options{NumCtx: numCtx}
+	if temperature != nil {
+		options.Temperature = *temperature
+	}
 	req := ollama.ChatRequest{
 		Model:    r.model,
 		Messages: messages,
 		Tools:    reg.GetDefinitions(),
-		Options: &ollama.Options{
-			NumCtx: numCtx,
-		},
+		Format:   format,
+		Options:  options,
 	}
 
 	toolCallsRun := 0

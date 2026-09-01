@@ -109,6 +109,34 @@ func TestAgentHonorsDisabledMediaTools(t *testing.T) {
 	}
 }
 
+func TestAgentRegistersPlannerTool(t *testing.T) {
+	tempDir := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(originalWD)
+
+	cfg, err := config.LoadConfig(filepath.Join(tempDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := agent.New(ollama.NewClient("http://localhost:11434"), "qwen3.5:0.8b", "test", nil, cfg)
+	definition, ok := ag.GetRegistry().GetDefinition("delegate_planner")
+	if !ok {
+		t.Fatal("expected delegate_planner to be registered")
+	}
+	if definition.Function.Parameters.Required[0] != "task_description" {
+		t.Fatalf("unexpected planner schema: %#v", definition.Function.Parameters)
+	}
+	if !ag.ShouldRequirePermission("delegate_planner") {
+		t.Fatal("planner delegation should require permission")
+	}
+}
+
 func TestAgentRegistersGoalTools(t *testing.T) {
 	tempDir := t.TempDir()
 	originalWD, err := os.Getwd()

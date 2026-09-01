@@ -3,6 +3,7 @@ package subagent
 type SubagentType string
 
 const (
+	TypePlanner    SubagentType = "Planner"
 	TypeResearcher SubagentType = "Researcher"
 	TypeCoder      SubagentType = "Coder"
 	TypeTester     SubagentType = "Tester"
