@@ -114,12 +114,30 @@ func TestRequireReviewerFileEvidenceCoversEveryChangedFile(t *testing.T) {
 }
 
 func TestRequireExecutedActionEvidenceMatchesActionAndTarget(t *testing.T) {
-	evidence := &executionEvidence{SuccessfulCalls: []successfulToolCall{{Name: "execute_action", Arguments: map[string]interface{}{"action": "go_test", "target": "./..."}}}}
-	if err := requireExecutedActionEvidence([]string{"go_test ./..."}, evidence); err != nil {
+	evidence := &executionEvidence{AttemptedCalls: []successfulToolCall{{Name: "execute_action", Arguments: map[string]interface{}{"action": "go_test", "target": "./..."}, Succeeded: true, ExitCode: 0}}}
+	report := &TestReport{Passed: true, Commands: []CommandResult{{Command: "go_test ./...", ExitCode: 0}}}
+	if err := requireExecutedActionEvidence([]string{"go_test ./..."}, report, evidence); err != nil {
 		t.Fatalf("matching execution evidence rejected: %v", err)
 	}
-	if err := requireExecutedActionEvidence([]string{"go_vet ./..."}, evidence); err == nil {
+	if err := requireExecutedActionEvidence([]string{"go_vet ./..."}, report, evidence); err == nil {
 		t.Fatal("missing execution evidence accepted")
+	}
+}
+
+func TestRequireExecutedActionEvidenceRejectsFabricatedSuccess(t *testing.T) {
+	evidence := &executionEvidence{AttemptedCalls: []successfulToolCall{{Name: "execute_action", Arguments: map[string]interface{}{"action": "go_vet", "target": "./..."}, Succeeded: false, ExitCode: 2}}}
+	report := &TestReport{Passed: true, Commands: []CommandResult{{Command: "go_vet ./...", ExitCode: 0}}}
+	if err := requireExecutedActionEvidence([]string{"go_vet ./..."}, report, evidence); err == nil {
+		t.Fatal("fabricated passing exit code was accepted for failed execution")
+	}
+	report.Passed = false
+	report.Commands[0].ExitCode = 1
+	if err := requireExecutedActionEvidence([]string{"go_vet ./..."}, report, evidence); err == nil {
+		t.Fatal("fabricated nonzero exit code was accepted")
+	}
+	report.Commands[0].ExitCode = 2
+	if err := requireExecutedActionEvidence([]string{"go_vet ./..."}, report, evidence); err != nil {
+		t.Fatalf("matching failed exit code evidence rejected: %v", err)
 	}
 }
 

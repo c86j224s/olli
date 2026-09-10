@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	agentloop "github.com/c86j224s/olli/loop"
 )
 
 func TestContextTerminationDistinguishesDeadlineAndCancellation(t *testing.T) {
@@ -11,25 +13,25 @@ func TestContextTerminationDistinguishesDeadlineAndCancellation(t *testing.T) {
 	defer cancelDeadline()
 	<-deadlineCtx.Done()
 	reason, status, _ := contextTermination(deadlineCtx)
-	if reason != LoopTerminationTimedOut || status != "TIMED_OUT" {
+	if reason != agentloop.TerminationTimedOut || status != "TIMED_OUT" {
 		t.Fatalf("deadline misclassified: %s %s", reason, status)
 	}
 
 	cancelCtx, cancel := context.WithCancel(context.Background())
 	cancel()
 	reason, status, _ = contextTermination(cancelCtx)
-	if reason != LoopTerminationCancelled || status != "INTERRUPTED" {
+	if reason != agentloop.TerminationCancelled || status != "INTERRUPTED" {
 		t.Fatalf("cancellation misclassified: %s %s", reason, status)
 	}
 }
 
 func TestLoopMetricsCarryTerminationReason(t *testing.T) {
-	guard, _ := newLoopGuard(DefaultLoopPolicy(false))
-	guard.beginIteration()
-	guard.recordModelCall()
-	guard.recordToolCall("view_file", map[string]interface{}{"file_path": "a.go"})
-	metrics := guard.terminate(LoopTerminationRepeatedAction)
-	if metrics.Termination != LoopTerminationRepeatedAction || metrics.Iterations != 1 || metrics.ModelCalls != 1 || metrics.ToolCalls != 1 {
+	guard, _ := agentloop.NewController(agentloop.DefaultPolicy(false))
+	guard.BeginIteration()
+	guard.RecordModelCall()
+	guard.RecordToolCall("view_file", map[string]interface{}{"file_path": "a.go"})
+	metrics := guard.Terminate(agentloop.TerminationRepeatedAction)
+	if metrics.Termination != agentloop.TerminationRepeatedAction || metrics.Iterations != 1 || metrics.ModelCalls != 1 || metrics.ToolCalls != 1 {
 		t.Fatalf("unexpected loop metrics: %#v", metrics)
 	}
 }

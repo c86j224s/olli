@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/c86j224s/olli/config"
+	agentloop "github.com/c86j224s/olli/loop"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/session"
 	"github.com/c86j224s/olli/tools"
@@ -182,21 +183,21 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		},
 	}
 
-	policy := DefaultLoopPolicy(format != nil)
-	guard, err := newLoopGuard(policy)
+	policy := agentloop.DefaultPolicy(format != nil)
+	guard, err := agentloop.NewController(policy)
 	if err != nil {
 		return nil, err
 	}
-	termination := LoopTerminationFailed
+	termination := agentloop.TerminationFailed
 	for {
-		if reason := guard.beginIteration(); reason != "" {
+		if reason := guard.BeginIteration(); reason != "" {
 			termination = reason
 			break
 		}
 		select {
 		case <-ctx.Done():
 			reason, status, summary := contextTermination(ctx)
-			metrics := guard.terminate(reason)
+			metrics := guard.Terminate(reason)
 			logEvent("system", summary, nil)
 			return &ResultReport{
 				SubagentID:    subID,
@@ -215,7 +216,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		default:
 		}
 
-		if reason := guard.recordModelCall(); reason != "" {
+		if reason := guard.RecordModelCall(); reason != "" {
 			termination = reason
 			break
 		}
@@ -223,7 +224,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		if err != nil {
 			if ctx.Err() != nil || err == context.Canceled || err == context.DeadlineExceeded {
 				reason, status, summary := contextTermination(ctx)
-				metrics := guard.terminate(reason)
+				metrics := guard.Terminate(reason)
 				logEvent("system", summary, nil)
 				return &ResultReport{
 					SubagentID:    subID,
@@ -257,7 +258,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			for _, tc := range resp.ToolCalls {
 				if ctx.Err() != nil {
 					reason, status, summary := contextTermination(ctx)
-					metrics := guard.terminate(reason)
+					metrics := guard.Terminate(reason)
 					logEvent("system", summary, nil)
 					return &ResultReport{
 						SubagentID:    subID,
@@ -275,16 +276,17 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 					}, nil
 				}
 
-				if reason := guard.recordToolCall(tc.Function.Name, tc.Function.Arguments); reason != "" {
+				if reason := guard.RecordToolCall(tc.Function.Name, tc.Function.Arguments); reason != "" {
 					termination = reason
 					break
 				}
 				toolCallsRun++
 				candidatePath, existedBefore, isArtifactCandidate := artifactCandidatePath(tc.Function.Arguments, r.workspace, r.workspaceRoot)
 				toolRes, tErr := reg.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
+				evidence.recordAttempt(tc.Function.Name, tc.Function.Arguments, toolRes, tErr)
 				if tErr == nil {
 					successfulToolCalls++
-					evidence.recordSuccess(tc.Function.Name, tc.Function.Arguments)
+					evidence.recordSuccess(tc.Function.Name, tc.Function.Arguments, toolRes)
 				}
 				resContent := toolRes
 				if tErr != nil {
@@ -310,25 +312,35 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			}
 
 			req.Messages = messages
-			if termination != LoopTerminationFailed {
+			if termination != agentloop.TerminationFailed {
 				break
 			}
-			if guard.consumeRepetitionRepair() {
+			if guard.ConsumeRepetitionRepair() {
 				guidance := ollama.Message{Role: "system", Content: "The same tool action was repeated without progress. Do not repeat it. Choose a different valid action or return the final answer now."}
 				messages = append(messages, guidance)
 				req.Messages = messages
 				logEvent("system", guidance.Content, nil)
 			}
-			if reason := guard.observeProgress(fmt.Sprintf("successful-tools:%d", successfulToolCalls)); reason != "" {
+			progress := fmt.Sprintf("successful-tools:%d", successfulToolCalls)
+			if evidence != nil {
+				if evidence.ProgressState != nil {
+					progress = evidence.ProgressState()
+				} else if len(evidence.SuccessfulCalls) > 0 {
+					if marker := evidence.SuccessfulCalls[len(evidence.SuccessfulCalls)-1].ProgressMarker; marker != "" {
+						progress = marker
+					}
+				}
+			}
+			if reason := guard.ObserveProgress(progress); reason != "" {
 				termination = reason
 				break
 			}
-			if guard.metrics.Iterations >= policy.MaxIterations && format != nil {
-				if reason := guard.recordFormatRepair(); reason != "" {
+			if guard.Metrics().Iterations >= policy.MaxIterations && format != nil {
+				if reason := guard.RecordFormatRepair(); reason != "" {
 					termination = reason
 					break
 				}
-				if reason := guard.recordModelCall(); reason != "" {
+				if reason := guard.RecordModelCall(); reason != "" {
 					termination = reason
 					break
 				}
@@ -338,9 +350,9 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 				}
 				logEvent("assistant", finalAnswer, nil)
 				if looksLikeJSONObject(finalAnswer) {
-					termination = LoopTerminationSucceeded
+					termination = agentloop.TerminationSucceeded
 				} else {
-					termination = LoopTerminationInvalidOutput
+					termination = agentloop.TerminationInvalidOutput
 				}
 				break
 			}
@@ -348,23 +360,23 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		}
 
 		finalAnswer = resp.Content
-		termination = LoopTerminationSucceeded
+		termination = agentloop.TerminationSucceeded
 		logEvent("assistant", finalAnswer, nil)
 		break
 	}
 
-	if termination == LoopTerminationSucceeded && format != nil && successfulToolCalls > 0 && !looksLikeJSONObject(finalAnswer) {
-		if reason := guard.recordFormatRepair(); reason == "" {
-			if reason := guard.recordModelCall(); reason == "" {
+	if termination == agentloop.TerminationSucceeded && format != nil && successfulToolCalls > 0 && !looksLikeJSONObject(finalAnswer) {
+		if reason := guard.RecordFormatRepair(); reason == "" {
+			if reason := guard.RecordModelCall(); reason == "" {
 				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
 				if err != nil {
 					return nil, err
 				}
 				logEvent("assistant", finalAnswer, nil)
 				if looksLikeJSONObject(finalAnswer) {
-					termination = LoopTerminationSucceeded
+					termination = agentloop.TerminationSucceeded
 				} else {
-					termination = LoopTerminationInvalidOutput
+					termination = agentloop.TerminationInvalidOutput
 				}
 			} else {
 				termination = reason
@@ -373,8 +385,8 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			termination = reason
 		}
 	}
-	if termination != LoopTerminationSucceeded {
-		metrics := guard.terminate(termination)
+	if termination != agentloop.TerminationSucceeded {
+		metrics := guard.Terminate(termination)
 		summary := fmt.Sprintf("subagent loop terminated: %s", termination)
 		logEvent("system", summary, nil)
 		return &ResultReport{
@@ -410,7 +422,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			JSONLFile:     jsonlPath,
 			ToolCallsRun:  toolCallsRun,
 			WorkingDir:    r.workspace,
-			Termination:   LoopTerminationFailed,
+			Termination:   agentloop.TerminationFailed,
 			ArtifactFiles: artifactFiles,
 			CreatedFiles:  createdFiles,
 		}, nil
@@ -419,7 +431,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		logEvent("system", fmt.Sprintf("Subagent artifacts verified. Artifact Files: %s; Created Files: %s", pathListOrNone(artifactFiles), pathListOrNone(createdFiles)), nil)
 	}
 
-	metrics := guard.terminate(LoopTerminationSucceeded)
+	metrics := guard.Terminate(agentloop.TerminationSucceeded)
 	report := &ResultReport{
 		SubagentID:    subID,
 		Type:          subType,
@@ -429,7 +441,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		JSONLFile:     jsonlPath,
 		ToolCallsRun:  toolCallsRun,
 		WorkingDir:    r.workspace,
-		Termination:   LoopTerminationSucceeded,
+		Termination:   agentloop.TerminationSucceeded,
 		LoopMetrics:   &metrics,
 		ArtifactFiles: artifactFiles,
 		CreatedFiles:  createdFiles,
@@ -441,11 +453,11 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	return report, nil
 }
 
-func contextTermination(ctx context.Context) (LoopTerminationReason, string, string) {
+func contextTermination(ctx context.Context) (agentloop.TerminationReason, string, string) {
 	if ctx != nil && ctx.Err() == context.DeadlineExceeded {
-		return LoopTerminationTimedOut, "TIMED_OUT", "Subagent execution timed out."
+		return agentloop.TerminationTimedOut, "TIMED_OUT", "Subagent execution timed out."
 	}
-	return LoopTerminationCancelled, "INTERRUPTED", "Subagent execution was canceled."
+	return agentloop.TerminationCancelled, "INTERRUPTED", "Subagent execution was canceled."
 }
 
 func looksLikeJSONObject(value string) bool {

@@ -2,8 +2,13 @@ package subagent
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/c86j224s/olli/ollama"
@@ -94,7 +99,8 @@ func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, 
 	reg := m.runner.newRoleRegistry()
 	registerTeamCoderTools(reg, task.Step.AllowedFiles)
 	temperature := 0.1
-	evidence := &executionEvidence{}
+	evidence := &executionEvidence{ProgressMarker: coderProgressMarker(m.runner.workspace)}
+	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
 	report, err := m.runner.withModel(m.models.Coder).executeSubagentLoopWithFormat(ctx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderTeamPrompt, reg, codeReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
@@ -135,7 +141,8 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 	reg := m.runner.newRoleRegistry()
 	registerTeamTesterTools(reg)
 	temperature := 0.0
-	evidence := &executionEvidence{}
+	evidence := &executionEvidence{ProgressMarker: commandProgressMarker}
+	evidence.ProgressState = func() string { return evidenceAttemptProgressSet(evidence) }
 	report, err := m.runner.withModel(m.models.Tester).executeSubagentLoopWithFormat(ctx, newSubagentID(role), string(TypeTester), string(payload), testerTeamPrompt, reg, testReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
@@ -143,8 +150,8 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 	if report.Status != "SUCCESS" {
 		return nil, fmt.Errorf("tester loop %s: %s", report.Termination, report.Summary)
 	}
-	if evidence.SuccessfulTools["execute_action"] == 0 {
-		return nil, fmt.Errorf("tester returned without a successful execute_action call")
+	if evidence.ToolCallsAttempted == 0 {
+		return nil, fmt.Errorf("tester returned without an execute_action call")
 	}
 	testReport, err := parseTestReport(report.Summary)
 	if err != nil {
@@ -156,7 +163,7 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 	if err := requireVerificationCommands(commands, testReport); err != nil {
 		return nil, err
 	}
-	if err := requireExecutedActionEvidence(commands, evidence); err != nil {
+	if err := requireExecutedActionEvidence(commands, testReport, evidence); err != nil {
 		return nil, err
 	}
 	return testReport, nil
@@ -170,7 +177,8 @@ func (m *ModelTeamRoles) Review(ctx context.Context, plan *DevelopmentPlan, code
 	reg := m.runner.newRoleRegistry()
 	registerTeamReviewerTools(reg)
 	temperature := 0.1
-	evidence := &executionEvidence{}
+	evidence := &executionEvidence{ProgressMarker: inspectedFileProgressMarker}
+	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
 	report, err := m.runner.withModel(m.models.Reviewer).executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer"), string(TypeReviewer), string(payload), reviewerTeamPrompt, reg, reviewReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
@@ -189,6 +197,112 @@ func (m *ModelTeamRoles) Review(ctx context.Context, plan *DevelopmentPlan, code
 		return nil, err
 	}
 	return reviewReport, nil
+}
+
+func coderProgressMarker(workspace string) func(string, map[string]interface{}, string) string {
+	fileMarker := fileProgressMarker(workspace)
+	return func(toolName string, arguments map[string]interface{}, result string) string {
+		if toolName == "view_file" {
+			return inspectedFileProgressMarker(toolName, arguments, result)
+		}
+		return fileMarker(toolName, arguments, result)
+	}
+}
+
+func fileProgressMarker(workspace string) func(string, map[string]interface{}, string) string {
+	return func(toolName string, arguments map[string]interface{}, _ string) string {
+		if toolName != "edit_file" {
+			return ""
+		}
+		path, _ := arguments["file_path"].(string)
+		path, err := normalizePlanPath(path)
+		if err != nil {
+			return ""
+		}
+		data, err := os.ReadFile(filepath.Join(workspace, path))
+		if err != nil {
+			return ""
+		}
+		sum := sha256.Sum256(data)
+		return "file:" + path + ":" + hex.EncodeToString(sum[:])
+	}
+}
+
+func plannerProgressMarker(toolName string, arguments map[string]interface{}, _ string) string {
+	switch toolName {
+	case "list_dir":
+		path, _ := arguments["dir_path"].(string)
+		path = strings.TrimSpace(path)
+		if path == "" {
+			path = "."
+		}
+		return "listed:" + filepath.Clean(path)
+	case "grep_search":
+		query, _ := arguments["query"].(string)
+		path, _ := arguments["search_path"].(string)
+		return "searched:" + strings.TrimSpace(query) + ":" + filepath.Clean(strings.TrimSpace(path))
+	default:
+		return inspectedFileProgressMarker(toolName, arguments, "")
+	}
+}
+
+func inspectedFileProgressMarker(toolName string, arguments map[string]interface{}, _ string) string {
+	if toolName != "view_file" {
+		return ""
+	}
+	path, _ := arguments["file_path"].(string)
+	path, err := normalizePlanPath(path)
+	if err != nil {
+		return ""
+	}
+	start := optionalNumberMarker(arguments["start_line"])
+	end := optionalNumberMarker(arguments["end_line"])
+	return "viewed:" + path + ":" + start + ":" + end
+}
+
+func optionalNumberMarker(value interface{}) string {
+	if value == nil {
+		return "all"
+	}
+	return fmt.Sprint(value)
+}
+
+func commandProgressMarker(toolName string, arguments map[string]interface{}, _ string) string {
+	if toolName != "execute_action" {
+		return ""
+	}
+	action, _ := arguments["action"].(string)
+	target, _ := arguments["target"].(string)
+	return "command:" + canonicalActionCommand(action, target)
+}
+
+func evidenceProgressSet(evidence *executionEvidence) string {
+	if evidence == nil {
+		return ""
+	}
+	return progressSet(evidence.SuccessfulCalls)
+}
+
+func evidenceAttemptProgressSet(evidence *executionEvidence) string {
+	if evidence == nil {
+		return ""
+	}
+	return progressSet(evidence.AttemptedCalls)
+}
+
+func progressSet(calls []successfulToolCall) string {
+	seen := make(map[string]struct{})
+	for _, call := range calls {
+		if call.ProgressMarker != "" {
+			seen[call.ProgressMarker] = struct{}{}
+		}
+	}
+	markers := make([]string, 0, len(seen))
+	for marker := range seen {
+		markers = append(markers, marker)
+	}
+	sort.Strings(markers)
+	return strings.Join(markers, "|")
 }
 
 func requireReviewerFileEvidence(codeReports []CodeReport, evidence *executionEvidence) error {
@@ -242,19 +356,32 @@ func requireCoderEditEvidence(report *CodeReport, evidence *executionEvidence) e
 	return nil
 }
 
-func requireExecutedActionEvidence(required []string, evidence *executionEvidence) error {
-	executed := make(map[string]struct{})
-	for _, call := range evidence.SuccessfulCalls {
+func requireExecutedActionEvidence(required []string, report *TestReport, evidence *executionEvidence) error {
+	executed := make(map[string]int)
+	for _, call := range evidence.AttemptedCalls {
 		if call.Name != "execute_action" {
 			continue
 		}
 		action, _ := call.Arguments["action"].(string)
 		target, _ := call.Arguments["target"].(string)
-		executed[canonicalActionCommand(action, target)] = struct{}{}
+		executed[canonicalActionCommand(action, target)] = call.ExitCode
+	}
+	reported := make(map[string]int, len(report.Commands))
+	for _, command := range report.Commands {
+		reported[strings.TrimSpace(command.Command)] = command.ExitCode
 	}
 	for _, command := range required {
-		if _, exists := executed[strings.TrimSpace(command)]; !exists {
-			return fmt.Errorf("required command %q has no successful execute_action evidence", command)
+		command = strings.TrimSpace(command)
+		actualExitCode, exists := executed[command]
+		if !exists {
+			return fmt.Errorf("required command %q has no execute_action evidence", command)
+		}
+		reportedExitCode, exists := reported[command]
+		if !exists {
+			return fmt.Errorf("required command %q is missing from the tester report", command)
+		}
+		if actualExitCode != reportedExitCode {
+			return fmt.Errorf("required command %q reported exit code %d but execution returned %d", command, reportedExitCode, actualExitCode)
 		}
 	}
 	return nil

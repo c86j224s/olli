@@ -196,6 +196,9 @@ func (a *Agent) registerSubagentTools() {
 		if err != nil {
 			return "", fmt.Errorf("researcher subagent failed: %w", err)
 		}
+		if report.Status != "SUCCESS" {
+			return "", fmt.Errorf("researcher subagent returned %s (%s): %s", report.Status, report.Termination, report.Summary)
+		}
 		return formatSubagentReport("🔍 [Researcher Subagent Report]", report), nil
 	})
 
@@ -224,6 +227,9 @@ func (a *Agent) registerSubagentTools() {
 		report, err := runner.RunCoderWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
+		}
+		if report.Status != "SUCCESS" {
+			return "", fmt.Errorf("coder subagent returned %s (%s): %s", report.Status, report.Termination, report.Summary)
 		}
 		return formatSubagentReport("💻 [Coder Subagent Report]", report), nil
 	})
@@ -254,6 +260,9 @@ func (a *Agent) registerSubagentTools() {
 		if err != nil {
 			return "", fmt.Errorf("tester subagent failed: %w", err)
 		}
+		if report.Status != "SUCCESS" {
+			return "", fmt.Errorf("tester subagent returned %s (%s): %s", report.Status, report.Termination, report.Summary)
+		}
 		return formatSubagentReport("🧪 [Tester Subagent Report]", report), nil
 	})
 
@@ -282,6 +291,9 @@ func (a *Agent) registerSubagentTools() {
 		report, err := runner.RunReviewerWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("reviewer subagent failed: %w", err)
+		}
+		if report.Status != "SUCCESS" {
+			return "", fmt.Errorf("reviewer subagent returned %s (%s): %s", report.Status, report.Termination, report.Summary)
 		}
 		return formatSubagentReport("🧐 [Reviewer Subagent Report]", report), nil
 	})
