@@ -99,6 +99,9 @@ func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, 
 	if err != nil {
 		return nil, err
 	}
+	if report.Status != "SUCCESS" {
+		return nil, fmt.Errorf("coder loop %s: %s", report.Termination, report.Summary)
+	}
 	if evidence.SuccessfulTools["edit_file"] == 0 {
 		return nil, fmt.Errorf("coder returned without a successful edit_file call")
 	}
@@ -137,6 +140,9 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 	if err != nil {
 		return nil, err
 	}
+	if report.Status != "SUCCESS" {
+		return nil, fmt.Errorf("tester loop %s: %s", report.Termination, report.Summary)
+	}
 	if evidence.SuccessfulTools["execute_action"] == 0 {
 		return nil, fmt.Errorf("tester returned without a successful execute_action call")
 	}
@@ -168,6 +174,9 @@ func (m *ModelTeamRoles) Review(ctx context.Context, plan *DevelopmentPlan, code
 	report, err := m.runner.withModel(m.models.Reviewer).executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer"), string(TypeReviewer), string(payload), reviewerTeamPrompt, reg, reviewReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
+	}
+	if report.Status != "SUCCESS" {
+		return nil, fmt.Errorf("reviewer loop %s: %s", report.Termination, report.Summary)
 	}
 	if err := requireReviewerFileEvidence(codeReports, evidence); err != nil {
 		return nil, err

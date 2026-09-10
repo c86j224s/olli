@@ -47,14 +47,16 @@ func (e *executionEvidence) recordSuccess(toolName string, arguments map[string]
 }
 
 type ResultReport struct {
-	SubagentID    string   `json:"subagent_id"`
-	Type          string   `json:"type"`
-	Task          string   `json:"task"`
-	Status        string   `json:"status"`
-	Summary       string   `json:"summary"`
-	JSONLFile     string   `json:"jsonl_file"`
-	ToolCallsRun  int      `json:"tool_calls_run"`
-	WorkingDir    string   `json:"working_dir"`
-	ArtifactFiles []string `json:"artifact_files,omitempty"`
-	CreatedFiles  []string `json:"created_files,omitempty"`
+	SubagentID    string                `json:"subagent_id"`
+	Type          string                `json:"type"`
+	Task          string                `json:"task"`
+	Status        string                `json:"status"`
+	Summary       string                `json:"summary"`
+	JSONLFile     string                `json:"jsonl_file"`
+	ToolCallsRun  int                   `json:"tool_calls_run"`
+	WorkingDir    string                `json:"working_dir"`
+	Termination   LoopTerminationReason `json:"termination,omitempty"`
+	LoopMetrics   *LoopMetrics          `json:"loop_metrics,omitempty"`
+	ArtifactFiles []string              `json:"artifact_files,omitempty"`
+	CreatedFiles  []string              `json:"created_files,omitempty"`
 }

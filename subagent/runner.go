@@ -154,6 +154,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	}
 
 	toolCallsRun := 0
+	successfulToolCalls := 0
 	var finalAnswer string
 	var artifactFiles []string
 	var createdFiles []string
@@ -181,42 +182,60 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		},
 	}
 
-	maxTurns := 5
-	if format != nil {
-		maxTurns = 8
+	policy := DefaultLoopPolicy(format != nil)
+	guard, err := newLoopGuard(policy)
+	if err != nil {
+		return nil, err
 	}
-	for turn := 0; turn < maxTurns; turn++ {
+	termination := LoopTerminationFailed
+	for {
+		if reason := guard.beginIteration(); reason != "" {
+			termination = reason
+			break
+		}
 		select {
 		case <-ctx.Done():
-			logEvent("system", "⚠️ Subagent execution canceled by user interrupt (ESC Key)", nil)
+			reason, status, summary := contextTermination(ctx)
+			metrics := guard.terminate(reason)
+			logEvent("system", summary, nil)
 			return &ResultReport{
 				SubagentID:    subID,
 				Type:          subType,
 				Task:          task,
-				Status:        "INTERRUPTED",
-				Summary:       "⚠️ Subagent execution was interrupted by user (ESC Key).",
+				Status:        status,
+				Summary:       summary,
 				JSONLFile:     jsonlPath,
 				ToolCallsRun:  toolCallsRun,
 				WorkingDir:    r.workspace,
+				Termination:   reason,
+				LoopMetrics:   &metrics,
 				ArtifactFiles: artifactFiles,
 				CreatedFiles:  createdFiles,
 			}, nil
 		default:
 		}
 
+		if reason := guard.recordModelCall(); reason != "" {
+			termination = reason
+			break
+		}
 		resp, err := r.client.ChatStreamFullWithContext(ctx, req, streamCB)
 		if err != nil {
-			if ctx.Err() == context.Canceled || err == context.Canceled {
-				logEvent("system", "⚠️ Subagent LLM stream canceled by user interrupt (ESC Key)", nil)
+			if ctx.Err() != nil || err == context.Canceled || err == context.DeadlineExceeded {
+				reason, status, summary := contextTermination(ctx)
+				metrics := guard.terminate(reason)
+				logEvent("system", summary, nil)
 				return &ResultReport{
 					SubagentID:    subID,
 					Type:          subType,
 					Task:          task,
-					Status:        "INTERRUPTED",
-					Summary:       "⚠️ Subagent execution was interrupted by user (ESC Key).",
+					Status:        status,
+					Summary:       summary,
 					JSONLFile:     jsonlPath,
 					ToolCallsRun:  toolCallsRun,
 					WorkingDir:    r.workspace,
+					Termination:   reason,
+					LoopMetrics:   &metrics,
 					ArtifactFiles: artifactFiles,
 					CreatedFiles:  createdFiles,
 				}, nil
@@ -237,25 +256,34 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 
 			for _, tc := range resp.ToolCalls {
 				if ctx.Err() != nil {
-					logEvent("system", "⚠️ Subagent tool execution canceled by user interrupt (ESC Key)", nil)
+					reason, status, summary := contextTermination(ctx)
+					metrics := guard.terminate(reason)
+					logEvent("system", summary, nil)
 					return &ResultReport{
 						SubagentID:    subID,
 						Type:          subType,
 						Task:          task,
-						Status:        "INTERRUPTED",
-						Summary:       "⚠️ Subagent execution was interrupted by user (ESC Key).",
+						Status:        status,
+						Summary:       summary,
 						JSONLFile:     jsonlPath,
 						ToolCallsRun:  toolCallsRun,
 						WorkingDir:    r.workspace,
+						Termination:   reason,
+						LoopMetrics:   &metrics,
 						ArtifactFiles: artifactFiles,
 						CreatedFiles:  createdFiles,
 					}, nil
 				}
 
+				if reason := guard.recordToolCall(tc.Function.Name, tc.Function.Arguments); reason != "" {
+					termination = reason
+					break
+				}
 				toolCallsRun++
 				candidatePath, existedBefore, isArtifactCandidate := artifactCandidatePath(tc.Function.Arguments, r.workspace, r.workspaceRoot)
 				toolRes, tErr := reg.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
 				if tErr == nil {
+					successfulToolCalls++
 					evidence.recordSuccess(tc.Function.Name, tc.Function.Arguments)
 				}
 				resContent := toolRes
@@ -282,31 +310,90 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			}
 
 			req.Messages = messages
-			if turn == maxTurns-1 && format != nil {
+			if termination != LoopTerminationFailed {
+				break
+			}
+			if guard.consumeRepetitionRepair() {
+				guidance := ollama.Message{Role: "system", Content: "The same tool action was repeated without progress. Do not repeat it. Choose a different valid action or return the final answer now."}
+				messages = append(messages, guidance)
+				req.Messages = messages
+				logEvent("system", guidance.Content, nil)
+			}
+			if reason := guard.observeProgress(fmt.Sprintf("successful-tools:%d", successfulToolCalls)); reason != "" {
+				termination = reason
+				break
+			}
+			if guard.metrics.Iterations >= policy.MaxIterations && format != nil {
+				if reason := guard.recordFormatRepair(); reason != "" {
+					termination = reason
+					break
+				}
+				if reason := guard.recordModelCall(); reason != "" {
+					termination = reason
+					break
+				}
 				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
 				if err != nil {
 					return nil, err
 				}
 				logEvent("assistant", finalAnswer, nil)
+				if looksLikeJSONObject(finalAnswer) {
+					termination = LoopTerminationSucceeded
+				} else {
+					termination = LoopTerminationInvalidOutput
+				}
 				break
 			}
 			continue
 		}
 
 		finalAnswer = resp.Content
+		termination = LoopTerminationSucceeded
 		logEvent("assistant", finalAnswer, nil)
 		break
 	}
 
-	if format != nil && evidence != nil && evidence.ToolCallsSucceeded > 0 && !looksLikeJSONObject(finalAnswer) {
-		finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
-		if err != nil {
-			return nil, err
+	if termination == LoopTerminationSucceeded && format != nil && successfulToolCalls > 0 && !looksLikeJSONObject(finalAnswer) {
+		if reason := guard.recordFormatRepair(); reason == "" {
+			if reason := guard.recordModelCall(); reason == "" {
+				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
+				if err != nil {
+					return nil, err
+				}
+				logEvent("assistant", finalAnswer, nil)
+				if looksLikeJSONObject(finalAnswer) {
+					termination = LoopTerminationSucceeded
+				} else {
+					termination = LoopTerminationInvalidOutput
+				}
+			} else {
+				termination = reason
+			}
+		} else {
+			termination = reason
 		}
-		logEvent("assistant", finalAnswer, nil)
+	}
+	if termination != LoopTerminationSucceeded {
+		metrics := guard.terminate(termination)
+		summary := fmt.Sprintf("subagent loop terminated: %s", termination)
+		logEvent("system", summary, nil)
+		return &ResultReport{
+			SubagentID:    subID,
+			Type:          subType,
+			Task:          task,
+			Status:        "FAILED",
+			Summary:       summary,
+			JSONLFile:     jsonlPath,
+			ToolCallsRun:  toolCallsRun,
+			WorkingDir:    r.workspace,
+			Termination:   termination,
+			LoopMetrics:   &metrics,
+			ArtifactFiles: artifactFiles,
+			CreatedFiles:  createdFiles,
+		}, nil
 	}
 	if finalAnswer == "" {
-		finalAnswer = "Subagent task completed tool execution."
+		finalAnswer = "Subagent task completed without content."
 	}
 
 	artifactReq := artifactRequirementForSubagent(subType)
@@ -323,6 +410,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			JSONLFile:     jsonlPath,
 			ToolCallsRun:  toolCallsRun,
 			WorkingDir:    r.workspace,
+			Termination:   LoopTerminationFailed,
 			ArtifactFiles: artifactFiles,
 			CreatedFiles:  createdFiles,
 		}, nil
@@ -331,6 +419,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		logEvent("system", fmt.Sprintf("Subagent artifacts verified. Artifact Files: %s; Created Files: %s", pathListOrNone(artifactFiles), pathListOrNone(createdFiles)), nil)
 	}
 
+	metrics := guard.terminate(LoopTerminationSucceeded)
 	report := &ResultReport{
 		SubagentID:    subID,
 		Type:          subType,
@@ -340,6 +429,8 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		JSONLFile:     jsonlPath,
 		ToolCallsRun:  toolCallsRun,
 		WorkingDir:    r.workspace,
+		Termination:   LoopTerminationSucceeded,
+		LoopMetrics:   &metrics,
 		ArtifactFiles: artifactFiles,
 		CreatedFiles:  createdFiles,
 	}
@@ -348,6 +439,13 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		return nil, fmt.Errorf("failed to write subagent jsonl: %w", logErr)
 	}
 	return report, nil
+}
+
+func contextTermination(ctx context.Context) (LoopTerminationReason, string, string) {
+	if ctx != nil && ctx.Err() == context.DeadlineExceeded {
+		return LoopTerminationTimedOut, "TIMED_OUT", "Subagent execution timed out."
+	}
+	return LoopTerminationCancelled, "INTERRUPTED", "Subagent execution was canceled."
 }
 
 func looksLikeJSONObject(value string) bool {
