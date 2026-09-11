@@ -11,6 +11,7 @@ import (
 type TerminationReason string
 
 const (
+	TerminationRunning        TerminationReason = "running"
 	TerminationSucceeded      TerminationReason = "succeeded"
 	TerminationMaxIterations  TerminationReason = "max_iterations"
 	TerminationRepeatedAction TerminationReason = "repeated_action"

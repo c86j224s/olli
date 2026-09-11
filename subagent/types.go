@@ -43,15 +43,16 @@ type executionEvidence struct {
 	ProgressState      func() string
 }
 
-func (e *executionEvidence) recordAttempt(toolName string, arguments map[string]interface{}, result string, execErr error) {
+func (e *executionEvidence) recordAttempt(toolName string, arguments map[string]interface{}, result string, execErr error) successfulToolCall {
 	if e == nil {
-		return
+		return successfulToolCall{}
 	}
 	e.ToolCallsAttempted++
 	call := e.toolCall(toolName, arguments, result)
 	call.Succeeded = execErr == nil
 	call.ExitCode = commandExitCode(execErr)
 	e.AttemptedCalls = append(e.AttemptedCalls, call)
+	return call
 }
 
 func commandExitCode(execErr error) int {
@@ -65,7 +66,7 @@ func commandExitCode(execErr error) int {
 	return -1
 }
 
-func (e *executionEvidence) recordSuccess(toolName string, arguments map[string]interface{}, result string) {
+func (e *executionEvidence) recordSuccess(call successfulToolCall) {
 	if e == nil {
 		return
 	}
@@ -73,8 +74,8 @@ func (e *executionEvidence) recordSuccess(toolName string, arguments map[string]
 	if e.SuccessfulTools == nil {
 		e.SuccessfulTools = make(map[string]int)
 	}
-	e.SuccessfulTools[toolName]++
-	e.SuccessfulCalls = append(e.SuccessfulCalls, e.toolCall(toolName, arguments, result))
+	e.SuccessfulTools[call.Name]++
+	e.SuccessfulCalls = append(e.SuccessfulCalls, call)
 }
 
 func (e *executionEvidence) toolCall(toolName string, arguments map[string]interface{}, result string) successfulToolCall {

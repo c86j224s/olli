@@ -283,10 +283,10 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 				toolCallsRun++
 				candidatePath, existedBefore, isArtifactCandidate := artifactCandidatePath(tc.Function.Arguments, r.workspace, r.workspaceRoot)
 				toolRes, tErr := reg.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
-				evidence.recordAttempt(tc.Function.Name, tc.Function.Arguments, toolRes, tErr)
+				attempt := evidence.recordAttempt(tc.Function.Name, tc.Function.Arguments, toolRes, tErr)
 				if tErr == nil {
 					successfulToolCalls++
-					evidence.recordSuccess(tc.Function.Name, tc.Function.Arguments, toolRes)
+					evidence.recordSuccess(attempt)
 				}
 				resContent := toolRes
 				if tErr != nil {

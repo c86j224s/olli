@@ -219,7 +219,15 @@ func fileProgressMarker(workspace string) func(string, map[string]interface{}, s
 		if err != nil {
 			return ""
 		}
-		data, err := os.ReadFile(filepath.Join(workspace, path))
+		safePath, err := tools.IsPathSafeFrom(path, workspace, workspace)
+		if err != nil {
+			return ""
+		}
+		info, err := os.Lstat(safePath)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return ""
+		}
+		data, err := os.ReadFile(safePath)
 		if err != nil {
 			return ""
 		}

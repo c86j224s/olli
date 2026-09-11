@@ -504,12 +504,12 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 	}
 
 	var lastContent string
-	successfulToolCalls := 0
+	successfulActions := make(map[string]struct{})
 	guard, err := agentloop.NewController(agentloop.MainAgentPolicy())
 	if err != nil {
 		return "", err
 	}
-	termination := agentloop.TerminationFailed
+	termination := agentloop.TerminationRunning
 
 	for {
 		if reason := guard.BeginIteration(); reason != "" {
@@ -584,12 +584,15 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 				a.sessMgr.AppendEvent(*resp)
 			}
 
-			for _, tc := range resp.ToolCalls {
+			for index, tc := range resp.ToolCalls {
 				if ctx.Err() != nil {
-					return "", ctx.Err()
+					termination = contextLoopTermination(ctx)
+					appendSkippedToolResults(a, resp.ToolCalls[index:], "not executed because the request context ended")
+					break
 				}
 				if reason := guard.RecordToolCall(tc.Function.Name, tc.Function.Arguments); reason != "" {
 					termination = reason
+					appendSkippedToolResults(a, resp.ToolCalls[index:], "not executed because the agent loop terminated")
 					break
 				}
 
@@ -607,14 +610,17 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 						tErr = fmt.Errorf("permission check required for '%s' but no prompt callback set", tc.Function.Name)
 					}
 					if tErr == nil {
-						if always && a.cfg != nil {
+						if ctx.Err() != nil {
+							termination = contextLoopTermination(ctx)
+							tErr = ctx.Err()
+						} else if always && a.cfg != nil {
 							_ = a.cfg.AddWhitelist(tc.Function.Name)
 							_ = a.cfg.Save()
 						}
-						if !allowed {
+						if tErr == nil && !allowed {
 							termination = agentloop.TerminationDenied
 							tErr = fmt.Errorf("user denied execution of tool '%s'", tc.Function.Name)
-						} else {
+						} else if tErr == nil {
 							toolRes, tErr = a.registry.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
 						}
 					}
@@ -623,7 +629,7 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 				}
 
 				if tErr == nil {
-					successfulToolCalls++
+					successfulActions[agentloop.ActionFingerprint(tc.Function.Name, tc.Function.Arguments)] = struct{}{}
 				}
 				if cb.OnToolCall != nil {
 					cb.OnToolCall(tc.Function.Name, tc.Function.Arguments, toolRes, tErr)
@@ -633,17 +639,13 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 				if tErr != nil {
 					resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)
 				}
-
-				toolMsg := ollama.Message{Role: "tool", Content: resContent}
-				a.history = append(a.history, toolMsg)
-				if a.sessMgr != nil {
-					a.sessMgr.AppendEvent(toolMsg)
-				}
-				if termination == agentloop.TerminationDenied {
+				appendToolMessage(a, resContent)
+				if termination != agentloop.TerminationRunning {
+					appendSkippedToolResults(a, resp.ToolCalls[index+1:], "not executed after an earlier tool stopped the batch")
 					break
 				}
 			}
-			if termination != agentloop.TerminationFailed {
+			if termination != agentloop.TerminationRunning {
 				break
 			}
 			if guard.ConsumeRepetitionRepair() {
@@ -653,7 +655,7 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 					a.sessMgr.AppendEvent(guidance)
 				}
 			}
-			progress := fmt.Sprintf("successful-tools:%d", successfulToolCalls)
+			progress := fmt.Sprintf("unique-successful-actions:%d", len(successfulActions))
 			if reason := guard.ObserveProgress(progress); reason != "" {
 				termination = reason
 				break
@@ -680,4 +682,25 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 		return "", fmt.Errorf("%s", message)
 	}
 	return lastContent, nil
+}
+
+func contextLoopTermination(ctx context.Context) agentloop.TerminationReason {
+	if ctx != nil && ctx.Err() == context.DeadlineExceeded {
+		return agentloop.TerminationTimedOut
+	}
+	return agentloop.TerminationCancelled
+}
+
+func appendToolMessage(a *Agent, content string) {
+	message := ollama.Message{Role: "tool", Content: content}
+	a.history = append(a.history, message)
+	if a.sessMgr != nil {
+		a.sessMgr.AppendEvent(message)
+	}
+}
+
+func appendSkippedToolResults(a *Agent, calls []ollama.ToolCall, reason string) {
+	for _, call := range calls {
+		appendToolMessage(a, fmt.Sprintf("Tool %s %s.", call.Function.Name, reason))
+	}
 }

@@ -36,6 +36,21 @@ func TestRoleProgressMarkersTrackDomainProgress(t *testing.T) {
 	}
 }
 
+func TestFileProgressMarkerRejectsSymlinkTarget(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.go")
+	if err := os.WriteFile(outside, []byte("secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "link.go")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink creation unavailable: %v", err)
+	}
+	if marker := fileProgressMarker(root)("edit_file", map[string]interface{}{"file_path": "link.go"}, ""); marker != "" {
+		t.Fatalf("symlink target produced a progress hash: %q", marker)
+	}
+}
+
 func TestEvidenceProgressSetIsCumulativeAndOrderIndependent(t *testing.T) {
 	evidence := &executionEvidence{SuccessfulCalls: []successfulToolCall{
 		{ProgressMarker: "viewed:b.go"},

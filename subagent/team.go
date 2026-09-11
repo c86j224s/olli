@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"strings"
+
+	agentgraph "github.com/c86j224s/olli/graph"
 )
 
 type TeamPhase string
@@ -61,16 +63,17 @@ type ReviewReport struct {
 }
 
 type DevelopmentTeamReport struct {
-	Status       string           `json:"status"`
-	Phase        TeamPhase        `json:"phase"`
-	Plan         *DevelopmentPlan `json:"plan,omitempty"`
-	CodeReports  []CodeReport     `json:"code_reports,omitempty"`
-	TestReports  []TestReport     `json:"test_reports,omitempty"`
-	Reviews      []ReviewReport   `json:"reviews,omitempty"`
-	Verification *TestReport      `json:"verification,omitempty"`
-	Transitions  []TeamPhase      `json:"transitions"`
-	Failure      string           `json:"failure,omitempty"`
-	FixRounds    int              `json:"fix_rounds"`
+	Status       string             `json:"status"`
+	Phase        TeamPhase          `json:"phase"`
+	Plan         *DevelopmentPlan   `json:"plan,omitempty"`
+	CodeReports  []CodeReport       `json:"code_reports,omitempty"`
+	TestReports  []TestReport       `json:"test_reports,omitempty"`
+	Reviews      []ReviewReport     `json:"reviews,omitempty"`
+	Verification *TestReport        `json:"verification,omitempty"`
+	Transitions  []TeamPhase        `json:"transitions"`
+	Failure      string             `json:"failure,omitempty"`
+	FixRounds    int                `json:"fix_rounds"`
+	Graph        *agentgraph.Result `json:"graph,omitempty"`
 }
 
 type DevelopmentTeamRoles interface {
@@ -100,131 +103,7 @@ func NewDevelopmentTeamRunner(roles DevelopmentTeamRoles, maxFixRounds int) (*De
 }
 
 func (r *DevelopmentTeamRunner) Run(ctx context.Context, objective string) DevelopmentTeamReport {
-	report := DevelopmentTeamReport{Status: "FAILED", Phase: TeamPhasePlanning}
-	transition := func(phase TeamPhase) {
-		report.Phase = phase
-		report.Transitions = append(report.Transitions, phase)
-	}
-	fail := func(format string, args ...any) DevelopmentTeamReport {
-		report.Status = "FAILED"
-		report.Failure = fmt.Sprintf(format, args...)
-		transition(TeamPhaseFailed)
-		return report
-	}
-
-	if ctx == nil {
-		return fail("development team context is required")
-	}
-	objective = strings.TrimSpace(objective)
-	if objective == "" {
-		return fail("development team objective is required")
-	}
-
-	transition(TeamPhasePlanning)
-	plan, err := r.roles.Plan(ctx, objective)
-	if err != nil {
-		return fail("planning failed: %v", err)
-	}
-	if err := validateDevelopmentPlan(plan); err != nil {
-		return fail("planning produced an invalid plan: %v", err)
-	}
-	report.Plan = plan
-
-	for _, step := range plan.Steps {
-		transition(TeamPhaseCoding)
-		codeReport, err := r.roles.Code(ctx, CodeTask{Goal: plan.Goal, Step: step, Attempt: 1})
-		if err != nil {
-			return fail("coding %s failed: %v", step.ID, err)
-		}
-		if err := validateCodeReport(step, codeReport); err != nil {
-			return fail("coding %s produced an invalid report: %v", step.ID, err)
-		}
-		report.CodeReports = append(report.CodeReports, *codeReport)
-
-		if len(step.Verification) > 0 {
-			transition(TeamPhaseTesting)
-			testReport, err := r.roles.Test(ctx, step)
-			if err != nil {
-				return fail("testing %s failed: %v", step.ID, err)
-			}
-			if err := validateTestReport(testReport); err != nil {
-				return fail("testing %s produced an invalid report: %v", step.ID, err)
-			}
-			report.TestReports = append(report.TestReports, *testReport)
-			if !testReport.Passed {
-				return fail("testing %s did not pass: %s", step.ID, testReport.Summary)
-			}
-		}
-	}
-
-	for {
-		transition(TeamPhaseReviewing)
-		review, err := r.roles.Review(ctx, plan, report.CodeReports)
-		if err != nil {
-			return fail("review failed: %v", err)
-		}
-		if err := validateReviewReport(plan, review); err != nil {
-			return fail("review produced an invalid report: %v", err)
-		}
-		report.Reviews = append(report.Reviews, *review)
-		if len(review.Findings) == 0 {
-			break
-		}
-		if report.FixRounds >= r.maxFixRounds {
-			return fail("review still has %d findings after %d fix rounds", len(review.Findings), report.FixRounds)
-		}
-
-		report.FixRounds++
-		transition(TeamPhaseFixing)
-		fixStep := PlanStep{
-			ID:           fmt.Sprintf("step-review-fix-%d", report.FixRounds),
-			Objective:    "Fix confirmed review findings",
-			AllowedFiles: findingFiles(review.Findings),
-			Acceptance:   findingSummaries(review.Findings),
-			Verification: plan.FinalVerification,
-		}
-		codeReport, err := r.roles.Code(ctx, CodeTask{Goal: plan.Goal, Step: fixStep, ReviewFixes: review.Findings, Attempt: report.FixRounds + 1})
-		if err != nil {
-			return fail("review fix round %d failed: %v", report.FixRounds, err)
-		}
-		if err := validateCodeReport(fixStep, codeReport); err != nil {
-			return fail("review fix round %d produced an invalid report: %v", report.FixRounds, err)
-		}
-		report.CodeReports = append(report.CodeReports, *codeReport)
-
-		transition(TeamPhaseTesting)
-		testReport, err := r.roles.Test(ctx, fixStep)
-		if err != nil {
-			return fail("review fix testing failed: %v", err)
-		}
-		if err := validateTestReport(testReport); err != nil {
-			return fail("review fix testing produced an invalid report: %v", err)
-		}
-		report.TestReports = append(report.TestReports, *testReport)
-		if !testReport.Passed {
-			return fail("review fix testing did not pass: %s", testReport.Summary)
-		}
-	}
-
-	transition(TeamPhaseVerifying)
-	verification, err := r.roles.Verify(ctx, plan.FinalVerification)
-	if err != nil {
-		return fail("final verification failed: %v", err)
-	}
-	if err := validateTestReport(verification); err != nil {
-		return fail("final verification produced an invalid report: %v", err)
-	}
-	if err := requireVerificationCommands(plan.FinalVerification, verification); err != nil {
-		return fail("final verification evidence is incomplete: %v", err)
-	}
-	report.Verification = verification
-	if !verification.Passed {
-		return fail("final verification did not pass: %s", verification.Summary)
-	}
-
-	report.Status = "SUCCESS"
-	transition(TeamPhaseDone)
-	return report
+	return r.runGraph(ctx, objective)
 }
 
 func validateCodeReport(step PlanStep, report *CodeReport) error {

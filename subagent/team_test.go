@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	agentgraph "github.com/c86j224s/olli/graph"
 )
 
 type scriptedTeamRoles struct {
@@ -99,6 +101,9 @@ func TestDevelopmentTeamRunnerSuccessOrder(t *testing.T) {
 	want := []TeamPhase{TeamPhasePlanning, TeamPhaseCoding, TeamPhaseTesting, TeamPhaseReviewing, TeamPhaseVerifying, TeamPhaseDone}
 	if fmt.Sprint(report.Transitions) != fmt.Sprint(want) {
 		t.Fatalf("unexpected transitions: %v", report.Transitions)
+	}
+	if report.Graph == nil || report.Graph.Status != agentgraph.StatusSucceeded || report.Graph.Visits[teamNodeCoding] != 1 {
+		t.Fatalf("missing graph execution evidence: %#v", report.Graph)
 	}
 }
 
