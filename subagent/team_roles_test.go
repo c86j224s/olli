@@ -166,13 +166,13 @@ func TestRequireReviewerFileEvidenceCoversEveryChangedFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	reports := []CodeReport{{ChangedFiles: []string{"a.go", "b.go"}}}
+	files := []string{"a.go", "b.go"}
 	evidence := &executionEvidence{SuccessfulCalls: []successfulToolCall{{Name: "view_file", Arguments: map[string]interface{}{"file_path": "a.go"}}}}
-	if err := requireReviewerFileEvidence(reports, evidence, root); err == nil {
+	if err := requireReviewerFileEvidence(files, evidence, root); err == nil {
 		t.Fatal("reviewer evidence omitted a changed file")
 	}
 	evidence.SuccessfulCalls = append(evidence.SuccessfulCalls, successfulToolCall{Name: "view_file", Arguments: map[string]interface{}{"file_path": "b.go"}})
-	if err := requireReviewerFileEvidence(reports, evidence, root); err != nil {
+	if err := requireReviewerFileEvidence(files, evidence, root); err != nil {
 		t.Fatalf("complete reviewer evidence rejected: %v", err)
 	}
 }

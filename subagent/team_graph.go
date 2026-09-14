@@ -197,8 +197,13 @@ func runTeamTestingNode(ctx context.Context, raw agentgraph.State) (agentgraph.N
 	return agentgraph.NodeResult{Route: "review"}, nil
 }
 
-func buildReviewContext(report *DevelopmentTeamReport) ReviewContext {
-	context := ReviewContext{Plan: report.Plan, CodeReports: append([]CodeReport(nil), report.CodeReports...), PreviousReviews: append([]ReviewReport(nil), report.Reviews...)}
+func buildReviewContext(report *DevelopmentTeamReport, reviewScope []string) ReviewContext {
+	context := ReviewContext{
+		Plan:            report.Plan,
+		CodeReports:     append([]CodeReport(nil), report.CodeReports...),
+		PreviousReviews: append([]ReviewReport(nil), report.Reviews...),
+		ReviewScope:     uniqueStrings(reviewScope),
+	}
 	if len(report.TestReports) > 0 {
 		latestIndex := len(report.TestReports) - 1
 		context.LatestTestReport = &report.TestReports[latestIndex]
@@ -219,7 +224,7 @@ func runTeamReviewingNode(ctx context.Context, raw agentgraph.State) (agentgraph
 		return agentgraph.NodeResult{}, err
 	}
 	state.transition(TeamPhaseReviewing)
-	review, err := state.runner.roles.Review(ctx, buildReviewContext(state.report))
+	review, err := state.runner.roles.Review(ctx, buildReviewContext(state.report, state.currentStep.AllowedFiles))
 	if err != nil {
 		return agentgraph.NodeResult{}, state.nodeError("review failed: %v", err)
 	}

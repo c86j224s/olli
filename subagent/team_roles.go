@@ -213,10 +213,14 @@ func (m *ModelTeamRoles) Review(ctx context.Context, reviewContext ReviewContext
 	reg := m.runner.newRoleRegistry()
 	registerTeamReviewerTools(reg)
 	temperature := 0.1
+	reviewFiles := reviewContext.ReviewScope
+	if len(reviewFiles) == 0 {
+		reviewFiles = changedFilesFromCodeReports(reviewContext.CodeReports)
+	}
 	evidence := &executionEvidence{ProgressMarker: inspectedFileProgressMarker, RequiredTools: map[string]int{"view_file": 1}}
 	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
 	evidence.CompletionReady = func() bool {
-		return len(evidence.missingRequiredTools()) == 0 && requireReviewerFileEvidence(reviewContext.CodeReports, evidence, m.runner.workspace) == nil
+		return len(evidence.missingRequiredTools()) == 0 && requireReviewerFileEvidence(reviewFiles, evidence, m.runner.workspace) == nil
 	}
 	reviewerRunner := m.runner.withModel(m.models.Reviewer)
 	if m.models.ReviewerThinking != nil {
@@ -229,7 +233,7 @@ func (m *ModelTeamRoles) Review(ctx context.Context, reviewContext ReviewContext
 	if report.Status != "SUCCESS" {
 		return nil, fmt.Errorf("reviewer loop %s: %s", report.Termination, report.Summary)
 	}
-	if err := requireReviewerFileEvidence(reviewContext.CodeReports, evidence, m.runner.workspace); err != nil {
+	if err := requireReviewerFileEvidence(reviewFiles, evidence, m.runner.workspace); err != nil {
 		return nil, err
 	}
 	reviewReport, err := parseReviewReport(report.Summary)
@@ -430,12 +434,22 @@ func codeReportFromEvidence(step PlanStep, evidence *executionEvidence) *CodeRep
 	}
 }
 
-func requireReviewerFileEvidence(codeReports []CodeReport, evidence *executionEvidence, workspace string) error {
-	required := make(map[string]struct{})
+func changedFilesFromCodeReports(codeReports []CodeReport) []string {
+	var files []string
 	for _, report := range codeReports {
-		for _, path := range report.ChangedFiles {
-			required[path] = struct{}{}
+		files = append(files, report.ChangedFiles...)
+	}
+	return uniqueStrings(files)
+}
+
+func requireReviewerFileEvidence(requiredFiles []string, evidence *executionEvidence, workspace string) error {
+	required := make(map[string]struct{}, len(requiredFiles))
+	for _, path := range requiredFiles {
+		normalized, err := normalizePlanPath(path)
+		if err != nil {
+			return fmt.Errorf("reviewer required file %q: %w", path, err)
 		}
+		required[normalized] = struct{}{}
 	}
 	type coverage struct {
 		whole  bool

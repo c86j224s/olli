@@ -17,13 +17,13 @@ func TestReviewerTruncatedWholeViewDoesNotCountAsFullCoverage(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "large.go"), []byte(source.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
-	reports := []CodeReport{{ChangedFiles: []string{"large.go"}}}
+	files := []string{"large.go"}
 	evidence := &executionEvidence{SuccessfulCalls: []successfulToolCall{{Name: "view_file", Arguments: map[string]interface{}{"file_path": "large.go"}, Result: "... [Truncated at 800 lines limit]"}}}
-	if err := requireReviewerFileEvidence(reports, evidence, root); err == nil || !strings.Contains(err.Error(), "line 801") {
+	if err := requireReviewerFileEvidence(files, evidence, root); err == nil || !strings.Contains(err.Error(), "line 801") {
 		t.Fatalf("truncated view was accepted as full coverage: %v", err)
 	}
 	evidence.SuccessfulCalls = append(evidence.SuccessfulCalls, successfulToolCall{Name: "view_file", Arguments: map[string]interface{}{"file_path": "large.go", "start_line": 801, "end_line": 1001}, Result: "remaining lines"})
-	if err := requireReviewerFileEvidence(reports, evidence, root); err != nil {
+	if err := requireReviewerFileEvidence(files, evidence, root); err != nil {
 		t.Fatalf("complete range coverage rejected: %v", err)
 	}
 }

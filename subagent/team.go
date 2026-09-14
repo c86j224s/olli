@@ -100,6 +100,7 @@ type ReviewContext struct {
 	LatestTestReport      *TestReport      `json:"latest_test_report,omitempty"`
 	PreviousTestSummaries []TestSummary    `json:"previous_test_summaries"`
 	PreviousReviews       []ReviewReport   `json:"previous_reviews"`
+	ReviewScope           []string         `json:"review_scope,omitempty"`
 }
 
 type TestSummary struct {

@@ -85,11 +85,14 @@ func TestBuildReviewContextPrioritizesLatestTestReport(t *testing.T) {
 		},
 		Reviews: []ReviewReport{{Summary: "previous"}},
 	}
-	context := buildReviewContext(report)
+	context := buildReviewContext(report, []string{"feature.go"})
 	if context.LatestTestReport == nil || context.LatestTestReport.Commands[0].Output != "latest" {
 		t.Fatalf("latest test report not prioritized: %#v", context)
 	}
 	if len(context.PreviousTestSummaries) != 1 || len(context.PreviousReviews) != 1 {
 		t.Fatalf("review history not summarized correctly: %#v", context)
+	}
+	if len(context.ReviewScope) != 1 || context.ReviewScope[0] != "feature.go" {
+		t.Fatalf("review scope not preserved: %#v", context)
 	}
 }
