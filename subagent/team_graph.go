@@ -47,8 +47,8 @@ func (r *DevelopmentTeamRunner) runGraph(ctx context.Context, objective string) 
 	state := &developmentTeamState{runner: r, objective: objective, report: &report}
 	definition := developmentTeamGraphDefinition()
 	policy := agentgraph.Policy{
-		MaxTransitions: 32,
-		MaxNodeVisits:  8,
+		MaxTransitions: 48,
+		MaxNodeVisits:  maxPlanSteps + defaultMaxTeamFixRounds,
 		NodeVisitLimit: map[string]int{
 			teamNodePlanning:  1,
 			teamNodeCoding:    maxPlanSteps,
@@ -101,6 +101,7 @@ func developmentTeamGraphDefinition() agentgraph.Definition {
 			{From: teamNodePreflight, Route: "test", To: teamNodeTesting},
 			{From: teamNodePreflight, Route: "review", To: teamNodeReviewing},
 			{From: teamNodePreflight, Route: "fix", To: teamNodeFixing},
+			{From: teamNodePreflight, Route: "code", To: teamNodeCoding},
 			{From: teamNodeCoding, Route: "code", To: teamNodeCoding},
 			{From: teamNodeTesting, Route: "code", To: teamNodeCoding},
 			{From: teamNodeTesting, Route: "review", To: teamNodeReviewing},
@@ -204,6 +205,10 @@ func runTeamPreflightNode(ctx context.Context, raw agentgraph.State) (agentgraph
 	}
 	if len(state.currentStep.Verification) > 0 {
 		return agentgraph.NodeResult{Route: "test"}, nil
+	}
+	if !state.fixing && state.stepIndex+1 < len(state.report.Plan.Steps) {
+		state.stepIndex++
+		return agentgraph.NodeResult{Route: "code"}, nil
 	}
 	return agentgraph.NodeResult{Route: "review"}, nil
 }

@@ -58,7 +58,7 @@ func TestValidateDevelopmentPlanRejectsUnsafeOrAmbiguousPlans(t *testing.T) {
 				copy.ID = "step-" + strconv.Itoa(index)
 				plan.Steps = append(plan.Steps, copy)
 			}
-		}, wantErr: "1-6"},
+		}, wantErr: "1-12"},
 	}
 
 	for _, tt := range tests {

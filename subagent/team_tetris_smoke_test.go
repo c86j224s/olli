@@ -62,8 +62,8 @@ Requirements:
 - Render with ASCII text and accept commands a/d/s/w/q followed by Enter.
 - Use a deterministic seven-piece sequence; no external packages, networking, shell commands, or filesystem access.
 - Keep the implementation compact and readable.
-- Plan 2-4 cohesive implementation milestones, all with allowed_files ["main.go"]. Every milestone must leave main.go parseable; the final milestone must complete every requirement.
-- Suggested milestones: game data/shapes, movement/collision/rotation, locking/line clearing/scoring, rendering/input/game-over.
+- Decompose this into 6-10 minimal implementation milestones, all with allowed_files ["main.go"]. Every milestone must leave main.go parseable; the final milestone must complete every requirement.
+- Prefer one concern per milestone: constants/types, seven shapes/sequence, initialization/spawn, collision/movement, rotation, locking, line clearing/scoring, rendering, input/game-over.
 - Use final_verification ["go_test ./...", "go_vet ./..."]. Milestone verification may be empty because deterministic static preflight runs after every write.`)
 	data, readErr := os.ReadFile(filepath.Join(root, "main.go"))
 	if result.Status != "SUCCESS" {

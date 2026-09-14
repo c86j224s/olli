@@ -24,25 +24,23 @@ func TestDevelopmentTeamReviewsOnlyCurrentFixScope(t *testing.T) {
 	plan := teamTestPlan()
 	plan.Files = []string{"first.go", "second.go"}
 	plan.Steps = []PlanStep{
-		{ID: "step-1", Objective: "first", AllowedFiles: []string{"first.go"}, Acceptance: []string{"first complete"}, Verification: []string{"go_test ./..."}},
+		{ID: "step-1", Objective: "first", AllowedFiles: []string{"first.go"}, Acceptance: []string{"first complete"}},
 		{ID: "step-2", Objective: "second", AllowedFiles: []string{"second.go"}, Acceptance: []string{"second complete"}},
 	}
-	finding := Finding{ID: "finding-1", Severity: "high", File: "first.go", Line: 1, Summary: "broken", FailureScenario: "test fails", RequiredOutcome: "test passes", Verification: []string{"go_test ./..."}}
+	finding := Finding{ID: "finding-1", Severity: "high", File: "second.go", Line: 1, Summary: "broken", FailureScenario: "test fails", RequiredOutcome: "test passes", Verification: []string{"go_test ./..."}}
 	base := &scriptedTeamRoles{
 		plan: plan,
 		codeReports: []*CodeReport{
-			{StepID: "step-1", ChangedFiles: []string{"first.go"}, Completed: []string{"first draft"}},
-			{StepID: "step-review-fix-1", ChangedFiles: []string{"first.go"}, Completed: []string{"first fixed"}, AddressedFindings: []AddressedFinding{{ID: "finding-1", Status: "addressed", Evidence: "fixed"}}},
-			{StepID: "step-2", ChangedFiles: []string{"second.go"}, Completed: []string{"second complete"}},
+			{StepID: "step-1", ChangedFiles: []string{"first.go"}, Completed: []string{"first complete"}},
+			{StepID: "step-2", ChangedFiles: []string{"second.go"}, Completed: []string{"second draft"}},
+			{StepID: "step-review-fix-1", ChangedFiles: []string{"second.go"}, Completed: []string{"second fixed"}, AddressedFindings: []AddressedFinding{{ID: "finding-1", Status: "addressed", Evidence: "fixed"}}},
 		},
 		testReports: []*TestReport{
-			{Passed: false, Commands: []CommandResult{{Command: "go_test ./...", ExitCode: 1, Output: "failed"}}, Summary: "failed"},
 			{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}},
 		},
 		reviews: []*ReviewReport{
 			{Findings: []Finding{finding}},
 			{FindingResolutions: []FindingResolution{{ID: "finding-1", Status: "resolved", Evidence: "passes"}}},
-			{Summary: "clean"},
 		},
 		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
 	}
@@ -51,22 +49,17 @@ func TestDevelopmentTeamReviewsOnlyCurrentFixScope(t *testing.T) {
 	if report := runner.Run(context.Background(), "implement both steps"); report.Status != "SUCCESS" {
 		t.Fatalf("team failed: %#v", report)
 	}
-	if len(roles.scopes) != 9 {
+	if len(roles.scopes) != 5 {
 		t.Fatalf("unexpected review scope count: %#v", roles.scopes)
 	}
-	for index, scope := range roles.scopes {
-		wantFile := "first.go"
-		if index >= 5 {
-			wantFile = "second.go"
-		}
-		if len(scope.files) != 1 || scope.files[0] != wantFile {
-			t.Fatalf("review %d received scope %#v, want %q", index, scope.files, wantFile)
+	for _, scope := range roles.scopes {
+		if len(scope.files) != 1 || scope.files[0] != "second.go" {
+			t.Fatalf("review received scope %#v, want second.go", scope.files)
 		}
 	}
 	wantDimensions := []ReviewDimension{
 		ReviewDimensionRequirements, ReviewDimensionLogic, ReviewDimensionSafety, ReviewDimensionTests,
 		ReviewDimensionRequirements,
-		ReviewDimensionRequirements, ReviewDimensionLogic, ReviewDimensionSafety, ReviewDimensionTests,
 	}
 	for index, want := range wantDimensions {
 		if roles.scopes[index].dimension != want {

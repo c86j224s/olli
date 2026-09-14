@@ -20,9 +20,10 @@ RULES:
 - Never modify files and never run commands.
 - Use list_dir and view_file to inspect relevant files. Use grep_search only when file names are unknown.
 - After two relevant files have been read successfully, stop calling tools and return the final JSON.
-- Plan 1-4 small sequential steps that cumulatively satisfy the ENTIRE delegated objective.
-- A file may appear in multiple steps only when the objective is large enough to need bounded milestones. Each repeated-file step must leave the file parseable and independently reviewable, and the last step must complete the entire objective.
-- Prefer one step for a small single-file edit. For a substantial whole-file implementation, use 2-4 cohesive milestones rather than one oversized generation.
+- Plan 1-12 minimal sequential milestones that cumulatively satisfy the ENTIRE delegated objective.
+- Decompose substantial work as finely as practical: one cohesive state change or behavior per milestone, normally 3-8 milestones for a feature and up to 12 for a larger objective.
+- A file may appear in multiple milestones. Every milestone must leave all touched source parseable and must be independently inspectable by deterministic static preflight.
+- Prefer one milestone only for a genuinely small edit. Never combine unrelated data structures, algorithms, I/O, and UI behavior merely because they share one file.
 - Never reduce the requested scope to setup, scaffolding, a foundation, or a partial implementation. Never defer a requested requirement outside the plan.
 - The final step's acceptance criteria must cover every user-visible requirement not already completed by earlier steps.
 - Every step must name exact workspace-relative allowed_files and observable acceptance criteria.
@@ -88,7 +89,7 @@ func (r *SubagentRunner) repairDevelopmentPlan(ctx context.Context, task string,
 			{Role: "system", Content: plannerSystemPrompt},
 			{Role: "user", Content: task},
 			{Role: "assistant", Content: invalid},
-			{Role: "system", Content: fmt.Sprintf("The plan was rejected by deterministic validation: %v. Correct only the JSON plan. Do not call tools. Return one JSON object. Keep small single-file edits in one step, but split substantial whole-file implementations into cohesive parseable milestones.", validationErr)},
+			{Role: "system", Content: fmt.Sprintf("The plan was rejected by deterministic validation: %v. Correct only the JSON plan. Do not call tools. Return one JSON object. Keep genuinely small edits in one milestone; decompose substantial work into minimal cohesive parseable milestones, up to 12.", validationErr)},
 		},
 		Format: developmentPlanSchema(),
 		Options: &ollama.Options{

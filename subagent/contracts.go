@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const maxPlanSteps = 6
+const maxPlanSteps = 12
 
 var planStepIDPattern = regexp.MustCompile(`^step-[1-9][0-9]*$`)
 
