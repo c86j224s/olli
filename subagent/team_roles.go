@@ -6,11 +6,14 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	agentloop "github.com/c86j224s/olli/loop"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/tools"
 )
@@ -19,9 +22,16 @@ const coderTeamPrompt = `ROLE: The only writer in a deterministic small-model de
 
 RULES:
 - Implement exactly one supplied plan step.
+- Reviewer findings are outcome requirements, not patches. Reread the current file and choose the implementation yourself; never copy an exact replacement string from Reviewer text.
+- When review_fixes are present, report each finding id in addressed_findings as addressed or not_addressed with concise evidence. This is a Coder claim; Reviewer and Tester make the final resolution decision.
+- When fixing compiler or test failures, correct those failures as well as the review findings before returning.
 - Modify only allowed_files. Never run tests or commands.
 - Inspect each target before editing.
-- Prefer small targeted edits; do not rewrite unrelated code.
+- You MUST make at least one successful edit_file or replace_file call before returning CodeReport. Reading a file is not completion.
+- For a full-file implementation, use replace_file with the complete file content. Do not use edit_file and do not invent an old target chunk.
+- For a small change, use edit_file and copy target_content exactly from view_file output.
+- If edit_file says the target chunk is missing, do not retry guessed target text. Read the latest file and use replace_file with the complete corrected file.
+- Prefer small targeted edits unless the step explicitly requires completing a whole-file starter.
 - Return JSON only, matching CodeReport.
 - changed_files must list every file you actually changed.
 - unresolved must be empty only when every acceptance criterion is implemented.`
@@ -40,22 +50,28 @@ RULES:
 const reviewerTeamPrompt = `ROLE: Read-only reviewer in a deterministic small-model development team.
 
 RULES:
-- Compare the validated plan, changed files, and current code.
+- Never modify code. Give structured findings to the Coder; the Coder alone implements fixes.
+- Compare the validated plan, changed files, latest test report, prior review findings, and current code.
 - Report only correctness, security, required-behavior, or unsafe-test defects.
-- Every finding requires a real file, line, concise defect, and concrete failure scenario.
+- Use view_file immediately to read every changed file completely. Use one unbounded call for a small file or enough non-overlapping ranges to cover a large file, then stop calling tools.
+- Every new finding needs a stable id, real file and line, concise defect, concrete failure scenario, required outcome, and canonical verification commands.
+- For every previous finding id, return resolved or unresolved with concrete current evidence. Unresolved previous findings must also remain in findings with the same id.
+- Describe outcomes, not exact replacement strings or patches. The Coder must reread the current file and choose the implementation.
 - Do not report style preferences or vague concerns.
 - Return JSON only, matching ReviewReport.`
 
 type TeamModels struct {
-	Planner  string
-	Coder    string
-	Tester   string
-	Reviewer string
+	Planner       string
+	Coder         string
+	Tester        string
+	Reviewer      string
+	CoderThinking *bool
 }
 
 type ModelTeamRoles struct {
-	runner *SubagentRunner
-	models TeamModels
+	runner         *SubagentRunner
+	models         TeamModels
+	testerRegistry func() *tools.Registry
 }
 
 func NewModelTeamRoles(runner *SubagentRunner) (*ModelTeamRoles, error) {
@@ -99,23 +115,35 @@ func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, 
 	reg := m.runner.newRoleRegistry()
 	registerTeamCoderTools(reg, task.Step.AllowedFiles)
 	temperature := 0.1
-	evidence := &executionEvidence{ProgressMarker: coderProgressMarker(m.runner.workspace)}
+	evidence := &executionEvidence{ProgressMarker: coderProgressMarker(m.runner.workspace), RequiredAnyTools: []string{"edit_file", "replace_file"}}
 	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
-	report, err := m.runner.withModel(m.models.Coder).executeSubagentLoopWithFormat(ctx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderTeamPrompt, reg, codeReportSchema(), &temperature, evidence)
+	evidence.CompletionReady = func() bool { return len(evidence.missingRequiredTools()) == 0 }
+	coderRunner := m.runner.withModel(m.models.Coder)
+	if m.models.CoderThinking != nil {
+		coderRunner = coderRunner.withThinking(*m.models.CoderThinking)
+	}
+	report, err := coderRunner.executeSubagentLoopWithFormat(ctx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderTeamPrompt, reg, codeReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
-	if report.Status != "SUCCESS" {
-		return nil, fmt.Errorf("coder loop %s: %s", report.Termination, report.Summary)
+	writes := evidence.SuccessfulTools["edit_file"] + evidence.SuccessfulTools["replace_file"]
+	if writes == 0 {
+		return nil, fmt.Errorf("coder loop %s: coder returned without a successful edit_file or replace_file call", report.Termination)
 	}
-	if evidence.SuccessfulTools["edit_file"] == 0 {
-		return nil, fmt.Errorf("coder returned without a successful edit_file call")
+	codeReport, parseErr := parseCodeReport(report.Summary)
+	if codeReport != nil {
+		codeReport.EvidenceDerived = false
 	}
-	codeReport, err := parseCodeReport(report.Summary)
-	if err != nil {
-		return nil, err
+	if report.Status != "SUCCESS" || parseErr != nil {
+		if len(task.ReviewFixes) > 0 {
+			return nil, fmt.Errorf("coder fix loop %s did not produce a valid finding disposition report", report.Termination)
+		}
+		if report.Termination != agentloop.TerminationInvalidOutput && parseErr == nil {
+			return nil, fmt.Errorf("coder loop %s: %s", report.Termination, report.Summary)
+		}
+		codeReport = codeReportFromEvidence(task.Step, evidence)
 	}
-	if err := validateCodeReport(task.Step, codeReport); err != nil {
+	if err := validateCodeReport(task.Step, task.ReviewFixes, codeReport); err != nil {
 		return nil, err
 	}
 	if err := requireCoderEditEvidence(codeReport, evidence); err != nil {
@@ -138,24 +166,30 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 		return nil, fmt.Errorf("tester requires verification commands")
 	}
 	payload, _ := json.Marshal(map[string]any{"required_commands": commands})
-	reg := m.runner.newRoleRegistry()
-	registerTeamTesterTools(reg)
+	var reg *tools.Registry
+	if m.testerRegistry != nil {
+		reg = m.testerRegistry()
+	} else {
+		reg = m.runner.newRoleRegistry()
+		registerTeamTesterTools(reg)
+	}
 	temperature := 0.0
-	evidence := &executionEvidence{ProgressMarker: commandProgressMarker}
+	evidence := &executionEvidence{ProgressMarker: commandProgressMarker, RequiredCalls: requiredCommandCalls(commands)}
 	evidence.ProgressState = func() string { return evidenceAttemptProgressSet(evidence) }
+	evidence.CompletionReady = func() bool { return len(evidence.missingRequiredTools()) == 0 }
 	report, err := m.runner.withModel(m.models.Tester).executeSubagentLoopWithFormat(ctx, newSubagentID(role), string(TypeTester), string(payload), testerTeamPrompt, reg, testReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
-	if report.Status != "SUCCESS" {
-		return nil, fmt.Errorf("tester loop %s: %s", report.Termination, report.Summary)
-	}
 	if evidence.ToolCallsAttempted == 0 {
-		return nil, fmt.Errorf("tester returned without an execute_action call")
+		return nil, fmt.Errorf("tester loop %s: tester returned without an execute_action call", report.Termination)
 	}
-	testReport, err := parseTestReport(report.Summary)
-	if err != nil {
-		return nil, err
+	testReport, parseErr := parseTestReport(report.Summary)
+	if report.Status != "SUCCESS" || parseErr != nil {
+		if report.Termination != agentloop.TerminationInvalidOutput && report.Termination != agentloop.TerminationNoProgress && parseErr == nil {
+			return nil, fmt.Errorf("tester loop %s: %s", report.Termination, report.Summary)
+		}
+		testReport = testReportFromEvidence(commands, evidence)
 	}
 	if err := validateTestReport(testReport); err != nil {
 		return nil, err
@@ -169,16 +203,19 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 	return testReport, nil
 }
 
-func (m *ModelTeamRoles) Review(ctx context.Context, plan *DevelopmentPlan, codeReports []CodeReport) (*ReviewReport, error) {
-	payload, err := json.Marshal(map[string]any{"plan": plan, "code_reports": codeReports})
+func (m *ModelTeamRoles) Review(ctx context.Context, reviewContext ReviewContext) (*ReviewReport, error) {
+	payload, err := json.Marshal(reviewContext)
 	if err != nil {
 		return nil, err
 	}
 	reg := m.runner.newRoleRegistry()
 	registerTeamReviewerTools(reg)
 	temperature := 0.1
-	evidence := &executionEvidence{ProgressMarker: inspectedFileProgressMarker}
+	evidence := &executionEvidence{ProgressMarker: inspectedFileProgressMarker, RequiredTools: map[string]int{"view_file": 1}}
 	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
+	evidence.CompletionReady = func() bool {
+		return len(evidence.missingRequiredTools()) == 0 && requireReviewerFileEvidence(reviewContext.CodeReports, evidence, m.runner.workspace) == nil
+	}
 	report, err := m.runner.withModel(m.models.Reviewer).executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer"), string(TypeReviewer), string(payload), reviewerTeamPrompt, reg, reviewReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
@@ -186,14 +223,17 @@ func (m *ModelTeamRoles) Review(ctx context.Context, plan *DevelopmentPlan, code
 	if report.Status != "SUCCESS" {
 		return nil, fmt.Errorf("reviewer loop %s: %s", report.Termination, report.Summary)
 	}
-	if err := requireReviewerFileEvidence(codeReports, evidence); err != nil {
+	if err := requireReviewerFileEvidence(reviewContext.CodeReports, evidence, m.runner.workspace); err != nil {
 		return nil, err
 	}
 	reviewReport, err := parseReviewReport(report.Summary)
 	if err != nil {
 		return nil, err
 	}
-	if err := validateReviewReport(plan, reviewReport); err != nil {
+	if len(reviewContext.PreviousReviews) == 0 {
+		reviewReport.FindingResolutions = nil
+	}
+	if err := validateReviewReport(reviewContext.Plan, reviewContext.PreviousReviews, reviewReport); err != nil {
 		return nil, err
 	}
 	return reviewReport, nil
@@ -211,7 +251,7 @@ func coderProgressMarker(workspace string) func(string, map[string]interface{}, 
 
 func fileProgressMarker(workspace string) func(string, map[string]interface{}, string) string {
 	return func(toolName string, arguments map[string]interface{}, _ string) string {
-		if toolName != "edit_file" {
+		if toolName != "edit_file" && toolName != "replace_file" {
 			return ""
 		}
 		path, _ := arguments["file_path"].(string)
@@ -313,26 +353,137 @@ func progressSet(calls []successfulToolCall) string {
 	return strings.Join(markers, "|")
 }
 
-func requireReviewerFileEvidence(codeReports []CodeReport, evidence *executionEvidence) error {
+func requiredCommandCalls(commands []string) []requiredToolCall {
+	calls := make([]requiredToolCall, 0, len(commands))
+	for _, command := range commands {
+		fields := strings.Fields(command)
+		if len(fields) == 0 {
+			continue
+		}
+		arguments := map[string]interface{}{"action": fields[0]}
+		if len(fields) > 1 {
+			arguments["target"] = fields[1]
+		}
+		calls = append(calls, requiredToolCall{
+			Name:        "execute_action",
+			Fingerprint: agentloop.ActionFingerprint("execute_action", arguments),
+			Description: command,
+		})
+	}
+	return calls
+}
+
+func testReportFromEvidence(required []string, evidence *executionEvidence) *TestReport {
+	commands := make([]CommandResult, 0, len(required))
+	byCommand := make(map[string]successfulToolCall)
+	for _, call := range evidence.AttemptedCalls {
+		if call.Name != "execute_action" {
+			continue
+		}
+		action, _ := call.Arguments["action"].(string)
+		target, _ := call.Arguments["target"].(string)
+		byCommand[canonicalActionCommand(action, target)] = call
+	}
+	passed := true
+	for _, command := range required {
+		call, exists := byCommand[command]
+		if !exists {
+			commands = append(commands, CommandResult{Command: command, ExitCode: -1, Output: "command was not executed"})
+			passed = false
+			continue
+		}
+		commands = append(commands, CommandResult{Command: command, ExitCode: call.ExitCode, Output: call.Result})
+		if call.ExitCode != 0 {
+			passed = false
+		}
+	}
+	summary := "all required commands passed"
+	if !passed {
+		summary = "one or more required commands failed"
+	}
+	return &TestReport{Passed: passed, Commands: commands, Summary: summary}
+}
+
+func codeReportFromEvidence(step PlanStep, evidence *executionEvidence) *CodeReport {
+	var changed []string
+	for _, call := range evidence.SuccessfulCalls {
+		if call.Name != "edit_file" && call.Name != "replace_file" {
+			continue
+		}
+		path, _ := call.Arguments["file_path"].(string)
+		if normalized, err := normalizePlanPath(path); err == nil {
+			changed = append(changed, normalized)
+		}
+	}
+	return &CodeReport{
+		StepID:          step.ID,
+		ChangedFiles:    uniqueStrings(changed),
+		Completed:       []string{"runtime observed successful writes"},
+		Unresolved:      []string{"model did not provide a valid completion report; verification required"},
+		EvidenceDerived: true,
+	}
+}
+
+func requireReviewerFileEvidence(codeReports []CodeReport, evidence *executionEvidence, workspace string) error {
 	required := make(map[string]struct{})
 	for _, report := range codeReports {
 		for _, path := range report.ChangedFiles {
 			required[path] = struct{}{}
 		}
 	}
-	viewed := make(map[string]struct{})
+	type coverage struct {
+		whole  bool
+		ranges [][2]int
+	}
+	viewed := make(map[string]*coverage)
 	for _, call := range evidence.SuccessfulCalls {
 		if call.Name != "view_file" {
 			continue
 		}
 		path, _ := call.Arguments["file_path"].(string)
-		if normalized, err := normalizePlanPath(path); err == nil {
-			viewed[normalized] = struct{}{}
+		normalized, err := normalizePlanPath(path)
+		if err != nil {
+			continue
+		}
+		entry := viewed[normalized]
+		if entry == nil {
+			entry = &coverage{}
+			viewed[normalized] = entry
+		}
+		start := tools.ParseOptionalInt(call.Arguments, "start_line")
+		end := tools.ParseOptionalInt(call.Arguments, "end_line")
+		if start <= 0 && end <= 0 && !strings.Contains(call.Result, "[Truncated at 800 lines limit]") {
+			entry.whole = true
+		} else {
+			if start <= 0 {
+				start = 1
+			}
+			if strings.Contains(call.Result, "[Truncated at 800 lines limit]") && (end <= 0 || end > start+799) {
+				end = start + 799
+			}
+			entry.ranges = append(entry.ranges, [2]int{start, end})
 		}
 	}
 	for path := range required {
-		if _, exists := viewed[path]; !exists {
-			return fmt.Errorf("reviewer did not successfully inspect changed file %q", path)
+		entry := viewed[path]
+		if entry == nil {
+			return fmt.Errorf("reviewer did not inspect changed file %q", path)
+		}
+		if entry.whole {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(workspace, path))
+		if err != nil {
+			return fmt.Errorf("reviewer coverage could not read %q: %w", path, err)
+		}
+		lineCount := sourceLineCount(data)
+		if !rangesCoverLines(entry.ranges, lineCount) {
+			for line := 1; line <= lineCount; line++ {
+				if !rangesCoverLines(entry.ranges, line) {
+					return fmt.Errorf("reviewer did not fully inspect %q; line %d is uncovered", path, line)
+				}
+			}
+			return fmt.Errorf("reviewer did not fully inspect %q", path)
 		}
 	}
 	return nil
@@ -341,7 +492,7 @@ func requireReviewerFileEvidence(codeReports []CodeReport, evidence *executionEv
 func requireCoderEditEvidence(report *CodeReport, evidence *executionEvidence) error {
 	edited := make(map[string]struct{})
 	for _, call := range evidence.SuccessfulCalls {
-		if call.Name != "edit_file" {
+		if call.Name != "edit_file" && call.Name != "replace_file" {
 			continue
 		}
 		path, _ := call.Arguments["file_path"].(string)
@@ -406,6 +557,7 @@ func canonicalActionCommand(action string, target string) string {
 
 func registerTeamCoderTools(reg *tools.Registry, allowedFiles []string) {
 	allowed := make(map[string]struct{}, len(allowedFiles))
+	inspected := make(map[string][][2]int)
 	for _, path := range allowedFiles {
 		allowed[path] = struct{}{}
 	}
@@ -427,20 +579,156 @@ func registerTeamCoderTools(reg *tools.Registry, allowedFiles []string) {
 		if err := check(path); err != nil {
 			return "", err
 		}
-		return tools.ViewFile(path, tools.ParseOptionalInt(args, "start_line"), tools.ParseOptionalInt(args, "end_line"), reg.GetWorkspace(), reg.GetWorkspaceRoot())
+		start := tools.ParseOptionalInt(args, "start_line")
+		end := tools.ParseOptionalInt(args, "end_line")
+		result, err := tools.ViewFile(path, start, end, reg.GetWorkspace(), reg.GetWorkspaceRoot())
+		if err == nil {
+			normalized, normalizeErr := normalizePlanPath(path)
+			if normalizeErr != nil {
+				return "", normalizeErr
+			}
+			if start <= 0 {
+				start = 1
+			}
+			if end <= 0 {
+				if strings.Contains(result, "[Truncated at 800 lines limit]") {
+					end = start + 799
+				} else {
+					end = int(^uint(0) >> 1)
+				}
+			}
+			inspected[normalized] = append(inspected[normalized], [2]int{start, end})
+		}
+		return result, err
 	})
 
-	reg.Register(ollama.Tool{Type: "function", Function: ollama.FunctionDef{Name: "edit_file", Description: "Replace a target chunk in one allowed file", Parameters: ollama.FunctionParamSchema{Type: "object", Properties: map[string]ollama.FunctionParamProperty{
-		"file_path": {Type: "string", Description: "Allowed workspace-relative file"}, "target_content": {Type: "string", Description: "Exact existing content"}, "replacement_content": {Type: "string", Description: "Replacement content"},
+	reg.Register(ollama.Tool{Type: "function", Function: ollama.FunctionDef{Name: "edit_file", Description: "Replace one exact existing chunk in an allowed file", Parameters: ollama.FunctionParamSchema{Type: "object", Properties: map[string]ollama.FunctionParamProperty{
+		"file_path": {Type: "string", Description: "Allowed workspace-relative file"}, "target_content": {Type: "string", Description: "Exact non-empty existing content copied from view_file"}, "replacement_content": {Type: "string", Description: "Replacement content"},
 	}, Required: []string{"file_path", "target_content", "replacement_content"}}}}, func(args map[string]interface{}) (string, error) {
 		path, _ := args["file_path"].(string)
 		if err := check(path); err != nil {
 			return "", err
 		}
+		normalized, _ := normalizePlanPath(path)
+		if len(inspected[normalized]) == 0 {
+			return "", fmt.Errorf("coder must successfully view %q before editing it", path)
+		}
 		target, _ := args["target_content"].(string)
+		if target == "" {
+			return "", fmt.Errorf("edit_file requires non-empty target_content; use replace_file for a whole-file implementation")
+		}
 		replacement, _ := args["replacement_content"].(string)
+		if filepath.Ext(path) == ".go" {
+			if err := validateTeamGoEdit(path, target, replacement, reg.GetWorkspace(), reg.GetWorkspaceRoot()); err != nil {
+				return "", err
+			}
+		}
 		return tools.EditFile(path, target, replacement, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
+
+	reg.Register(ollama.Tool{Type: "function", Function: ollama.FunctionDef{Name: "replace_file", Description: "Replace the complete contents of one allowed file", Parameters: ollama.FunctionParamSchema{Type: "object", Properties: map[string]ollama.FunctionParamProperty{
+		"file_path": {Type: "string", Description: "Allowed workspace-relative file"}, "content": {Type: "string", Description: "Complete replacement file content"},
+	}, Required: []string{"file_path", "content"}}}}, func(args map[string]interface{}) (string, error) {
+		path, _ := args["file_path"].(string)
+		if err := check(path); err != nil {
+			return "", err
+		}
+		normalized, _ := normalizePlanPath(path)
+		safePath, safeErr := tools.IsPathSafeFrom(path, reg.GetWorkspace(), reg.GetWorkspaceRoot())
+		if safeErr != nil {
+			return "", safeErr
+		}
+		if info, statErr := os.Lstat(safePath); statErr == nil {
+			if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+				return "", fmt.Errorf("replace_file target must be a regular non-symlink file")
+			}
+			data, readErr := os.ReadFile(safePath)
+			if readErr != nil {
+				return "", readErr
+			}
+			lineCount := sourceLineCount(data)
+			if !rangesCoverLines(inspected[normalized], lineCount) {
+				return "", fmt.Errorf("coder must inspect all %d lines of %q before replacing it", lineCount, path)
+			}
+		} else if !os.IsNotExist(statErr) {
+			return "", statErr
+		}
+		content, _ := args["content"].(string)
+		if strings.TrimSpace(content) == "" {
+			return "", fmt.Errorf("replace_file requires non-empty complete content")
+		}
+		if strings.EqualFold(filepath.Ext(path), ".go") {
+			files := token.NewFileSet()
+			if _, err := parser.ParseFile(files, path, content, parser.AllErrors); err != nil {
+				return "", fmt.Errorf("replace_file rejected invalid Go source before write: %w", err)
+			}
+		}
+		return tools.EditFile(path, "", content, reg.GetWorkspace(), reg.GetWorkspaceRoot())
+	})
+}
+
+func sourceLineCount(data []byte) int {
+	if len(data) == 0 {
+		return 0
+	}
+	count := strings.Count(string(data), "\n")
+	if data[len(data)-1] != '\n' {
+		count++
+	}
+	return count
+}
+
+func rangesCoverLines(ranges [][2]int, lineCount int) bool {
+	if lineCount == 0 {
+		return true
+	}
+	covered := make([]bool, lineCount+1)
+	for _, interval := range ranges {
+		start, end := interval[0], interval[1]
+		if start < 1 {
+			start = 1
+		}
+		if end > lineCount {
+			end = lineCount
+		}
+		for line := start; line <= end; line++ {
+			covered[line] = true
+		}
+	}
+	for line := 1; line <= lineCount; line++ {
+		if !covered[line] {
+			return false
+		}
+	}
+	return true
+}
+
+func validateTeamGoEdit(path, target, replacement, workspace, root string) error {
+	safePath, err := tools.IsPathSafeFrom(path, workspace, root)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(safePath)
+	if err != nil {
+		return err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return fmt.Errorf("team Go edit target must be a regular non-symlink file")
+	}
+	data, err := os.ReadFile(safePath)
+	if err != nil {
+		return err
+	}
+	content := string(data)
+	if !strings.Contains(content, target) {
+		return fmt.Errorf("target content chunk not found in file %q", safePath)
+	}
+	candidate := strings.Replace(content, target, replacement, 1)
+	files := token.NewFileSet()
+	if _, err := parser.ParseFile(files, path, candidate, parser.AllErrors); err != nil {
+		return fmt.Errorf("edit_file would make Go source invalid; original preserved: %w", err)
+	}
+	return nil
 }
 
 func registerTeamTesterTools(reg *tools.Registry) {
@@ -457,7 +745,20 @@ func registerTeamTesterTools(reg *tools.Registry) {
 }
 
 func registerTeamReviewerTools(reg *tools.Registry) {
-	registerPlannerTools(reg)
+	reg.Register(ollama.Tool{Type: "function", Function: ollama.FunctionDef{
+		Name: "view_file", Description: "Read a bounded line range from a source file",
+		Parameters: ollama.FunctionParamSchema{Type: "object", Properties: map[string]ollama.FunctionParamProperty{
+			"file_path":  {Type: "string", Description: "Workspace-relative source file"},
+			"start_line": {Type: "integer", Description: "Optional 1-based start line"},
+			"end_line":   {Type: "integer", Description: "Optional 1-based end line"},
+		}, Required: []string{"file_path"}},
+	}}, func(args map[string]interface{}) (string, error) {
+		path, _ := args["file_path"].(string)
+		path = normalizePlannerToolPath(path, reg.GetWorkspace())
+		start := tools.ParseOptionalInt(args, "start_line")
+		end := tools.ParseOptionalInt(args, "end_line")
+		return tools.ViewFile(path, start, end, reg.GetWorkspace(), reg.GetWorkspaceRoot())
+	})
 }
 
 func formatCodeTask(task CodeTask) string {

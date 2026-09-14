@@ -2,6 +2,8 @@ package subagent
 
 import (
 	"errors"
+	"sort"
+	"strings"
 
 	agentloop "github.com/c86j224s/olli/loop"
 )
@@ -29,8 +31,16 @@ type successfulToolCall struct {
 	Name           string
 	Arguments      map[string]interface{}
 	ProgressMarker string
+	Result         string
 	Succeeded      bool
 	ExitCode       int
+}
+
+type requiredToolCall struct {
+	Name        string
+	Fingerprint string
+	Description string
+	Attempted   bool
 }
 
 type executionEvidence struct {
@@ -39,8 +49,12 @@ type executionEvidence struct {
 	SuccessfulTools    map[string]int
 	AttemptedCalls     []successfulToolCall
 	SuccessfulCalls    []successfulToolCall
+	RequiredTools      map[string]int
+	RequiredAnyTools   []string
+	RequiredCalls      []requiredToolCall
 	ProgressMarker     func(toolName string, arguments map[string]interface{}, result string) string
 	ProgressState      func() string
+	CompletionReady    func() bool
 }
 
 func (e *executionEvidence) recordAttempt(toolName string, arguments map[string]interface{}, result string, execErr error) successfulToolCall {
@@ -52,7 +66,21 @@ func (e *executionEvidence) recordAttempt(toolName string, arguments map[string]
 	call.Succeeded = execErr == nil
 	call.ExitCode = commandExitCode(execErr)
 	e.AttemptedCalls = append(e.AttemptedCalls, call)
+	fingerprint := agentloop.ActionFingerprint(toolName, copiedArguments(call.Arguments))
+	for index := range e.RequiredCalls {
+		if e.RequiredCalls[index].Name == toolName && e.RequiredCalls[index].Fingerprint == fingerprint {
+			e.RequiredCalls[index].Attempted = true
+		}
+	}
 	return call
+}
+
+func copiedArguments(arguments map[string]interface{}) map[string]interface{} {
+	copied := make(map[string]interface{}, len(arguments))
+	for key, value := range arguments {
+		copied[key] = value
+	}
+	return copied
 }
 
 func commandExitCode(execErr error) int {
@@ -78,6 +106,37 @@ func (e *executionEvidence) recordSuccess(call successfulToolCall) {
 	e.SuccessfulCalls = append(e.SuccessfulCalls, call)
 }
 
+func (e *executionEvidence) missingRequiredTools() []string {
+	if e == nil {
+		return nil
+	}
+	var missing []string
+	for name, count := range e.RequiredTools {
+		if e.SuccessfulTools[name] < count {
+			missing = append(missing, name)
+		}
+	}
+	if len(e.RequiredAnyTools) > 0 {
+		satisfied := false
+		for _, name := range e.RequiredAnyTools {
+			if e.SuccessfulTools[name] > 0 {
+				satisfied = true
+				break
+			}
+		}
+		if !satisfied {
+			missing = append(missing, "one of "+strings.Join(e.RequiredAnyTools, "/"))
+		}
+	}
+	for _, call := range e.RequiredCalls {
+		if !call.Attempted {
+			missing = append(missing, call.Description)
+		}
+	}
+	sort.Strings(missing)
+	return missing
+}
+
 func (e *executionEvidence) toolCall(toolName string, arguments map[string]interface{}, result string) successfulToolCall {
 	copied := make(map[string]interface{}, len(arguments))
 	for key, value := range arguments {
@@ -87,7 +146,7 @@ func (e *executionEvidence) toolCall(toolName string, arguments map[string]inter
 	if e.ProgressMarker != nil {
 		marker = e.ProgressMarker(toolName, copied, result)
 	}
-	return successfulToolCall{Name: toolName, Arguments: copied, ProgressMarker: marker}
+	return successfulToolCall{Name: toolName, Arguments: copied, ProgressMarker: marker, Result: result}
 }
 
 type ResultReport struct {

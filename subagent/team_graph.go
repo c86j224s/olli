@@ -51,7 +51,7 @@ func (r *DevelopmentTeamRunner) runGraph(ctx context.Context, objective string) 
 			teamNodePlanning:  1,
 			teamNodeCoding:    maxPlanSteps,
 			teamNodeTesting:   maxPlanSteps + defaultMaxTeamFixRounds,
-			teamNodeReviewing: defaultMaxTeamFixRounds + 1,
+			teamNodeReviewing: defaultMaxTeamFixRounds*2 + 1,
 			teamNodeFixing:    defaultMaxTeamFixRounds,
 			teamNodeVerifying: 1,
 		},
@@ -99,6 +99,7 @@ func developmentTeamGraphDefinition() agentgraph.Definition {
 			{From: teamNodeTesting, Route: "code", To: teamNodeCoding},
 			{From: teamNodeTesting, Route: "review", To: teamNodeReviewing},
 			{From: teamNodeReviewing, Route: "fix", To: teamNodeFixing},
+			{From: teamNodeReviewing, Route: "code", To: teamNodeCoding},
 			{From: teamNodeReviewing, Route: "verify", To: teamNodeVerifying},
 			{From: teamNodeFixing, Route: "test", To: teamNodeTesting},
 			{From: teamNodeVerifying, Route: "done", To: agentgraph.End},
@@ -148,10 +149,14 @@ func runTeamCodingNode(ctx context.Context, raw agentgraph.State) (agentgraph.No
 	if err != nil {
 		return agentgraph.NodeResult{}, state.nodeError("coding %s failed: %v", step.ID, err)
 	}
-	if err := validateCodeReport(step, codeReport); err != nil {
+	if err := validateCodeReport(step, nil, codeReport); err != nil {
 		return agentgraph.NodeResult{}, state.nodeError("coding %s produced an invalid report: %v", step.ID, err)
 	}
 	state.report.CodeReports = append(state.report.CodeReports, *codeReport)
+	if codeReport.EvidenceDerived && len(step.Verification) == 0 {
+		step.Verification = state.report.Plan.FinalVerification
+		state.currentStep = step
+	}
 	if len(step.Verification) > 0 {
 		return agentgraph.NodeResult{Route: "test"}, nil
 	}
@@ -177,7 +182,10 @@ func runTeamTestingNode(ctx context.Context, raw agentgraph.State) (agentgraph.N
 	}
 	state.report.TestReports = append(state.report.TestReports, *testReport)
 	if !testReport.Passed {
-		return agentgraph.NodeResult{}, state.nodeError("testing %s did not pass: %s", state.currentStep.ID, testReport.Summary)
+		if state.report.FixRounds >= state.runner.maxFixRounds {
+			return agentgraph.NodeResult{}, state.nodeError("testing %s still failed after %d fix rounds: %s", state.currentStep.ID, state.report.FixRounds, testReport.Summary)
+		}
+		return agentgraph.NodeResult{Route: "review"}, nil
 	}
 	if state.fixing {
 		return agentgraph.NodeResult{Route: "review"}, nil
@@ -189,21 +197,47 @@ func runTeamTestingNode(ctx context.Context, raw agentgraph.State) (agentgraph.N
 	return agentgraph.NodeResult{Route: "review"}, nil
 }
 
+func buildReviewContext(report *DevelopmentTeamReport) ReviewContext {
+	context := ReviewContext{Plan: report.Plan, CodeReports: append([]CodeReport(nil), report.CodeReports...), PreviousReviews: append([]ReviewReport(nil), report.Reviews...)}
+	if len(report.TestReports) > 0 {
+		latestIndex := len(report.TestReports) - 1
+		context.LatestTestReport = &report.TestReports[latestIndex]
+		for index, testReport := range report.TestReports[:latestIndex] {
+			commands := make([]string, 0, len(testReport.Commands))
+			for _, command := range testReport.Commands {
+				commands = append(commands, command.Command)
+			}
+			context.PreviousTestSummaries = append(context.PreviousTestSummaries, TestSummary{Round: index + 1, Passed: testReport.Passed, Commands: commands})
+		}
+	}
+	return context
+}
+
 func runTeamReviewingNode(ctx context.Context, raw agentgraph.State) (agentgraph.NodeResult, error) {
 	state, err := teamState(raw)
 	if err != nil {
 		return agentgraph.NodeResult{}, err
 	}
 	state.transition(TeamPhaseReviewing)
-	review, err := state.runner.roles.Review(ctx, state.report.Plan, state.report.CodeReports)
+	review, err := state.runner.roles.Review(ctx, buildReviewContext(state.report))
 	if err != nil {
 		return agentgraph.NodeResult{}, state.nodeError("review failed: %v", err)
 	}
-	if err := validateReviewReport(state.report.Plan, review); err != nil {
+	if err := validateReviewReport(state.report.Plan, state.report.Reviews, review); err != nil {
 		return agentgraph.NodeResult{}, state.nodeError("review produced an invalid report: %v", err)
 	}
 	state.report.Reviews = append(state.report.Reviews, *review)
 	if len(review.Findings) == 0 {
+		if state.latestTestFailed() && !state.fixing {
+			return agentgraph.NodeResult{}, state.nodeError("review found no actionable defect for failed testing of %s", state.currentStep.ID)
+		}
+		if state.fixing {
+			state.fixing = false
+			state.stepIndex++
+			if state.stepIndex < len(state.report.Plan.Steps) {
+				return agentgraph.NodeResult{Route: "code"}, nil
+			}
+		}
 		return agentgraph.NodeResult{Route: "verify"}, nil
 	}
 	if state.report.FixRounds >= state.runner.maxFixRounds {
@@ -233,7 +267,7 @@ func runTeamFixingNode(ctx context.Context, raw agentgraph.State) (agentgraph.No
 	if err != nil {
 		return agentgraph.NodeResult{}, state.nodeError("review fix round %d failed: %v", state.report.FixRounds, err)
 	}
-	if err := validateCodeReport(step, codeReport); err != nil {
+	if err := validateCodeReport(step, latestReview.Findings, codeReport); err != nil {
 		return agentgraph.NodeResult{}, state.nodeError("review fix round %d produced an invalid report: %v", state.report.FixRounds, err)
 	}
 	state.report.CodeReports = append(state.report.CodeReports, *codeReport)
@@ -261,6 +295,13 @@ func runTeamVerifyingNode(ctx context.Context, raw agentgraph.State) (agentgraph
 		return agentgraph.NodeResult{}, state.nodeError("final verification did not pass: %s", verification.Summary)
 	}
 	return agentgraph.NodeResult{Route: "done"}, nil
+}
+
+func (s *developmentTeamState) latestTestFailed() bool {
+	if len(s.report.TestReports) == 0 {
+		return false
+	}
+	return !s.report.TestReports[len(s.report.TestReports)-1].Passed
 }
 
 func (s *developmentTeamState) transition(phase TeamPhase) {

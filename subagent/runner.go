@@ -27,6 +27,7 @@ type SubagentRunner struct {
 	workspaceRoot string
 	sessionFile   string
 	callbacks     SubagentCallbacks
+	think         *bool
 }
 
 func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string, sessionFile string, callbacks SubagentCallbacks, workspaceRootArg ...string) *SubagentRunner {
@@ -76,6 +77,12 @@ func (r *SubagentRunner) withModel(model string) *SubagentRunner {
 	if strings.TrimSpace(model) != "" {
 		clone.model = strings.TrimSpace(model)
 	}
+	return &clone
+}
+
+func (r *SubagentRunner) withThinking(enabled bool) *SubagentRunner {
+	clone := *r
+	clone.think = &enabled
 	return &clone
 }
 
@@ -146,12 +153,16 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	if temperature != nil {
 		options.Temperature = *temperature
 	}
+	definitions := reg.GetDefinitions()
 	req := ollama.ChatRequest{
 		Model:    r.model,
 		Messages: messages,
-		Tools:    reg.GetDefinitions(),
-		Format:   format,
+		Tools:    definitions,
 		Options:  options,
+		Think:    r.think,
+	}
+	if len(definitions) == 0 {
+		req.Format = format
 	}
 
 	toolCallsRun := 0
@@ -283,14 +294,18 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 				toolCallsRun++
 				candidatePath, existedBefore, isArtifactCandidate := artifactCandidatePath(tc.Function.Arguments, r.workspace, r.workspaceRoot)
 				toolRes, tErr := reg.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
-				attempt := evidence.recordAttempt(tc.Function.Name, tc.Function.Arguments, toolRes, tErr)
+				resContent := toolRes
+				if tErr != nil {
+					if strings.TrimSpace(toolRes) == "" {
+						resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)
+					} else {
+						resContent = fmt.Sprintf("%s\nError executing tool %s: %v", toolRes, tc.Function.Name, tErr)
+					}
+				}
+				attempt := evidence.recordAttempt(tc.Function.Name, tc.Function.Arguments, resContent, tErr)
 				if tErr == nil {
 					successfulToolCalls++
 					evidence.recordSuccess(attempt)
-				}
-				resContent := toolRes
-				if tErr != nil {
-					resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)
 				}
 				if tErr == nil && isArtifactWriteTool(tc.Function.Name) && isArtifactCandidate {
 					req := artifactRequirementForSubagent(subType)
@@ -315,6 +330,29 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			if termination != agentloop.TerminationFailed {
 				break
 			}
+			if format != nil && evidence != nil && evidence.CompletionReady != nil && evidence.CompletionReady() {
+				finalAnswer, err = buildEvidenceCompletion(subType, task, evidence)
+				if err == nil {
+					logEvent("assistant", finalAnswer, nil)
+					termination = agentloop.TerminationSucceeded
+					break
+				}
+				if reason := guard.RecordModelCall(); reason != "" {
+					termination = reason
+					break
+				}
+				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB, format)
+				if err != nil {
+					return nil, err
+				}
+				logEvent("assistant", finalAnswer, nil)
+				if looksLikeJSONObject(finalAnswer) {
+					termination = agentloop.TerminationSucceeded
+				} else {
+					termination = agentloop.TerminationInvalidOutput
+				}
+				break
+			}
 			if guard.ConsumeRepetitionRepair() {
 				guidance := ollama.Message{Role: "system", Content: "The same tool action was repeated without progress. Do not repeat it. Choose a different valid action or return the final answer now."}
 				messages = append(messages, guidance)
@@ -336,15 +374,11 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 				break
 			}
 			if guard.Metrics().Iterations >= policy.MaxIterations && format != nil {
-				if reason := guard.RecordFormatRepair(); reason != "" {
-					termination = reason
-					break
-				}
 				if reason := guard.RecordModelCall(); reason != "" {
 					termination = reason
 					break
 				}
-				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
+				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB, format)
 				if err != nil {
 					return nil, err
 				}
@@ -360,6 +394,40 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		}
 
 		finalAnswer = resp.Content
+		if missing := evidence.missingRequiredTools(); len(missing) > 0 {
+			guidance := ollama.Message{Role: "system", Content: fmt.Sprintf("The task is not complete. Before returning the final JSON, successfully call these required tools: %s.", strings.Join(missing, ", "))}
+			messages = append(messages, *resp, guidance)
+			req.Messages = messages
+			logEvent("assistant", finalAnswer, nil)
+			logEvent("system", guidance.Content, nil)
+			finalAnswer = ""
+			if reason := guard.ObserveProgress(fmt.Sprintf("required-tools:%d", evidence.ToolCallsSucceeded)); reason != "" {
+				termination = reason
+				break
+			}
+			continue
+		}
+		if format != nil && successfulToolCalls > 0 && looksLikeJSONObject(finalAnswer) {
+			termination = agentloop.TerminationSucceeded
+			logEvent("assistant", finalAnswer, nil)
+			break
+		}
+		if format != nil && successfulToolCalls > 0 {
+			messages = append(messages, *resp)
+			if reason := guard.RecordModelCall(); reason != "" {
+				termination = reason
+				break
+			}
+			finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB, format)
+			if err != nil {
+				return nil, err
+			}
+			if !looksLikeJSONObject(finalAnswer) {
+				termination = agentloop.TerminationInvalidOutput
+				logEvent("assistant", finalAnswer, nil)
+				break
+			}
+		}
 		termination = agentloop.TerminationSucceeded
 		logEvent("assistant", finalAnswer, nil)
 		break
@@ -368,7 +436,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	if termination == agentloop.TerminationSucceeded && format != nil && successfulToolCalls > 0 && !looksLikeJSONObject(finalAnswer) {
 		if reason := guard.RecordFormatRepair(); reason == "" {
 			if reason := guard.RecordModelCall(); reason == "" {
-				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
+				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB, format)
 				if err != nil {
 					return nil, err
 				}
@@ -474,10 +542,84 @@ func looksLikeJSONObject(value string) bool {
 	return decoder.Decode(&trailing) == io.EOF
 }
 
-func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, req ollama.ChatRequest, messages []ollama.Message, streamCB ollama.StreamCallbacks) (string, error) {
-	completionReq := req
-	completionReq.Tools = nil
-	completionReq.Messages = append(append([]ollama.Message(nil), messages...), ollama.Message{Role: "system", Content: "Tool use is complete. Return only the final JSON object matching the required schema now. Do not call tools."})
+func buildEvidenceCompletion(subType string, task string, evidence *executionEvidence) (string, error) {
+	switch SubagentType(subType) {
+	case TypeCoder:
+		var codeTask CodeTask
+		if err := json.Unmarshal([]byte(task), &codeTask); err != nil {
+			return "", fmt.Errorf("decode coder task: %w", err)
+		}
+		report := codeReportFromEvidence(codeTask.Step, evidence)
+		report.Unresolved = nil
+		report.EvidenceDerived = false
+		report.Completed = append([]string(nil), codeTask.Step.Acceptance...)
+		if len(report.Completed) == 0 {
+			report.Completed = []string{codeTask.Step.Objective}
+		}
+		changed := make(map[string]struct{}, len(report.ChangedFiles))
+		for _, path := range report.ChangedFiles {
+			changed[path] = struct{}{}
+		}
+		for _, finding := range codeTask.ReviewFixes {
+			status := "not_addressed"
+			evidenceText := "no successful writer tool call changed the finding's file"
+			if _, exists := changed[finding.File]; exists {
+				status = "addressed"
+				evidenceText = "a successful writer tool call changed the finding's planned file; Tester and Reviewer must verify the required outcome"
+			}
+			report.AddressedFindings = append(report.AddressedFindings, AddressedFinding{
+				ID:       finding.ID,
+				Status:   status,
+				Evidence: evidenceText,
+			})
+		}
+		encoded, err := json.Marshal(report)
+		return string(encoded), err
+	case TypeTester:
+		var payload struct {
+			RequiredCommands []string `json:"required_commands"`
+		}
+		if err := json.Unmarshal([]byte(task), &payload); err != nil {
+			return "", fmt.Errorf("decode tester task: %w", err)
+		}
+		encoded, err := json.Marshal(testReportFromEvidence(payload.RequiredCommands, evidence))
+		return string(encoded), err
+	default:
+		return "", fmt.Errorf("%s requires model-authored structured completion", subType)
+	}
+}
+
+func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, req ollama.ChatRequest, messages []ollama.Message, streamCB ollama.StreamCallbacks, format any) (string, error) {
+	if format == nil {
+		return "", fmt.Errorf("structured completion format is required")
+	}
+	var evidence strings.Builder
+	for _, message := range messages {
+		switch message.Role {
+		case "user":
+			evidence.WriteString("TASK:\n")
+			evidence.WriteString(message.Content)
+			evidence.WriteString("\n")
+		case "tool":
+			evidence.WriteString("TOOL RESULT:\n")
+			evidence.WriteString(message.Content)
+			evidence.WriteString("\n")
+		}
+	}
+	systemPrompt := "Return only the final JSON object matching the supplied schema. Use the task and tool evidence below. Do not call tools and do not add prose."
+	if len(messages) > 0 && messages[0].Role == "system" && strings.TrimSpace(messages[0].Content) != "" {
+		systemPrompt += "\n\nROLE CONTRACT:\n" + messages[0].Content
+	}
+	completionReq := ollama.ChatRequest{
+		Model: req.Model,
+		Messages: []ollama.Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: evidence.String()},
+		},
+		Format:  format,
+		Options: req.Options,
+		Think:   req.Think,
+	}
 	completion, err := r.client.ChatStreamFullWithContext(ctx, completionReq, streamCB)
 	if err != nil {
 		return "", fmt.Errorf("subagent final structured response failed: %w", err)

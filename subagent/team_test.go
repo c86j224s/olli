@@ -41,7 +41,7 @@ func (s *scriptedTeamRoles) Test(_ context.Context, step PlanStep) (*TestReport,
 	s.testCalls++
 	return report, nil
 }
-func (s *scriptedTeamRoles) Review(context.Context, *DevelopmentPlan, []CodeReport) (*ReviewReport, error) {
+func (s *scriptedTeamRoles) Review(context.Context, ReviewContext) (*ReviewReport, error) {
 	if s.reviewCalls >= len(s.reviews) {
 		return nil, fmt.Errorf("unexpected review call")
 	}
@@ -112,15 +112,15 @@ func TestDevelopmentTeamRunnerFixesReviewedFindingOnce(t *testing.T) {
 		plan: teamTestPlan(),
 		codeReports: []*CodeReport{
 			{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"initial implementation"}},
-			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"nil case fixed"}},
+			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"nil case fixed"}, AddressedFindings: []AddressedFinding{{ID: "finding-1", Status: "addressed", Evidence: "added nil handling"}}},
 		},
 		testReports: []*TestReport{
 			{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}},
 			{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}},
 		},
 		reviews: []*ReviewReport{
-			{Findings: []Finding{{Severity: "high", File: "feature.go", Line: 10, Summary: "nil input panics", FailureScenario: "nil input reaches dereference"}}},
-			{Findings: nil, Summary: "clean"},
+			{Findings: []Finding{{ID: "finding-1", Severity: "high", File: "feature.go", Line: 10, Summary: "nil input panics", FailureScenario: "nil input reaches dereference", RequiredOutcome: "nil input is handled", Verification: []string{"go_test ./..."}}}},
+			{Findings: nil, FindingResolutions: []FindingResolution{{ID: "finding-1", Status: "resolved", Evidence: "nil input is now handled and tests pass"}}, Summary: "clean"},
 		},
 		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
 	}
@@ -167,18 +167,21 @@ func TestValidateTestReportTrustsExitCodesNotSelfAssessment(t *testing.T) {
 }
 
 func TestDevelopmentTeamRunnerStopsAfterFixLimit(t *testing.T) {
-	finding := Finding{Severity: "high", File: "feature.go", Line: 10, Summary: "still broken", FailureScenario: "input crashes"}
+	finding := Finding{ID: "finding-1", Severity: "high", File: "feature.go", Line: 10, Summary: "still broken", FailureScenario: "input crashes", RequiredOutcome: "input no longer crashes", Verification: []string{"go_test ./..."}}
 	roles := &scriptedTeamRoles{
 		plan: teamTestPlan(),
 		codeReports: []*CodeReport{
 			{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"initial"}},
-			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"fix one"}},
+			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"fix one"}, AddressedFindings: []AddressedFinding{{ID: "finding-1", Status: "addressed", Evidence: "attempted crash fix"}}},
 		},
 		testReports: []*TestReport{
 			{Passed: true, Commands: []CommandResult{passingCommand("go_test")}},
 			{Passed: true, Commands: []CommandResult{passingCommand("go_test")}},
 		},
-		reviews: []*ReviewReport{{Findings: []Finding{finding}}, {Findings: []Finding{finding}}},
+		reviews: []*ReviewReport{
+			{Findings: []Finding{finding}},
+			{Findings: []Finding{finding}, FindingResolutions: []FindingResolution{{ID: "finding-1", Status: "unresolved", Evidence: "input still crashes"}}},
+		},
 	}
 	runner, _ := NewDevelopmentTeamRunner(roles, 1)
 	report := runner.Run(context.Background(), "implement feature")

@@ -46,6 +46,7 @@ func DefaultPolicy(structured bool) Policy {
 		policy.MaxIterations = 8
 		policy.MaxModelCalls = 10
 		policy.MaxToolCalls = 16
+		policy.MaxNoProgressTurns = 3
 		policy.MaxFormatRepairs = 1
 	}
 	return policy

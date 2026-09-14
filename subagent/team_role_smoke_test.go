@@ -47,20 +47,15 @@ func TestTesterSmallModelSmoke(t *testing.T) {
 	reg.RegisterContext(ollama.Tool{Type: "function", Function: ollama.FunctionDef{Name: "execute_action", Description: "Execute one approved test action", Parameters: ollama.FunctionParamSchema{Type: "object", Properties: map[string]ollama.FunctionParamProperty{"action": {Type: "string", Enum: []string{"go_test"}}, "target": {Type: "string"}}, Required: []string{"action"}}}}, tools.ToolMetadata{}, func(context.Context, map[string]interface{}) (string, error) {
 		return "ok   example/demo", nil
 	})
-	evidence := &executionEvidence{}
-	temperature := 0.0
+	roles.testerRegistry = func() *tools.Registry { return reg }
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
-	report, err := roles.runner.withModel(os.Getenv("OLLI_SMOKE_MODEL")).executeSubagentLoopWithFormat(ctx, newSubagentID("smoke-tester"), string(TypeTester), `{"required_commands":["go_test ./..."]}`, testerTeamPrompt, reg, testReportSchema(), &temperature, evidence)
+	parsed, err := roles.runTester(ctx, "smoke-tester", []string{"go_test ./..."})
 	if err != nil {
 		t.Fatalf("tester smoke failed: %v", err)
 	}
-	parsed, err := parseTestReport(report.Summary)
-	if err != nil {
-		t.Fatalf("tester smoke returned invalid report: %v; summary=%q", err, report.Summary)
-	}
-	if !parsed.Passed || evidence.SuccessfulTools["execute_action"] == 0 {
-		t.Fatalf("tester smoke returned no passing execution evidence: %#v %#v", parsed, evidence)
+	if !parsed.Passed || len(parsed.Commands) != 1 || parsed.Commands[0].ExitCode != 0 {
+		t.Fatalf("tester smoke returned no passing execution evidence: %#v", parsed)
 	}
 }
 
@@ -76,11 +71,11 @@ func TestReviewerSmallModelSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	plan := &DevelopmentPlan{Goal: "safe division", Files: []string{"feature.go"}, Steps: []PlanStep{{ID: "step-1", Objective: "implement division", AllowedFiles: []string{"feature.go"}, Acceptance: []string{"zero divisor handled"}}}, FinalVerification: []string{"go_test ./..."}}
-	review, err := roles.Review(ctx, plan, []CodeReport{{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"division added"}}})
+	review, err := roles.Review(ctx, ReviewContext{Plan: plan, CodeReports: []CodeReport{{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"division added"}}}})
 	if err != nil {
 		t.Fatalf("reviewer smoke failed: %v", err)
 	}
-	if len(review.Findings) == 0 || review.Findings[0].File != "feature.go" {
+	if len(review.Findings) == 0 || review.Findings[0].File != "feature.go" || review.Findings[0].ID == "" || review.Findings[0].RequiredOutcome == "" {
 		t.Fatalf("reviewer missed divide-by-zero defect: %#v", review)
 	}
 }

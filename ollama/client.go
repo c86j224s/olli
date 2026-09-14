@@ -83,6 +83,7 @@ type ChatRequest struct {
 	Tools    []Tool      `json:"tools,omitempty"`
 	Format   interface{} `json:"format,omitempty"`
 	Options  *Options    `json:"options,omitempty"`
+	Think    *bool       `json:"think,omitempty"`
 	Stream   bool        `json:"stream"`
 }
 

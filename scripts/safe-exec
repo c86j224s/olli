@@ -256,6 +256,21 @@ if [ "${OLLI_SAFE_NETWORK_MODE:-}" = "ollama" ]; then
     NETWORK_RULES='(deny network*)
 (allow network-outbound (remote ip "localhost:11434"))'
     CHILD_ENV+=("OLLI_MODEL_SMOKE=1")
+    if [ "${OLLI_TETRIS_SMOKE:-}" = "1" ]; then
+        CHILD_ENV+=("OLLI_TETRIS_SMOKE=1")
+        if [ -n "${OLLI_TETRIS_CODER_MODEL:-}" ]; then
+            case "$OLLI_TETRIS_CODER_MODEL" in
+                *[!A-Za-z0-9._:/-]*)
+                    printf '[safe-exec] refusing unsafe Tetris coder model name: %s\n' "$OLLI_TETRIS_CODER_MODEL" >&2
+                    exit 1
+                    ;;
+            esac
+            CHILD_ENV+=("OLLI_TETRIS_CODER_MODEL=$OLLI_TETRIS_CODER_MODEL")
+        fi
+    elif [ -n "${OLLI_TETRIS_SMOKE:-}" ]; then
+        printf '[safe-exec] refusing invalid Tetris smoke flag\n' >&2
+        exit 1
+    fi
     if [ -n "${OLLI_SMOKE_MODEL:-}" ]; then
         case "$OLLI_SMOKE_MODEL" in
             *[!A-Za-z0-9._:/-]*)

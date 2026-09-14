@@ -49,6 +49,14 @@ func TestValidateDevelopmentPlanRejectsUnsafeOrAmbiguousPlans(t *testing.T) {
 		{name: "mutating verification", mutate: func(plan *DevelopmentPlan) { plan.FinalVerification = []string{"go_build ."} }, wantErr: "not allowed"},
 		{name: "blank acceptance", mutate: func(plan *DevelopmentPlan) { plan.Steps[0].Acceptance = []string{" "} }, wantErr: "non-empty acceptance"},
 		{name: "step file missing from plan", mutate: func(plan *DevelopmentPlan) { plan.Files = []string{"other.go"} }, wantErr: "missing from plan files"},
+		{name: "multiple single-file steps", mutate: func(plan *DevelopmentPlan) {
+			plan.Files = []string{"subagent/planner.go"}
+			plan.Steps[0].AllowedFiles = []string{"subagent/planner.go"}
+			second := plan.Steps[0]
+			second.ID = "step-2"
+			second.Objective = "Second edit to same file"
+			plan.Steps = append(plan.Steps, second)
+		}, wantErr: "single-file development plan"},
 		{name: "missing acceptance", mutate: func(plan *DevelopmentPlan) { plan.Steps[0].Acceptance = nil }, wantErr: "acceptance"},
 		{name: "too many steps", mutate: func(plan *DevelopmentPlan) {
 			step := plan.Steps[0]
@@ -70,6 +78,28 @@ func TestValidateDevelopmentPlanRejectsUnsafeOrAmbiguousPlans(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestValidateDevelopmentPlanRejectsMultipleStepsForOneFileEvenWhenOnlyOneUsesIt(t *testing.T) {
+	plan := validDevelopmentPlan()
+	plan.Files = []string{"subagent/planner.go"}
+	plan.Steps[0].AllowedFiles = []string{"subagent/planner.go"}
+	plan.Steps = append(plan.Steps, PlanStep{ID: "step-2", Objective: "second step", AllowedFiles: []string{"subagent/planner.go"}, Acceptance: []string{"done"}})
+	if err := validateDevelopmentPlan(plan); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("multiple single-file steps accepted: %v", err)
+	}
+}
+
+func TestValidateDevelopmentPlanAddsCoreVerification(t *testing.T) {
+	plan := validDevelopmentPlan()
+	plan.FinalVerification = []string{"git_status"}
+	if err := validateDevelopmentPlan(plan); err != nil {
+		t.Fatalf("safe planner verification defaulting failed: %v", err)
+	}
+	joined := strings.Join(plan.FinalVerification, "|")
+	if !strings.Contains(joined, "go_test ./...") || !strings.Contains(joined, "go_vet ./...") {
+		t.Fatalf("core final verification was not added: %v", plan.FinalVerification)
 	}
 }
 

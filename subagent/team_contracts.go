@@ -57,6 +57,19 @@ func codeReportSchema() map[string]any {
 			"changed_files": stringArraySchema(1),
 			"completed":     stringArraySchema(1),
 			"unresolved":    stringArraySchema(0),
+			"addressed_findings": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []string{"id", "status", "evidence"},
+					"properties": map[string]any{
+						"id":       map[string]any{"type": "string", "minLength": 1},
+						"status":   map[string]any{"type": "string", "enum": []string{"addressed", "not_addressed"}},
+						"evidence": map[string]any{"type": "string", "minLength": 1},
+					},
+				},
+			},
 		},
 	}
 }
@@ -90,7 +103,7 @@ func reviewReportSchema() map[string]any {
 	return map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
-		"required":             []string{"findings", "summary"},
+		"required":             []string{"findings", "finding_resolutions", "summary"},
 		"properties": map[string]any{
 			"summary": map[string]any{"type": "string"},
 			"findings": map[string]any{
@@ -98,13 +111,29 @@ func reviewReportSchema() map[string]any {
 				"items": map[string]any{
 					"type":                 "object",
 					"additionalProperties": false,
-					"required":             []string{"severity", "file", "line", "summary", "failure_scenario"},
+					"required":             []string{"id", "severity", "file", "line", "summary", "failure_scenario", "required_outcome", "verification"},
 					"properties": map[string]any{
+						"id":               map[string]any{"type": "string", "minLength": 1},
 						"severity":         map[string]any{"type": "string", "enum": []string{"low", "medium", "high", "critical"}},
 						"file":             map[string]any{"type": "string", "minLength": 1},
 						"line":             map[string]any{"type": "integer", "minimum": 1},
 						"summary":          map[string]any{"type": "string", "minLength": 1},
 						"failure_scenario": map[string]any{"type": "string", "minLength": 1},
+						"required_outcome": map[string]any{"type": "string", "minLength": 1},
+						"verification":     stringArraySchema(1),
+					},
+				},
+			},
+			"finding_resolutions": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"required":             []string{"id", "status", "evidence"},
+					"properties": map[string]any{
+						"id":       map[string]any{"type": "string", "minLength": 1},
+						"status":   map[string]any{"type": "string", "enum": []string{"resolved", "unresolved"}},
+						"evidence": map[string]any{"type": "string", "minLength": 1},
 					},
 				},
 			},

@@ -123,6 +123,7 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 		}
 		plan.FinalVerification[index] = canonical
 	}
+	plan.FinalVerification = ensureCoreFinalVerification(plan.FinalVerification)
 	plan.Assumptions = uniqueStrings(plan.Assumptions)
 	plan.Risks = uniqueStrings(plan.Risks)
 	if len(plan.Files) == 0 {
@@ -189,7 +190,29 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 		}
 		step.AllowedFiles = uniqueStrings(step.AllowedFiles)
 	}
+	if len(plan.Files) == 1 && len(plan.Steps) != 1 {
+		return fmt.Errorf("single-file development plan must use exactly one implementation step")
+	}
 	return nil
+}
+
+func ensureCoreFinalVerification(commands []string) []string {
+	hasTest, hasVet := false, false
+	for _, command := range commands {
+		if command == "go_test ./..." {
+			hasTest = true
+		}
+		if command == "go_vet ./..." {
+			hasVet = true
+		}
+	}
+	if !hasTest {
+		commands = append(commands, "go_test ./...")
+	}
+	if !hasVet {
+		commands = append(commands, "go_vet ./...")
+	}
+	return uniqueStrings(commands)
 }
 
 func normalizeVerificationCommand(command string) (string, error) {

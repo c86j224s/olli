@@ -31,10 +31,18 @@ type CodeTask struct {
 }
 
 type CodeReport struct {
-	StepID       string   `json:"step_id"`
-	ChangedFiles []string `json:"changed_files"`
-	Completed    []string `json:"completed"`
-	Unresolved   []string `json:"unresolved"`
+	StepID            string             `json:"step_id"`
+	ChangedFiles      []string           `json:"changed_files"`
+	Completed         []string           `json:"completed"`
+	Unresolved        []string           `json:"unresolved"`
+	AddressedFindings []AddressedFinding `json:"addressed_findings,omitempty"`
+	EvidenceDerived   bool               `json:"evidence_derived,omitempty"`
+}
+
+type AddressedFinding struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Evidence string `json:"evidence"`
 }
 
 type CommandResult struct {
@@ -50,16 +58,26 @@ type TestReport struct {
 }
 
 type Finding struct {
-	Severity        string `json:"severity"`
-	File            string `json:"file"`
-	Line            int    `json:"line"`
-	Summary         string `json:"summary"`
-	FailureScenario string `json:"failure_scenario"`
+	ID              string   `json:"id"`
+	Severity        string   `json:"severity"`
+	File            string   `json:"file"`
+	Line            int      `json:"line"`
+	Summary         string   `json:"summary"`
+	FailureScenario string   `json:"failure_scenario"`
+	RequiredOutcome string   `json:"required_outcome"`
+	Verification    []string `json:"verification"`
+}
+
+type FindingResolution struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Evidence string `json:"evidence"`
 }
 
 type ReviewReport struct {
-	Findings []Finding `json:"findings"`
-	Summary  string    `json:"summary"`
+	Findings           []Finding           `json:"findings"`
+	FindingResolutions []FindingResolution `json:"finding_resolutions"`
+	Summary            string              `json:"summary"`
 }
 
 type DevelopmentTeamReport struct {
@@ -76,11 +94,25 @@ type DevelopmentTeamReport struct {
 	Graph        *agentgraph.Result `json:"graph,omitempty"`
 }
 
+type ReviewContext struct {
+	Plan                  *DevelopmentPlan `json:"plan"`
+	CodeReports           []CodeReport     `json:"code_reports"`
+	LatestTestReport      *TestReport      `json:"latest_test_report,omitempty"`
+	PreviousTestSummaries []TestSummary    `json:"previous_test_summaries"`
+	PreviousReviews       []ReviewReport   `json:"previous_reviews"`
+}
+
+type TestSummary struct {
+	Round    int      `json:"round"`
+	Passed   bool     `json:"passed"`
+	Commands []string `json:"commands"`
+}
+
 type DevelopmentTeamRoles interface {
 	Plan(context.Context, string) (*DevelopmentPlan, error)
 	Code(context.Context, CodeTask) (*CodeReport, error)
 	Test(context.Context, PlanStep) (*TestReport, error)
-	Review(context.Context, *DevelopmentPlan, []CodeReport) (*ReviewReport, error)
+	Review(context.Context, ReviewContext) (*ReviewReport, error)
 	Verify(context.Context, []string) (*TestReport, error)
 }
 
@@ -106,7 +138,7 @@ func (r *DevelopmentTeamRunner) Run(ctx context.Context, objective string) Devel
 	return r.runGraph(ctx, objective)
 }
 
-func validateCodeReport(step PlanStep, report *CodeReport) error {
+func validateCodeReport(step PlanStep, reviewFixes []Finding, report *CodeReport) error {
 	if report == nil {
 		return fmt.Errorf("code report is required")
 	}
@@ -122,8 +154,14 @@ func validateCodeReport(step PlanStep, report *CodeReport) error {
 	if len(report.Completed) == 0 {
 		return fmt.Errorf("code report requires completed outcomes")
 	}
-	if len(report.Unresolved) != 0 {
+	if len(report.Unresolved) != 0 && !report.EvidenceDerived {
 		return fmt.Errorf("code report has unresolved work: %s", strings.Join(report.Unresolved, ", "))
+	}
+	if report.EvidenceDerived && len(report.Unresolved) == 0 {
+		return fmt.Errorf("evidence-derived code report must require verification")
+	}
+	if err := validateAddressedFindings(reviewFixes, report.AddressedFindings); err != nil {
+		return err
 	}
 	allowed := make(map[string]struct{}, len(step.AllowedFiles))
 	for _, path := range step.AllowedFiles {
@@ -137,6 +175,38 @@ func validateCodeReport(step PlanStep, report *CodeReport) error {
 		report.ChangedFiles[index] = normalized
 		if _, exists := allowed[normalized]; !exists {
 			return fmt.Errorf("changed file %q is outside allowed_files", normalized)
+		}
+	}
+	return nil
+}
+
+func validateAddressedFindings(required []Finding, addressed []AddressedFinding) error {
+	if len(required) == 0 {
+		return nil
+	}
+	byID := make(map[string]AddressedFinding, len(addressed))
+	for _, item := range addressed {
+		if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Evidence) == "" {
+			return fmt.Errorf("addressed finding requires id and evidence")
+		}
+		if item.Status != "addressed" && item.Status != "not_addressed" {
+			return fmt.Errorf("addressed finding %q has invalid status %q", item.ID, item.Status)
+		}
+		if _, duplicate := byID[item.ID]; duplicate {
+			return fmt.Errorf("addressed finding %q is duplicated", item.ID)
+		}
+		byID[item.ID] = item
+	}
+	requiredIDs := make(map[string]struct{}, len(required))
+	for _, finding := range required {
+		requiredIDs[finding.ID] = struct{}{}
+		if _, exists := byID[finding.ID]; !exists {
+			return fmt.Errorf("coder did not report disposition for finding %q", finding.ID)
+		}
+	}
+	for id := range byID {
+		if _, exists := requiredIDs[id]; !exists {
+			return fmt.Errorf("coder reported disposition for unknown finding %q", id)
 		}
 	}
 	return nil
@@ -174,16 +244,43 @@ func requireVerificationCommands(required []string, report *TestReport) error {
 	return nil
 }
 
-func validateReviewReport(plan *DevelopmentPlan, report *ReviewReport) error {
+func unresolvedFindingIDs(reviews []ReviewReport) map[string]struct{} {
+	active := make(map[string]struct{})
+	for _, review := range reviews {
+		for _, resolution := range review.FindingResolutions {
+			if resolution.Status == "resolved" {
+				delete(active, resolution.ID)
+			}
+		}
+		for _, finding := range review.Findings {
+			active[finding.ID] = struct{}{}
+		}
+	}
+	return active
+}
+
+func validateReviewReport(plan *DevelopmentPlan, previous []ReviewReport, report *ReviewReport) error {
 	if report == nil {
 		return fmt.Errorf("review report is required")
+	}
+	if plan == nil {
+		return fmt.Errorf("review plan is required")
 	}
 	allowed := make(map[string]struct{}, len(plan.Files))
 	for _, path := range plan.Files {
 		allowed[path] = struct{}{}
 	}
+	seenIDs := make(map[string]struct{}, len(report.Findings))
 	for index := range report.Findings {
 		finding := &report.Findings[index]
+		finding.ID = strings.TrimSpace(finding.ID)
+		if finding.ID == "" {
+			return fmt.Errorf("review finding id is required")
+		}
+		if _, exists := seenIDs[finding.ID]; exists {
+			return fmt.Errorf("review finding id %q is duplicated", finding.ID)
+		}
+		seenIDs[finding.ID] = struct{}{}
 		path, err := normalizePlanPath(finding.File)
 		if err != nil {
 			return fmt.Errorf("review finding file %q: %w", finding.File, err)
@@ -192,8 +289,44 @@ func validateReviewReport(plan *DevelopmentPlan, report *ReviewReport) error {
 		if _, exists := allowed[path]; !exists {
 			return fmt.Errorf("review finding file %q is outside the planned file set", path)
 		}
-		if finding.Line <= 0 || strings.TrimSpace(finding.Summary) == "" || strings.TrimSpace(finding.FailureScenario) == "" {
-			return fmt.Errorf("review finding for %q requires line, summary, and failure_scenario", path)
+		finding.Verification = uniqueStrings(finding.Verification)
+		if finding.Line <= 0 || strings.TrimSpace(finding.Summary) == "" || strings.TrimSpace(finding.FailureScenario) == "" || strings.TrimSpace(finding.RequiredOutcome) == "" || len(finding.Verification) == 0 {
+			return fmt.Errorf("review finding %q requires line, summary, failure_scenario, required_outcome, and verification", finding.ID)
+		}
+		for verificationIndex, command := range finding.Verification {
+			canonical, err := normalizeVerificationCommand(command)
+			if err != nil {
+				return fmt.Errorf("review finding %q verification %q: %w", finding.ID, command, err)
+			}
+			finding.Verification[verificationIndex] = canonical
+		}
+	}
+	previousIDs := unresolvedFindingIDs(previous)
+	resolutionByID := make(map[string]string, len(report.FindingResolutions))
+	for _, resolution := range report.FindingResolutions {
+		resolution.ID = strings.TrimSpace(resolution.ID)
+		if _, exists := previousIDs[resolution.ID]; !exists {
+			return fmt.Errorf("resolution references unknown finding %q", resolution.ID)
+		}
+		if resolution.Status != "resolved" && resolution.Status != "unresolved" {
+			return fmt.Errorf("resolution for finding %q has invalid status %q", resolution.ID, resolution.Status)
+		}
+		if _, duplicate := resolutionByID[resolution.ID]; duplicate || strings.TrimSpace(resolution.Evidence) == "" {
+			return fmt.Errorf("resolution for finding %q is duplicate or lacks evidence", resolution.ID)
+		}
+		resolutionByID[resolution.ID] = resolution.Status
+	}
+	for id := range previousIDs {
+		status, exists := resolutionByID[id]
+		if !exists {
+			return fmt.Errorf("previous finding %q has no resolution", id)
+		}
+		_, remains := seenIDs[id]
+		if status == "unresolved" && !remains {
+			return fmt.Errorf("unresolved finding %q is missing from findings", id)
+		}
+		if status == "resolved" && remains {
+			return fmt.Errorf("resolved finding %q must not remain in findings", id)
 		}
 	}
 	return nil
