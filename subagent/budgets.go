@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	defaultPlannerNumPredict  = 768
+	defaultPlannerNumPredict  = 1536
 	defaultCoderNumPredict    = 4096
 	defaultTesterNumPredict   = 512
 	defaultReviewerNumPredict = 1536
