@@ -36,12 +36,8 @@ func TestDevelopmentTeamBuildsTextTetrisSmoke(t *testing.T) {
 	if coderModel == "" {
 		coderModel = "qwen3.8:27b"
 	}
-	roles.models = TeamModels{
-		Planner:  coderModel,
-		Coder:    coderModel,
-		Tester:   coderModel,
-		Reviewer: coderModel,
-	}
+	roles.models.Coder = coderModel
+	roles.models.Reviewer = coderModel
 	thinking := false
 	roles.models.CoderThinking = &thinking
 	roles.runner.callbacks.OnToolCall = func(subType string, toolName string, _ map[string]interface{}, _ string, execErr error) {
