@@ -83,9 +83,10 @@ func TestBuildReviewContextPrioritizesLatestTestReport(t *testing.T) {
 			{Passed: false, Commands: []CommandResult{{Command: "go_test ./a", ExitCode: 1, Output: "old"}}},
 			{Passed: false, Commands: []CommandResult{{Command: "go_test ./b", ExitCode: 2, Output: "latest"}}},
 		},
-		Reviews: []ReviewReport{{Summary: "previous"}},
+		Reviews: []ReviewRound{{StepID: "step-1", Dimensions: []DimensionReview{{Dimension: ReviewDimensionLogic, Report: ReviewReport{Summary: "previous"}}}}},
 	}
-	context := buildReviewContext(report, []string{"feature.go"})
+	previous := []DimensionReview{{Dimension: ReviewDimensionLogic, Report: ReviewReport{Summary: "previous"}}}
+	context := buildReviewContext(report, "step-1", []string{"feature.go"}, previous)
 	if context.LatestTestReport == nil || context.LatestTestReport.Commands[0].Output != "latest" {
 		t.Fatalf("latest test report not prioritized: %#v", context)
 	}

@@ -62,12 +62,16 @@ RULES:
 - Return JSON only, matching ReviewReport.`
 
 type TeamModels struct {
-	Planner          string
-	Coder            string
-	Tester           string
-	Reviewer         string
-	CoderThinking    *bool
-	ReviewerThinking *bool
+	Planner             string
+	Coder               string
+	Tester              string
+	Reviewer            string
+	RequirementReviewer string
+	LogicReviewer       string
+	SafetyReviewer      string
+	TestReviewer        string
+	CoderThinking       *bool
+	ReviewerThinking    *bool
 }
 
 type ModelTeamRoles struct {
@@ -101,7 +105,41 @@ func (m TeamModels) withFallback(fallback string) TeamModels {
 	if strings.TrimSpace(m.Reviewer) == "" {
 		m.Reviewer = fallback
 	}
+	if strings.TrimSpace(m.RequirementReviewer) == "" {
+		m.RequirementReviewer = m.Reviewer
+	}
+	if strings.TrimSpace(m.LogicReviewer) == "" {
+		m.LogicReviewer = m.Reviewer
+	}
+	if strings.TrimSpace(m.SafetyReviewer) == "" {
+		m.SafetyReviewer = m.Reviewer
+	}
+	if strings.TrimSpace(m.TestReviewer) == "" {
+		m.TestReviewer = m.Reviewer
+	}
 	return m
+}
+
+func (m TeamModels) reviewerModel(dimension ReviewDimension) string {
+	switch dimension {
+	case ReviewDimensionRequirements:
+		return m.RequirementReviewer
+	case ReviewDimensionLogic:
+		return m.LogicReviewer
+	case ReviewDimensionSafety:
+		return m.SafetyReviewer
+	case ReviewDimensionTests:
+		return m.TestReviewer
+	default:
+		return m.Reviewer
+	}
+}
+
+func (m *ModelTeamRoles) TeamWorkspace() string {
+	if m == nil || m.runner == nil {
+		return ""
+	}
+	return m.runner.workspace
 }
 
 func (m *ModelTeamRoles) Plan(ctx context.Context, objective string) (*DevelopmentPlan, error) {
@@ -205,7 +243,11 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 	return testReport, nil
 }
 
-func (m *ModelTeamRoles) Review(ctx context.Context, reviewContext ReviewContext) (*ReviewReport, error) {
+func (m *ModelTeamRoles) Review(ctx context.Context, task ReviewTask) (*ReviewReport, error) {
+	if err := validateReviewDimension(task.Dimension); err != nil {
+		return nil, err
+	}
+	reviewContext := task.Context
 	payload, err := json.Marshal(reviewContext)
 	if err != nil {
 		return nil, err
@@ -222,11 +264,15 @@ func (m *ModelTeamRoles) Review(ctx context.Context, reviewContext ReviewContext
 	evidence.CompletionReady = func() bool {
 		return len(evidence.missingRequiredTools()) == 0 && requireReviewerFileEvidence(reviewFiles, evidence, m.runner.workspace) == nil
 	}
-	reviewerRunner := m.runner.withModel(m.models.Reviewer)
+	reviewerRunner := m.runner.withModel(m.models.reviewerModel(task.Dimension))
 	if m.models.ReviewerThinking != nil {
 		reviewerRunner = reviewerRunner.withThinking(*m.models.ReviewerThinking)
 	}
-	report, err := reviewerRunner.executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer"), string(TypeReviewer), string(payload), reviewerTeamPrompt, reg, reviewReportSchema(), &temperature, evidence)
+	prompt, err := reviewerPromptForDimension(task.Dimension)
+	if err != nil {
+		return nil, err
+	}
+	report, err := reviewerRunner.executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer-"+string(task.Dimension)), string(TypeReviewer), string(payload), prompt, reg, reviewReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -240,10 +286,11 @@ func (m *ModelTeamRoles) Review(ctx context.Context, reviewContext ReviewContext
 	if err != nil {
 		return nil, err
 	}
-	if len(reviewContext.PreviousReviews) == 0 {
+	previous := dimensionReviewHistory(reviewContext.PreviousReviews, task.Dimension)
+	if len(previous) == 0 {
 		reviewReport.FindingResolutions = nil
 	}
-	if err := validateReviewReport(reviewContext.Plan, reviewContext.PreviousReviews, reviewReport); err != nil {
+	if err := validateDimensionReviewReport(reviewContext.Plan, task.Dimension, previous, reviewReport); err != nil {
 		return nil, err
 	}
 	return reviewReport, nil

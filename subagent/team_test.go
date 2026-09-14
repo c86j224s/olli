@@ -9,15 +9,17 @@ import (
 )
 
 type scriptedTeamRoles struct {
-	plan          *DevelopmentPlan
-	codeReports   []*CodeReport
-	testReports   []*TestReport
-	reviews       []*ReviewReport
-	verification  *TestReport
-	codeCalls     int
-	testCalls     int
-	reviewCalls   int
-	transitionLog []string
+	plan           *DevelopmentPlan
+	codeReports    []*CodeReport
+	testReports    []*TestReport
+	reviews        []*ReviewReport
+	verification   *TestReport
+	codeCalls      int
+	testCalls      int
+	reviewCalls    int
+	transitionLog  []string
+	poolRound      int
+	lastReviewStep string
 }
 
 func (s *scriptedTeamRoles) Plan(context.Context, string) (*DevelopmentPlan, error) {
@@ -41,13 +43,23 @@ func (s *scriptedTeamRoles) Test(_ context.Context, step PlanStep) (*TestReport,
 	s.testCalls++
 	return report, nil
 }
-func (s *scriptedTeamRoles) Review(context.Context, ReviewContext) (*ReviewReport, error) {
-	if s.reviewCalls >= len(s.reviews) {
+func (s *scriptedTeamRoles) Review(_ context.Context, task ReviewTask) (*ReviewReport, error) {
+	if s.lastReviewStep != "" && task.Context.StepID != s.lastReviewStep {
+		s.poolRound++
+	}
+	s.lastReviewStep = task.Context.StepID
+	if s.poolRound >= len(s.reviews) {
 		return nil, fmt.Errorf("unexpected review call")
 	}
-	report := s.reviews[s.reviewCalls]
+	report := s.reviews[s.poolRound]
 	s.reviewCalls++
-	return report, nil
+	if len(task.Context.PreviousReviews) > 0 {
+		return report, nil
+	}
+	if task.Dimension == ReviewDimensionRequirements {
+		return report, nil
+	}
+	return &ReviewReport{Summary: "clean"}, nil
 }
 func (s *scriptedTeamRoles) Verify(context.Context, []string) (*TestReport, error) {
 	return s.verification, nil
@@ -98,7 +110,7 @@ func TestDevelopmentTeamRunnerSuccessOrder(t *testing.T) {
 	if report.Status != "SUCCESS" || report.Phase != TeamPhaseDone {
 		t.Fatalf("unexpected team result: %#v", report)
 	}
-	want := []TeamPhase{TeamPhasePlanning, TeamPhaseCoding, TeamPhaseTesting, TeamPhaseReviewing, TeamPhaseVerifying, TeamPhaseDone}
+	want := []TeamPhase{TeamPhasePlanning, TeamPhaseCoding, TeamPhasePreflight, TeamPhaseTesting, TeamPhaseReviewing, TeamPhaseVerifying, TeamPhaseDone}
 	if fmt.Sprint(report.Transitions) != fmt.Sprint(want) {
 		t.Fatalf("unexpected transitions: %v", report.Transitions)
 	}

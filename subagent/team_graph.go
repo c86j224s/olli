@@ -11,6 +11,7 @@ import (
 const (
 	teamNodePlanning  = "planning"
 	teamNodeCoding    = "coding"
+	teamNodePreflight = "preflight"
 	teamNodeTesting   = "testing"
 	teamNodeReviewing = "reviewing"
 	teamNodeFixing    = "fixing"
@@ -18,12 +19,13 @@ const (
 )
 
 type developmentTeamState struct {
-	runner      *DevelopmentTeamRunner
-	objective   string
-	report      *DevelopmentTeamReport
-	stepIndex   int
-	currentStep PlanStep
-	fixing      bool
+	runner        *DevelopmentTeamRunner
+	objective     string
+	report        *DevelopmentTeamReport
+	stepIndex     int
+	currentStep   PlanStep
+	fixing        bool
+	reviewHistory []DimensionReview
 }
 
 func (r *DevelopmentTeamRunner) runGraph(ctx context.Context, objective string) DevelopmentTeamReport {
@@ -50,6 +52,7 @@ func (r *DevelopmentTeamRunner) runGraph(ctx context.Context, objective string) 
 		NodeVisitLimit: map[string]int{
 			teamNodePlanning:  1,
 			teamNodeCoding:    maxPlanSteps,
+			teamNodePreflight: maxPlanSteps + defaultMaxTeamFixRounds,
 			teamNodeTesting:   maxPlanSteps + defaultMaxTeamFixRounds,
 			teamNodeReviewing: defaultMaxTeamFixRounds*2 + 1,
 			teamNodeFixing:    defaultMaxTeamFixRounds,
@@ -86,6 +89,7 @@ func developmentTeamGraphDefinition() agentgraph.Definition {
 		Nodes: map[string]agentgraph.Node{
 			teamNodePlanning:  agentgraph.NodeFunc(runTeamPlanningNode),
 			teamNodeCoding:    agentgraph.NodeFunc(runTeamCodingNode),
+			teamNodePreflight: agentgraph.NodeFunc(runTeamPreflightNode),
 			teamNodeTesting:   agentgraph.NodeFunc(runTeamTestingNode),
 			teamNodeReviewing: agentgraph.NodeFunc(runTeamReviewingNode),
 			teamNodeFixing:    agentgraph.NodeFunc(runTeamFixingNode),
@@ -93,15 +97,17 @@ func developmentTeamGraphDefinition() agentgraph.Definition {
 		},
 		Edges: []agentgraph.Edge{
 			{From: teamNodePlanning, Route: "planned", To: teamNodeCoding},
-			{From: teamNodeCoding, Route: "test", To: teamNodeTesting},
+			{From: teamNodeCoding, Route: "preflight", To: teamNodePreflight},
+			{From: teamNodePreflight, Route: "test", To: teamNodeTesting},
+			{From: teamNodePreflight, Route: "review", To: teamNodeReviewing},
+			{From: teamNodePreflight, Route: "fix", To: teamNodeFixing},
 			{From: teamNodeCoding, Route: "code", To: teamNodeCoding},
-			{From: teamNodeCoding, Route: "review", To: teamNodeReviewing},
 			{From: teamNodeTesting, Route: "code", To: teamNodeCoding},
 			{From: teamNodeTesting, Route: "review", To: teamNodeReviewing},
 			{From: teamNodeReviewing, Route: "fix", To: teamNodeFixing},
 			{From: teamNodeReviewing, Route: "code", To: teamNodeCoding},
 			{From: teamNodeReviewing, Route: "verify", To: teamNodeVerifying},
-			{From: teamNodeFixing, Route: "test", To: teamNodeTesting},
+			{From: teamNodeFixing, Route: "preflight", To: teamNodePreflight},
 			{From: teamNodeVerifying, Route: "done", To: agentgraph.End},
 		},
 	}
@@ -157,14 +163,72 @@ func runTeamCodingNode(ctx context.Context, raw agentgraph.State) (agentgraph.No
 		step.Verification = state.report.Plan.FinalVerification
 		state.currentStep = step
 	}
-	if len(step.Verification) > 0 {
+	return agentgraph.NodeResult{Route: "preflight"}, nil
+}
+
+func runTeamPreflightNode(ctx context.Context, raw agentgraph.State) (agentgraph.NodeResult, error) {
+	state, err := teamState(raw)
+	if err != nil {
+		return agentgraph.NodeResult{}, err
+	}
+	state.transition(TeamPhasePreflight)
+	preflight := &TestReport{Passed: true, Commands: []CommandResult{{Command: "static_preflight", ExitCode: 0, Output: "static preflight skipped because no workspace was configured"}}, Summary: "static preflight skipped"}
+	if strings.TrimSpace(state.runner.workspace) != "" {
+		preflight = runStaticPreflight(ctx, state.runner.workspace, state.currentStep.AllowedFiles)
+	}
+	state.report.Preflights = append(state.report.Preflights, *preflight)
+	if !preflight.Passed {
+		if state.report.FixRounds >= state.runner.maxFixRounds {
+			return agentgraph.NodeResult{}, state.nodeError("static preflight still failed after %d fix rounds: %s", state.report.FixRounds, preflight.Commands[0].Output)
+		}
+		failedStepID := state.currentStep.ID
+		finding := preflightFinding(state.currentStep, preflight)
+		state.report.FixRounds++
+		state.currentStep = PlanStep{
+			ID:           fmt.Sprintf("step-review-fix-%d", state.report.FixRounds),
+			Objective:    "Fix deterministic static preflight failure",
+			AllowedFiles: findingFiles([]Finding{finding}),
+			Acceptance:   findingSummaries([]Finding{finding}),
+			Verification: state.report.Plan.FinalVerification,
+		}
+		state.fixing = true
+		staticReview := DimensionReview{Dimension: ReviewDimensionTests, Report: ReviewReport{Findings: []Finding{finding}, Summary: "deterministic static preflight failure"}}
+		state.reviewHistory = []DimensionReview{staticReview}
+		state.report.Reviews = append(state.report.Reviews, ReviewRound{
+			StepID:     failedStepID,
+			Dimensions: []DimensionReview{staticReview},
+			Findings:   []Finding{finding},
+			Summary:    "deterministic static preflight failure",
+		})
+		return agentgraph.NodeResult{Route: "fix"}, nil
+	}
+	if len(state.currentStep.Verification) > 0 {
 		return agentgraph.NodeResult{Route: "test"}, nil
 	}
-	state.stepIndex++
-	if state.stepIndex < len(state.report.Plan.Steps) {
-		return agentgraph.NodeResult{Route: "code"}, nil
-	}
 	return agentgraph.NodeResult{Route: "review"}, nil
+}
+
+func preflightFinding(step PlanStep, report *TestReport) Finding {
+	file := "unknown"
+	if len(step.AllowedFiles) > 0 {
+		file = step.AllowedFiles[0]
+	}
+	output := "static preflight failed"
+	if report != nil && len(report.Commands) > 0 && strings.TrimSpace(report.Commands[0].Output) != "" {
+		output = report.Commands[0].Output
+	}
+	return Finding{
+		ID:              "TESTS-STATIC-PREFLIGHT",
+		Dimension:       ReviewDimensionTests,
+		Reviewers:       []string{string(ReviewDimensionTests)},
+		Severity:        "high",
+		File:            file,
+		Line:            1,
+		Summary:         "Static parse or type checking failed",
+		FailureScenario: output,
+		RequiredOutcome: "All changed Go files parse and type-check successfully before semantic review",
+		Verification:    []string{"go_test ./...", "go_vet ./..."},
+	}
 }
 
 func runTeamTestingNode(ctx context.Context, raw agentgraph.State) (agentgraph.NodeResult, error) {
@@ -197,11 +261,12 @@ func runTeamTestingNode(ctx context.Context, raw agentgraph.State) (agentgraph.N
 	return agentgraph.NodeResult{Route: "review"}, nil
 }
 
-func buildReviewContext(report *DevelopmentTeamReport, reviewScope []string) ReviewContext {
+func buildReviewContext(report *DevelopmentTeamReport, stepID string, reviewScope []string, previousReviews []DimensionReview) ReviewContext {
 	context := ReviewContext{
+		StepID:          stepID,
 		Plan:            report.Plan,
 		CodeReports:     append([]CodeReport(nil), report.CodeReports...),
-		PreviousReviews: append([]ReviewReport(nil), report.Reviews...),
+		PreviousReviews: append([]DimensionReview(nil), previousReviews...),
 		ReviewScope:     uniqueStrings(reviewScope),
 	}
 	if len(report.TestReports) > 0 {
@@ -224,36 +289,46 @@ func runTeamReviewingNode(ctx context.Context, raw agentgraph.State) (agentgraph
 		return agentgraph.NodeResult{}, err
 	}
 	state.transition(TeamPhaseReviewing)
-	review, err := state.runner.roles.Review(ctx, buildReviewContext(state.report, state.currentStep.AllowedFiles))
-	if err != nil {
-		return agentgraph.NodeResult{}, state.nodeError("review failed: %v", err)
+	reviewContext := buildReviewContext(state.report, state.currentStep.ID, state.currentStep.AllowedFiles, state.reviewHistory)
+	dimensions := reviewDimensionsForContext(reviewContext, state.fixing)
+	var reviews []DimensionReview
+	for _, dimension := range dimensions {
+		review, err := state.runner.roles.Review(ctx, ReviewTask{Dimension: dimension, Context: reviewContext})
+		if err != nil {
+			return agentgraph.NodeResult{}, state.nodeError("%s review failed: %v", dimension, err)
+		}
+		reviews = append(reviews, DimensionReview{Dimension: dimension, Report: *review})
 	}
-	if err := validateReviewReport(state.report.Plan, state.report.Reviews, review); err != nil {
-		return agentgraph.NodeResult{}, state.nodeError("review produced an invalid report: %v", err)
-	}
-	state.report.Reviews = append(state.report.Reviews, *review)
-	if len(review.Findings) == 0 {
-		if state.latestTestFailed() && !state.fixing {
+	bundle := mergeDimensionReviews(reviews)
+	round := ReviewRound{StepID: state.currentStep.ID, Dimensions: bundle.Dimensions, Findings: bundle.Findings, Summary: bundle.Summary}
+	state.report.Reviews = append(state.report.Reviews, round)
+	state.reviewHistory = append(state.reviewHistory, round.Dimensions...)
+	if len(round.Findings) == 0 {
+		if state.latestTestFailed() {
 			return agentgraph.NodeResult{}, state.nodeError("review found no actionable defect for failed testing of %s", state.currentStep.ID)
+		}
+		if state.fixing && len(activeFindingsByDimension(state.reviewHistory)) > 0 {
+			return agentgraph.NodeResult{}, state.nodeError("review omitted resolution for one or more active findings")
 		}
 		if state.fixing {
 			state.fixing = false
-			state.stepIndex++
-			if state.stepIndex < len(state.report.Plan.Steps) {
-				return agentgraph.NodeResult{Route: "code"}, nil
-			}
+			state.reviewHistory = nil
+		}
+		state.stepIndex++
+		if state.stepIndex < len(state.report.Plan.Steps) {
+			return agentgraph.NodeResult{Route: "code"}, nil
 		}
 		return agentgraph.NodeResult{Route: "verify"}, nil
 	}
 	if state.report.FixRounds >= state.runner.maxFixRounds {
-		return agentgraph.NodeResult{}, state.nodeError("review still has %d findings after %d fix rounds", len(review.Findings), state.report.FixRounds)
+		return agentgraph.NodeResult{}, state.nodeError("review still has %d findings after %d fix rounds", len(round.Findings), state.report.FixRounds)
 	}
 	state.report.FixRounds++
 	state.currentStep = PlanStep{
 		ID:           fmt.Sprintf("step-review-fix-%d", state.report.FixRounds),
 		Objective:    "Fix confirmed review findings",
-		AllowedFiles: findingFiles(review.Findings),
-		Acceptance:   findingSummaries(review.Findings),
+		AllowedFiles: findingFiles(round.Findings),
+		Acceptance:   findingSummaries(round.Findings),
 		Verification: state.report.Plan.FinalVerification,
 	}
 	state.fixing = true
@@ -276,7 +351,7 @@ func runTeamFixingNode(ctx context.Context, raw agentgraph.State) (agentgraph.No
 		return agentgraph.NodeResult{}, state.nodeError("review fix round %d produced an invalid report: %v", state.report.FixRounds, err)
 	}
 	state.report.CodeReports = append(state.report.CodeReports, *codeReport)
-	return agentgraph.NodeResult{Route: "test"}, nil
+	return agentgraph.NodeResult{Route: "preflight"}, nil
 }
 
 func runTeamVerifyingNode(ctx context.Context, raw agentgraph.State) (agentgraph.NodeResult, error) {

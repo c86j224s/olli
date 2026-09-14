@@ -13,6 +13,7 @@ type TeamPhase string
 const (
 	TeamPhasePlanning  TeamPhase = "planning"
 	TeamPhaseCoding    TeamPhase = "coding"
+	TeamPhasePreflight TeamPhase = "preflight"
 	TeamPhaseTesting   TeamPhase = "testing"
 	TeamPhaseReviewing TeamPhase = "reviewing"
 	TeamPhaseFixing    TeamPhase = "fixing"
@@ -58,14 +59,16 @@ type TestReport struct {
 }
 
 type Finding struct {
-	ID              string   `json:"id"`
-	Severity        string   `json:"severity"`
-	File            string   `json:"file"`
-	Line            int      `json:"line"`
-	Summary         string   `json:"summary"`
-	FailureScenario string   `json:"failure_scenario"`
-	RequiredOutcome string   `json:"required_outcome"`
-	Verification    []string `json:"verification"`
+	ID              string          `json:"id"`
+	Dimension       ReviewDimension `json:"-"`
+	Reviewers       []string        `json:"-"`
+	Severity        string          `json:"severity"`
+	File            string          `json:"file"`
+	Line            int             `json:"line"`
+	Summary         string          `json:"summary"`
+	FailureScenario string          `json:"failure_scenario"`
+	RequiredOutcome string          `json:"required_outcome"`
+	Verification    []string        `json:"verification"`
 }
 
 type FindingResolution struct {
@@ -86,7 +89,8 @@ type DevelopmentTeamReport struct {
 	Plan         *DevelopmentPlan   `json:"plan,omitempty"`
 	CodeReports  []CodeReport       `json:"code_reports,omitempty"`
 	TestReports  []TestReport       `json:"test_reports,omitempty"`
-	Reviews      []ReviewReport     `json:"reviews,omitempty"`
+	Preflights   []TestReport       `json:"preflights,omitempty"`
+	Reviews      []ReviewRound      `json:"reviews,omitempty"`
 	Verification *TestReport        `json:"verification,omitempty"`
 	Transitions  []TeamPhase        `json:"transitions"`
 	Failure      string             `json:"failure,omitempty"`
@@ -95,12 +99,13 @@ type DevelopmentTeamReport struct {
 }
 
 type ReviewContext struct {
-	Plan                  *DevelopmentPlan `json:"plan"`
-	CodeReports           []CodeReport     `json:"code_reports"`
-	LatestTestReport      *TestReport      `json:"latest_test_report,omitempty"`
-	PreviousTestSummaries []TestSummary    `json:"previous_test_summaries"`
-	PreviousReviews       []ReviewReport   `json:"previous_reviews"`
-	ReviewScope           []string         `json:"review_scope,omitempty"`
+	StepID                string            `json:"step_id"`
+	Plan                  *DevelopmentPlan  `json:"plan"`
+	CodeReports           []CodeReport      `json:"code_reports"`
+	LatestTestReport      *TestReport       `json:"latest_test_report,omitempty"`
+	PreviousTestSummaries []TestSummary     `json:"previous_test_summaries"`
+	PreviousReviews       []DimensionReview `json:"previous_reviews"`
+	ReviewScope           []string          `json:"review_scope,omitempty"`
 }
 
 type TestSummary struct {
@@ -109,17 +114,10 @@ type TestSummary struct {
 	Commands []string `json:"commands"`
 }
 
-type DevelopmentTeamRoles interface {
-	Plan(context.Context, string) (*DevelopmentPlan, error)
-	Code(context.Context, CodeTask) (*CodeReport, error)
-	Test(context.Context, PlanStep) (*TestReport, error)
-	Review(context.Context, ReviewContext) (*ReviewReport, error)
-	Verify(context.Context, []string) (*TestReport, error)
-}
-
 type DevelopmentTeamRunner struct {
 	roles        DevelopmentTeamRoles
 	maxFixRounds int
+	workspace    string
 }
 
 func NewDevelopmentTeamRunner(roles DevelopmentTeamRoles, maxFixRounds int) (*DevelopmentTeamRunner, error) {
@@ -132,7 +130,20 @@ func NewDevelopmentTeamRunner(roles DevelopmentTeamRoles, maxFixRounds int) (*De
 	if maxFixRounds > defaultMaxTeamFixRounds {
 		return nil, fmt.Errorf("development team fix rounds cannot exceed %d", defaultMaxTeamFixRounds)
 	}
-	return &DevelopmentTeamRunner{roles: roles, maxFixRounds: maxFixRounds}, nil
+	workspace := ""
+	if provider, ok := roles.(interface{ TeamWorkspace() string }); ok {
+		workspace = strings.TrimSpace(provider.TeamWorkspace())
+	}
+	return &DevelopmentTeamRunner{roles: roles, maxFixRounds: maxFixRounds, workspace: workspace}, nil
+}
+
+func (r *DevelopmentTeamRunner) WithWorkspace(workspace string) *DevelopmentTeamRunner {
+	if r == nil {
+		return nil
+	}
+	clone := *r
+	clone.workspace = strings.TrimSpace(workspace)
+	return &clone
 }
 
 func (r *DevelopmentTeamRunner) Run(ctx context.Context, objective string) DevelopmentTeamReport {
@@ -261,6 +272,10 @@ func unresolvedFindingIDs(reviews []ReviewReport) map[string]struct{} {
 }
 
 func validateReviewReport(plan *DevelopmentPlan, previous []ReviewReport, report *ReviewReport) error {
+	return validateDimensionReviewReport(plan, "", previous, report)
+}
+
+func validateDimensionReviewReport(plan *DevelopmentPlan, dimension ReviewDimension, previous []ReviewReport, report *ReviewReport) error {
 	if report == nil {
 		return fmt.Errorf("review report is required")
 	}
@@ -277,6 +292,14 @@ func validateReviewReport(plan *DevelopmentPlan, previous []ReviewReport, report
 		finding.ID = strings.TrimSpace(finding.ID)
 		if finding.ID == "" {
 			return fmt.Errorf("review finding id is required")
+		}
+		if dimension != "" {
+			prefix := strings.ToUpper(string(dimension)) + "-"
+			if !strings.HasPrefix(strings.ToUpper(finding.ID), prefix) {
+				finding.ID = prefix + finding.ID
+			}
+			finding.Dimension = dimension
+			finding.Reviewers = uniqueStrings(append(finding.Reviewers, string(dimension)))
 		}
 		if _, exists := seenIDs[finding.ID]; exists {
 			return fmt.Errorf("review finding id %q is duplicated", finding.ID)
@@ -304,8 +327,15 @@ func validateReviewReport(plan *DevelopmentPlan, previous []ReviewReport, report
 	}
 	previousIDs := unresolvedFindingIDs(previous)
 	resolutionByID := make(map[string]string, len(report.FindingResolutions))
-	for _, resolution := range report.FindingResolutions {
+	for index := range report.FindingResolutions {
+		resolution := &report.FindingResolutions[index]
 		resolution.ID = strings.TrimSpace(resolution.ID)
+		if _, exists := previousIDs[resolution.ID]; !exists && dimension != "" {
+			prefix := strings.ToUpper(string(dimension)) + "-"
+			if !strings.HasPrefix(strings.ToUpper(resolution.ID), prefix) {
+				resolution.ID = prefix + resolution.ID
+			}
+		}
 		if _, exists := previousIDs[resolution.ID]; !exists {
 			return fmt.Errorf("resolution references unknown finding %q", resolution.ID)
 		}

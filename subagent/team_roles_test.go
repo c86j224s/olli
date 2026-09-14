@@ -206,9 +206,12 @@ func TestRequireExecutedActionEvidenceRejectsFabricatedSuccess(t *testing.T) {
 }
 
 func TestTeamModelsUseRoleOverridesAndFallback(t *testing.T) {
-	models := (TeamModels{Planner: "planner", Tester: "tester"}).withFallback("fallback")
+	models := (TeamModels{Planner: "planner", Tester: "tester", LogicReviewer: "logic"}).withFallback("fallback")
 	if models.Planner != "planner" || models.Tester != "tester" || models.Coder != "fallback" || models.Reviewer != "fallback" {
 		t.Fatalf("unexpected model selection: %#v", models)
+	}
+	if models.reviewerModel(ReviewDimensionLogic) != "logic" || models.reviewerModel(ReviewDimensionSafety) != "fallback" {
+		t.Fatalf("unexpected specialist model selection: %#v", models)
 	}
 }
 

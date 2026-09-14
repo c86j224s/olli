@@ -54,6 +54,29 @@ func TestDevelopmentTeamVerifiesAfterCleanReviewWithoutStepVerification(t *testi
 	}
 }
 
+func TestDevelopmentTeamReviewsEveryPlanStep(t *testing.T) {
+	plan := teamTestPlan()
+	plan.Files = []string{"first.go", "second.go"}
+	plan.Steps = []PlanStep{
+		{ID: "step-1", Objective: "first", AllowedFiles: []string{"first.go"}, Acceptance: []string{"first complete"}},
+		{ID: "step-2", Objective: "second", AllowedFiles: []string{"second.go"}, Acceptance: []string{"second complete"}},
+	}
+	roles := &scriptedTeamRoles{
+		plan: plan,
+		codeReports: []*CodeReport{
+			{StepID: "step-1", ChangedFiles: []string{"first.go"}, Completed: []string{"first complete"}},
+			{StepID: "step-2", ChangedFiles: []string{"second.go"}, Completed: []string{"second complete"}},
+		},
+		reviews:      []*ReviewReport{{Summary: "first clean"}, {Summary: "second clean"}},
+		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
+	}
+	runner, _ := NewDevelopmentTeamRunner(roles, 2)
+	report := runner.Run(context.Background(), "implement both steps")
+	if report.Status != "SUCCESS" || len(report.Reviews) != 2 || roles.reviewCalls != 8 {
+		t.Fatalf("not every step received the full reviewer pool: %#v calls=%d", report, roles.reviewCalls)
+	}
+}
+
 func TestDevelopmentTeamRejectsCleanReviewForFailedTest(t *testing.T) {
 	roles := &scriptedTeamRoles{
 		plan:        teamTestPlan(),

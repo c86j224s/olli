@@ -71,7 +71,7 @@ func TestReviewerSmallModelSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
 	defer cancel()
 	plan := &DevelopmentPlan{Goal: "safe division", Files: []string{"feature.go"}, Steps: []PlanStep{{ID: "step-1", Objective: "implement division", AllowedFiles: []string{"feature.go"}, Acceptance: []string{"zero divisor handled"}}}, FinalVerification: []string{"go_test ./..."}}
-	review, err := roles.Review(ctx, ReviewContext{Plan: plan, CodeReports: []CodeReport{{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"division added"}}}})
+	review, err := roles.Review(ctx, ReviewTask{Dimension: ReviewDimensionLogic, Context: ReviewContext{Plan: plan, CodeReports: []CodeReport{{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"division added"}}}}})
 	if err != nil {
 		t.Fatalf("reviewer smoke failed: %v", err)
 	}

@@ -5,14 +5,19 @@ import (
 	"testing"
 )
 
-type scopeCapturingRoles struct {
-	*scriptedTeamRoles
-	scopes [][]string
+type scopeCapture struct {
+	dimension ReviewDimension
+	files     []string
 }
 
-func (s *scopeCapturingRoles) Review(_ context.Context, reviewContext ReviewContext) (*ReviewReport, error) {
-	s.scopes = append(s.scopes, append([]string(nil), reviewContext.ReviewScope...))
-	return s.scriptedTeamRoles.Review(context.Background(), reviewContext)
+type scopeCapturingRoles struct {
+	*scriptedTeamRoles
+	scopes []scopeCapture
+}
+
+func (s *scopeCapturingRoles) Review(_ context.Context, task ReviewTask) (*ReviewReport, error) {
+	s.scopes = append(s.scopes, scopeCapture{dimension: task.Dimension, files: append([]string(nil), task.Context.ReviewScope...)})
+	return s.scriptedTeamRoles.Review(context.Background(), task)
 }
 
 func TestDevelopmentTeamReviewsOnlyCurrentFixScope(t *testing.T) {
@@ -46,13 +51,26 @@ func TestDevelopmentTeamReviewsOnlyCurrentFixScope(t *testing.T) {
 	if report := runner.Run(context.Background(), "implement both steps"); report.Status != "SUCCESS" {
 		t.Fatalf("team failed: %#v", report)
 	}
-	want := [][]string{{"first.go"}, {"first.go"}, {"second.go"}}
-	if len(roles.scopes) != len(want) {
+	if len(roles.scopes) != 9 {
 		t.Fatalf("unexpected review scope count: %#v", roles.scopes)
 	}
-	for index := range want {
-		if len(roles.scopes[index]) != 1 || roles.scopes[index][0] != want[index][0] {
-			t.Fatalf("review %d received scope %#v, want %#v", index, roles.scopes[index], want[index])
+	for index, scope := range roles.scopes {
+		wantFile := "first.go"
+		if index >= 5 {
+			wantFile = "second.go"
+		}
+		if len(scope.files) != 1 || scope.files[0] != wantFile {
+			t.Fatalf("review %d received scope %#v, want %q", index, scope.files, wantFile)
+		}
+	}
+	wantDimensions := []ReviewDimension{
+		ReviewDimensionRequirements, ReviewDimensionLogic, ReviewDimensionSafety, ReviewDimensionTests,
+		ReviewDimensionRequirements,
+		ReviewDimensionRequirements, ReviewDimensionLogic, ReviewDimensionSafety, ReviewDimensionTests,
+	}
+	for index, want := range wantDimensions {
+		if roles.scopes[index].dimension != want {
+			t.Fatalf("review %d used dimension %q, want %q", index, roles.scopes[index].dimension, want)
 		}
 	}
 }

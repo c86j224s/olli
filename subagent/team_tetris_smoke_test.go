@@ -45,7 +45,7 @@ func TestDevelopmentTeamBuildsTextTetrisSmoke(t *testing.T) {
 		t.Logf("%s tool=%s err=%v", subType, toolName, execErr)
 	}
 	roles.testerRegistry = func() *tools.Registry { return newTetrisSmokeTesterRegistry(root) }
-	ctx, cancel := context.WithTimeout(context.Background(), 14*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 	team, err := NewDevelopmentTeamRunner(roles, 2)
 	if err != nil {
