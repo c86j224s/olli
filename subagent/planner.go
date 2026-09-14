@@ -21,7 +21,8 @@ RULES:
 - Use list_dir and view_file to inspect relevant files. Use grep_search only when file names are unknown.
 - After two relevant files have been read successfully, stop calling tools and return the final JSON.
 - Plan 1-4 small sequential steps that cumulatively satisfy the ENTIRE delegated objective.
-- If all requested changes belong in one file, use exactly one implementation step whose acceptance criteria cover the entire objective. Do not split repeated edits to the same file across steps.
+- A file may appear in multiple steps only when the objective is large enough to need bounded milestones. Each repeated-file step must leave the file parseable and independently reviewable, and the last step must complete the entire objective.
+- Prefer one step for a small single-file edit. For a substantial whole-file implementation, use 2-4 cohesive milestones rather than one oversized generation.
 - Never reduce the requested scope to setup, scaffolding, a foundation, or a partial implementation. Never defer a requested requirement outside the plan.
 - The final step's acceptance criteria must cover every user-visible requirement not already completed by earlier steps.
 - Every step must name exact workspace-relative allowed_files and observable acceptance criteria.
@@ -87,7 +88,7 @@ func (r *SubagentRunner) repairDevelopmentPlan(ctx context.Context, task string,
 			{Role: "system", Content: plannerSystemPrompt},
 			{Role: "user", Content: task},
 			{Role: "assistant", Content: invalid},
-			{Role: "system", Content: fmt.Sprintf("The plan was rejected by deterministic validation: %v. Correct only the JSON plan. Do not call tools. Return one JSON object. If all changes use one file, merge them into exactly one step covering the entire objective.", validationErr)},
+			{Role: "system", Content: fmt.Sprintf("The plan was rejected by deterministic validation: %v. Correct only the JSON plan. Do not call tools. Return one JSON object. Keep small single-file edits in one step, but split substantial whole-file implementations into cohesive parseable milestones.", validationErr)},
 		},
 		Format: developmentPlanSchema(),
 		Options: &ollama.Options{

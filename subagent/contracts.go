@@ -190,9 +190,6 @@ func validateDevelopmentPlan(plan *DevelopmentPlan) error {
 		}
 		step.AllowedFiles = uniqueStrings(step.AllowedFiles)
 	}
-	if len(plan.Files) == 1 && len(plan.Steps) != 1 {
-		return fmt.Errorf("single-file development plan must use exactly one implementation step")
-	}
 	return nil
 }
 
