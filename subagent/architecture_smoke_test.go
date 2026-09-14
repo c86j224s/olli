@@ -44,7 +44,7 @@ func TestArchitectCassandraTetrisSmoke(t *testing.T) {
 	}
 	thinking := false
 	roles.models.ReviewerThinking = &thinking
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 	planning, err := roles.ReviewArchitecture(ctx, architectureTetrisObjective)
 	if err != nil {
@@ -68,8 +68,8 @@ func TestArchitectCassandraTetrisSmoke(t *testing.T) {
 		t.Fatalf("Cassandra did not review architecture: %s", encoded)
 	}
 	latest := planning.Reviews[len(planning.Reviews)-1]
-	if len(planning.Reviews) > 2 {
-		t.Fatalf("planning repair exceeded one bounded retry: %s", encoded)
+	if len(planning.Reviews) > maxArchitectRepairs+1 {
+		t.Fatalf("planning repair exceeded bounded retry limit: %s", encoded)
 	}
 	if !latest.Passed {
 		t.Logf("Cassandra rejected the repaired architecture as designed: %s", latest.Summary)

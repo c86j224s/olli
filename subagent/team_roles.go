@@ -163,23 +163,26 @@ func (m *ModelTeamRoles) ReviewArchitecture(ctx context.Context, objective strin
 	if err != nil {
 		return nil, err
 	}
-	review, err := m.reviewArchitecture(roleCtx, objective, architecture)
-	if err != nil {
-		return nil, err
-	}
-	reviews := []ArchitectureReview{*review}
-	if !review.Passed {
-		architecture, err = m.createArchitecture(roleCtx, objective, review.Findings)
-		if err != nil {
-			return nil, fmt.Errorf("architect repair failed: %w", err)
-		}
-		review, err = m.reviewArchitecture(roleCtx, objective, architecture)
+	var reviews []ArchitectureReview
+	var unresolved []ArchitectureFinding
+	for round := 0; ; round++ {
+		review, err := m.reviewArchitecture(roleCtx, objective, architecture, unresolved)
 		if err != nil {
 			return nil, err
 		}
 		reviews = append(reviews, *review)
+		if review.Passed {
+			return &PlanningReport{Architecture: *architecture, Reviews: reviews}, nil
+		}
+		if round >= maxArchitectRepairs {
+			return &PlanningReport{Architecture: *architecture, Reviews: reviews}, nil
+		}
+		unresolved = append([]ArchitectureFinding(nil), review.Findings...)
+		architecture, err = m.createArchitecture(roleCtx, objective, unresolved)
+		if err != nil {
+			return nil, fmt.Errorf("architect repair %d failed: %w", round+1, err)
+		}
 	}
-	return &PlanningReport{Architecture: *architecture, Reviews: reviews}, nil
 }
 
 func (m *ModelTeamRoles) PlanArchitecture(ctx context.Context, objective string) (*DevelopmentPlan, *PlanningReport, error) {

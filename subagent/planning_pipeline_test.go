@@ -103,7 +103,7 @@ func TestValidateArchitecturePlanRejectsForwardDependency(t *testing.T) {
 func TestValidateArchitectureReviewNormalizesCassandraFinding(t *testing.T) {
 	plan := &ArchitecturePlan{Goal: "g", Packages: []ArchitectureWork{{ID: "package-1", Objective: "o", Files: []string{"main.go"}, Acceptance: []string{"a"}}}, FinalVerification: []string{"go_test ./..."}}
 	review := &ArchitectureReview{Passed: false, Findings: []ArchitectureFinding{{ID: "1", PackageID: "package-1", Summary: "too broad", FailureScenario: "coder context grows", RequiredOutcome: "split files"}}}
-	if err := validateArchitectureReview(plan, review); err != nil {
+	if err := validateArchitectureReview(plan, nil, review); err != nil {
 		t.Fatal(err)
 	}
 	if review.Findings[0].ID != "CASSANDRA-1" {
@@ -114,8 +114,68 @@ func TestValidateArchitectureReviewNormalizesCassandraFinding(t *testing.T) {
 func TestValidateArchitectureReviewRejectsContradictoryPass(t *testing.T) {
 	plan := &ArchitecturePlan{Packages: []ArchitectureWork{{ID: "package-1"}}}
 	review := &ArchitectureReview{Passed: true, Findings: []ArchitectureFinding{{ID: "CASSANDRA-1", PackageID: "package-1", Summary: "bad", FailureScenario: "fails", RequiredOutcome: "fix"}}}
-	if err := validateArchitectureReview(plan, review); err == nil {
+	if err := validateArchitectureReview(plan, nil, review); err == nil {
 		t.Fatal("passing Cassandra review with findings accepted")
+	}
+}
+
+func TestValidateArchitectureReviewNormalizesGlobalPackage(t *testing.T) {
+	plan := &ArchitecturePlan{Packages: []ArchitectureWork{{ID: "package-1"}}}
+	review := &ArchitectureReview{Findings: []ArchitectureFinding{{ID: "1", PackageID: "all", Summary: "global gap", FailureScenario: "objective fails", RequiredOutcome: "cover objective"}}}
+	if err := validateArchitectureReview(plan, nil, review); err != nil {
+		t.Fatal(err)
+	}
+	if review.Findings[0].PackageID != "" {
+		t.Fatalf("global package marker was not normalized: %#v", review)
+	}
+}
+
+func TestValidateArchitectureReviewCapsFindingsAtThree(t *testing.T) {
+	plan := &ArchitecturePlan{Packages: []ArchitectureWork{{ID: "package-1"}}}
+	review := &ArchitectureReview{Findings: []ArchitectureFinding{
+		{ID: "1"}, {ID: "2"}, {ID: "3"}, {ID: "4"},
+	}}
+	if err := validateArchitectureReview(plan, nil, review); err == nil {
+		t.Fatal("Cassandra returned more than three findings")
+	}
+}
+
+func TestValidateArchitectureReviewTracksPriorResolutions(t *testing.T) {
+	plan := &ArchitecturePlan{Packages: []ArchitectureWork{{ID: "package-1"}}}
+	previous := []ArchitectureFinding{{ID: "CASSANDRA-1"}}
+	resolved := &ArchitectureReview{Passed: true, FindingResolutions: []ArchitectureFindingResolution{{ID: "1", Status: "resolved", Evidence: "split package"}}}
+	if err := validateArchitectureReview(plan, previous, resolved); err != nil {
+		t.Fatalf("resolved Cassandra finding rejected: %v", err)
+	}
+	missing := &ArchitectureReview{Passed: true}
+	if err := validateArchitectureReview(plan, previous, missing); err == nil {
+		t.Fatal("missing Cassandra resolution accepted")
+	}
+	unresolved := &ArchitectureReview{
+		Findings:           []ArchitectureFinding{{ID: "1", PackageID: "package-1", Summary: "still broad", FailureScenario: "large context", RequiredOutcome: "split"}},
+		FindingResolutions: []ArchitectureFindingResolution{{ID: "1", Status: "unresolved", Evidence: "still one file"}},
+	}
+	if err := validateArchitectureReview(plan, previous, unresolved); err != nil {
+		t.Fatalf("valid unresolved Cassandra finding rejected: %v", err)
+	}
+}
+
+func TestArchitectureReviewMoreSuspectedPreventsPass(t *testing.T) {
+	plan := &ArchitecturePlan{Packages: []ArchitectureWork{{ID: "package-1"}}}
+	review := &ArchitectureReview{Passed: true, MoreSuspected: true}
+	if err := validateArchitectureReview(plan, nil, review); err == nil {
+		t.Fatal("Cassandra passed while more_suspected was true")
+	}
+}
+
+func TestCompactArchitectureFindingsDropsVerboseHistory(t *testing.T) {
+	findings := []ArchitectureFinding{{ID: "CASSANDRA-1", PackageID: "package-2", Summary: "verbose", FailureScenario: "very verbose", RequiredOutcome: "split rules"}}
+	compacted := compactArchitectureFindings(findings)
+	if len(compacted) != 1 || len(compacted[0]) != 3 || compacted[0]["required_outcome"] != "split rules" {
+		t.Fatalf("architecture finding was not compacted: %#v", compacted)
+	}
+	if _, exists := compacted[0]["failure_scenario"]; exists {
+		t.Fatalf("verbose history leaked into repair payload: %#v", compacted)
 	}
 }
 

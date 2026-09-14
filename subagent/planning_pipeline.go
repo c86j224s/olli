@@ -34,10 +34,14 @@ Try to prove the proposed architecture will fail before implementation starts.
 
 RULES:
 - Never modify files and never run commands.
-- Inspect the architecture and original objective, not implementation code.
+- Inspect the current architecture and original objective, not implementation code or old prose.
 - Report only concrete planning defects: missing requirement coverage, oversized work packages, incoherent file boundaries, dependency cycles, impossible intermediate compile states, conflicting ownership, or unverifiable acceptance criteria.
-- Do not rewrite the plan. Return findings with stable CASSANDRA-* ids and required outcomes.
-- passed is true only when no finding remains.
+- Return at most 3 findings: the highest-severity actionable defects in the current architecture.
+- Do not rewrite the plan. New findings use stable CASSANDRA-* ids and concise required outcomes.
+- For every previous unresolved finding id supplied in the task, return exactly one resolved or unresolved finding_resolution with concise current evidence.
+- An unresolved previous finding must remain in findings with the same id and counts toward the 3-finding cap. A resolved finding must not remain in findings.
+- more_suspected is true only when the 3-finding cap prevented checking or reporting lower-priority concerns; it requests another review after repair.
+- passed is true only when findings is empty, all prior findings are resolved, and more_suspected is false.
 - Return JSON only, matching ArchitectureReview.`
 
 const detailPlannerPrompt = `ROLE: Read-only detail planner for one approved architecture work package.
@@ -77,10 +81,18 @@ type ArchitectureFinding struct {
 	RequiredOutcome string `json:"required_outcome"`
 }
 
+type ArchitectureFindingResolution struct {
+	ID       string `json:"id"`
+	Status   string `json:"status"`
+	Evidence string `json:"evidence"`
+}
+
 type ArchitectureReview struct {
-	Passed   bool                  `json:"passed"`
-	Findings []ArchitectureFinding `json:"findings"`
-	Summary  string                `json:"summary"`
+	Passed             bool                            `json:"passed"`
+	Findings           []ArchitectureFinding           `json:"findings"`
+	FindingResolutions []ArchitectureFindingResolution `json:"finding_resolutions"`
+	MoreSuspected      bool                            `json:"more_suspected"`
+	Summary            string                          `json:"summary"`
 }
 
 type DetailPlan struct {
@@ -92,6 +104,8 @@ type PlanningReport struct {
 	Architecture ArchitecturePlan     `json:"architecture"`
 	Reviews      []ArchitectureReview `json:"reviews"`
 }
+
+const maxArchitectRepairs = 3
 
 type architecturePlanningRoles interface {
 	PlanArchitecture(context.Context, string) (*DevelopmentPlan, *PlanningReport, error)
@@ -123,16 +137,25 @@ func architecturePlanSchema() map[string]any {
 func architectureReviewSchema() map[string]any {
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
-		"required": []string{"passed", "findings", "summary"},
+		"required": []string{"passed", "findings", "finding_resolutions", "more_suspected", "summary"},
 		"properties": map[string]any{
-			"passed": map[string]any{"type": "boolean"}, "summary": map[string]any{"type": "string"},
-			"findings": map[string]any{"type": "array", "items": map[string]any{
+			"passed": map[string]any{"type": "boolean"}, "more_suspected": map[string]any{"type": "boolean"}, "summary": map[string]any{"type": "string"},
+			"findings": map[string]any{"type": "array", "maxItems": 3, "items": map[string]any{
 				"type": "object", "additionalProperties": false,
 				"required": []string{"id", "package_id", "summary", "failure_scenario", "required_outcome"},
 				"properties": map[string]any{
 					"id": map[string]any{"type": "string", "minLength": 1}, "package_id": map[string]any{"type": "string"},
 					"summary": map[string]any{"type": "string", "minLength": 1}, "failure_scenario": map[string]any{"type": "string", "minLength": 1},
 					"required_outcome": map[string]any{"type": "string", "minLength": 1},
+				},
+			}},
+			"finding_resolutions": map[string]any{"type": "array", "items": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"required": []string{"id", "status", "evidence"},
+				"properties": map[string]any{
+					"id":       map[string]any{"type": "string", "minLength": 1},
+					"status":   map[string]any{"type": "string", "enum": []string{"resolved", "unresolved"}},
+					"evidence": map[string]any{"type": "string", "minLength": 1},
 				},
 			}},
 		},
@@ -318,25 +341,35 @@ func validateArchitecturePlan(plan *ArchitecturePlan) error {
 	return nil
 }
 
-func validateArchitectureReview(plan *ArchitecturePlan, review *ArchitectureReview) error {
+func validateArchitectureReview(plan *ArchitecturePlan, previous []ArchitectureFinding, review *ArchitectureReview) error {
 	if review == nil {
 		return fmt.Errorf("architecture review is required")
+	}
+	if len(review.Findings) > 3 {
+		return fmt.Errorf("architecture review returned %d findings; maximum is 3", len(review.Findings))
+	}
+	if len(previous) == 0 {
+		review.FindingResolutions = nil
 	}
 	known := map[string]struct{}{"": struct{}{}}
 	for _, work := range plan.Packages {
 		known[work.ID] = struct{}{}
 	}
+	previousIDs := make(map[string]struct{}, len(previous))
+	for _, finding := range previous {
+		previousIDs[finding.ID] = struct{}{}
+	}
 	seen := make(map[string]struct{})
 	for index := range review.Findings {
 		finding := &review.Findings[index]
-		finding.ID = strings.TrimSpace(finding.ID)
-		if !strings.HasPrefix(strings.ToUpper(finding.ID), "CASSANDRA-") {
-			finding.ID = "CASSANDRA-" + finding.ID
-		}
+		finding.ID = normalizeCassandraID(finding.ID)
 		if _, duplicate := seen[finding.ID]; duplicate {
 			return fmt.Errorf("architecture finding %q is duplicated", finding.ID)
 		}
 		seen[finding.ID] = struct{}{}
+		if finding.PackageID == "all" || finding.PackageID == "global" || finding.PackageID == "architecture" {
+			finding.PackageID = ""
+		}
 		if _, exists := known[finding.PackageID]; !exists {
 			return fmt.Errorf("architecture finding %q references unknown package %q", finding.ID, finding.PackageID)
 		}
@@ -344,10 +377,47 @@ func validateArchitectureReview(plan *ArchitecturePlan, review *ArchitectureRevi
 			return fmt.Errorf("architecture finding %q is incomplete", finding.ID)
 		}
 	}
-	if review.Passed != (len(review.Findings) == 0) {
-		return fmt.Errorf("architecture review passed flag disagrees with findings")
+	resolutions := make(map[string]string, len(review.FindingResolutions))
+	for index := range review.FindingResolutions {
+		resolution := &review.FindingResolutions[index]
+		resolution.ID = normalizeCassandraID(resolution.ID)
+		if _, exists := previousIDs[resolution.ID]; !exists {
+			return fmt.Errorf("architecture resolution references unknown finding %q", resolution.ID)
+		}
+		if resolution.Status != "resolved" && resolution.Status != "unresolved" {
+			return fmt.Errorf("architecture resolution %q has invalid status %q", resolution.ID, resolution.Status)
+		}
+		if _, duplicate := resolutions[resolution.ID]; duplicate || strings.TrimSpace(resolution.Evidence) == "" {
+			return fmt.Errorf("architecture resolution %q is duplicate or lacks evidence", resolution.ID)
+		}
+		resolutions[resolution.ID] = resolution.Status
+	}
+	for id := range previousIDs {
+		status, exists := resolutions[id]
+		if !exists {
+			return fmt.Errorf("previous architecture finding %q has no resolution", id)
+		}
+		_, remains := seen[id]
+		if status == "unresolved" && !remains {
+			return fmt.Errorf("unresolved architecture finding %q is missing", id)
+		}
+		if status == "resolved" && remains {
+			return fmt.Errorf("resolved architecture finding %q remains", id)
+		}
+	}
+	shouldPass := len(review.Findings) == 0 && !review.MoreSuspected
+	if review.Passed != shouldPass {
+		return fmt.Errorf("architecture review passed flag disagrees with findings or more_suspected")
 	}
 	return nil
+}
+
+func normalizeCassandraID(id string) string {
+	id = strings.TrimSpace(id)
+	if !strings.HasPrefix(strings.ToUpper(id), "CASSANDRA-") {
+		id = "CASSANDRA-" + id
+	}
+	return id
 }
 
 func validateDetailPlan(work ArchitectureWork, detail *DetailPlan) error {
@@ -457,8 +527,12 @@ func (m *ModelTeamRoles) createArchitecture(ctx context.Context, objective strin
 	return &plan, nil
 }
 
-func (m *ModelTeamRoles) reviewArchitecture(ctx context.Context, objective string, plan *ArchitecturePlan) (*ArchitectureReview, error) {
-	payload, _ := json.Marshal(map[string]any{"objective": objective, "architecture": plan})
+func (m *ModelTeamRoles) reviewArchitecture(ctx context.Context, objective string, plan *ArchitecturePlan, previous []ArchitectureFinding) (*ArchitectureReview, error) {
+	payload, _ := json.Marshal(map[string]any{
+		"objective":           objective,
+		"architecture":        plan,
+		"previous_unresolved": compactArchitectureFindings(previous),
+	})
 	reg := tools.NewEmptyRegistry()
 	temperature := 0.1
 	callCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypeReviewer))
@@ -478,10 +552,20 @@ func (m *ModelTeamRoles) reviewArchitecture(ctx context.Context, objective strin
 	if err := decodePlanningJSON(report.Summary, &review); err != nil {
 		return nil, err
 	}
-	if err := validateArchitectureReview(plan, &review); err != nil {
+	if err := validateArchitectureReview(plan, previous, &review); err != nil {
 		return nil, err
 	}
 	return &review, nil
+}
+
+func compactArchitectureFindings(findings []ArchitectureFinding) []map[string]string {
+	compacted := make([]map[string]string, 0, len(findings))
+	for _, finding := range findings {
+		compacted = append(compacted, map[string]string{
+			"id": finding.ID, "package_id": finding.PackageID, "required_outcome": finding.RequiredOutcome,
+		})
+	}
+	return compacted
 }
 
 func (m *ModelTeamRoles) detailArchitectureWork(ctx context.Context, architecture *ArchitecturePlan, work ArchitectureWork) (*DetailPlan, error) {
