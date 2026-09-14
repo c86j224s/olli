@@ -28,8 +28,9 @@ RULES:
 - Modify only allowed_files. Never run tests or commands.
 - Inspect each target before editing.
 - You MUST make at least one successful edit_file or replace_file call before returning CodeReport. Reading a file is not completion.
-- For a full-file implementation, use replace_file with the complete file content. Do not use edit_file and do not invent an old target chunk.
-- For a small change, use edit_file and copy target_content exactly from view_file output.
+- For the first milestone on a whole-file starter, use replace_file with complete parseable content. Do not implement later milestones early.
+- For later milestones, use edit_file with exact target_content copied from view_file; use replace_file only if a targeted edit cannot safely preserve parseability.
+- Keep the write bounded to the supplied step acceptance criteria. Never regenerate an already implemented file wholesale just to add one milestone.
 - If edit_file says the target chunk is missing, do not retry guessed target text. Read the latest file and use replace_file with the complete corrected file.
 - Prefer small targeted edits unless the step explicitly requires completing a whole-file starter.
 - Return JSON only, matching CodeReport.
