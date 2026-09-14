@@ -133,6 +133,8 @@ func (a *Agent) registerSubagentTools() {
 			Coder:               teamConfig.CoderModel,
 			Tester:              teamConfig.TesterModel,
 			Reviewer:            teamConfig.ReviewerModel,
+			Cassandra:           teamConfig.CassandraModel,
+			DetailPlanner:       teamConfig.DetailPlannerModel,
 			RequirementReviewer: teamConfig.RequirementReviewerModel,
 			LogicReviewer:       teamConfig.LogicReviewerModel,
 			SafetyReviewer:      teamConfig.SafetyReviewerModel,

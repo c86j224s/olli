@@ -87,6 +87,7 @@ type DevelopmentTeamReport struct {
 	Status       string             `json:"status"`
 	Phase        TeamPhase          `json:"phase"`
 	Plan         *DevelopmentPlan   `json:"plan,omitempty"`
+	Planning     *PlanningReport    `json:"planning,omitempty"`
 	CodeReports  []CodeReport       `json:"code_reports,omitempty"`
 	TestReports  []TestReport       `json:"test_reports,omitempty"`
 	Preflights   []TestReport       `json:"preflights,omitempty"`

@@ -25,6 +25,8 @@ type DevelopmentTeamConfig struct {
 	CoderModel               string `json:"coder_model"`
 	TesterModel              string `json:"tester_model"`
 	ReviewerModel            string `json:"reviewer_model"`
+	CassandraModel           string `json:"cassandra_model,omitempty"`
+	DetailPlannerModel       string `json:"detail_planner_model,omitempty"`
 	RequirementReviewerModel string `json:"requirement_reviewer_model,omitempty"`
 	LogicReviewerModel       string `json:"logic_reviewer_model,omitempty"`
 	SafetyReviewerModel      string `json:"safety_reviewer_model,omitempty"`
@@ -43,6 +45,12 @@ func (c DevelopmentTeamConfig) WithFallback(fallback string) DevelopmentTeamConf
 	}
 	if c.ReviewerModel == "" {
 		c.ReviewerModel = fallback
+	}
+	if c.CassandraModel == "" {
+		c.CassandraModel = c.ReviewerModel
+	}
+	if c.DetailPlannerModel == "" {
+		c.DetailPlannerModel = c.PlannerModel
 	}
 	if c.RequirementReviewerModel == "" {
 		c.RequirementReviewerModel = c.ReviewerModel

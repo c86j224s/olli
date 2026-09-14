@@ -246,6 +246,9 @@ func TestDevelopmentTeamConfigUsesConfiguredModelsAndFallback(t *testing.T) {
 	if cfg.PlannerModel != "gemma4:e4b" || cfg.ReviewerModel != "gemma4:12b" || cfg.CoderModel != "fallback" || cfg.TesterModel != "fallback" {
 		t.Fatalf("unexpected development team config: %#v", cfg)
 	}
+	if cfg.CassandraModel != "gemma4:12b" || cfg.DetailPlannerModel != "gemma4:e4b" {
+		t.Fatalf("unexpected planning role fallback: %#v", cfg)
+	}
 	if cfg.RequirementReviewerModel != "gemma4:12b" || cfg.LogicReviewerModel != "qwen3.8:27b" || cfg.SafetyReviewerModel != "gemma4:12b" || cfg.TestReviewerModel != "gemma4:12b" {
 		t.Fatalf("unexpected specialist reviewer fallback: %#v", cfg)
 	}

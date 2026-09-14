@@ -67,6 +67,8 @@ type TeamModels struct {
 	Coder               string
 	Tester              string
 	Reviewer            string
+	Cassandra           string
+	DetailPlanner       string
 	RequirementReviewer string
 	LogicReviewer       string
 	SafetyReviewer      string
@@ -106,6 +108,12 @@ func (m TeamModels) withFallback(fallback string) TeamModels {
 	if strings.TrimSpace(m.Reviewer) == "" {
 		m.Reviewer = fallback
 	}
+	if strings.TrimSpace(m.Cassandra) == "" {
+		m.Cassandra = m.Reviewer
+	}
+	if strings.TrimSpace(m.DetailPlanner) == "" {
+		m.DetailPlanner = m.Planner
+	}
 	if strings.TrimSpace(m.RequirementReviewer) == "" {
 		m.RequirementReviewer = m.Reviewer
 	}
@@ -144,10 +152,49 @@ func (m *ModelTeamRoles) TeamWorkspace() string {
 }
 
 func (m *ModelTeamRoles) Plan(ctx context.Context, objective string) (*DevelopmentPlan, error) {
-	roleCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypePlanner))
-	defer cancel()
-	_, plan, err := m.runner.withModel(m.models.Planner).RunPlannerWithContext(roleCtx, objective)
+	plan, _, err := m.PlanArchitecture(ctx, objective)
 	return plan, err
+}
+
+func (m *ModelTeamRoles) PlanArchitecture(ctx context.Context, objective string) (*DevelopmentPlan, *PlanningReport, error) {
+	roleCtx, cancel := withRoleTimeout(ctx, roleBudget{Timeout: planningPipelineTimeout})
+	defer cancel()
+	architecture, err := m.createArchitecture(roleCtx, objective, nil)
+	if err != nil {
+		return nil, nil, err
+	}
+	review, err := m.reviewArchitecture(roleCtx, objective, architecture)
+	if err != nil {
+		return nil, nil, err
+	}
+	reviews := []ArchitectureReview{*review}
+	if !review.Passed {
+		architecture, err = m.createArchitecture(roleCtx, objective, review.Findings)
+		if err != nil {
+			return nil, nil, fmt.Errorf("architect repair failed: %w", err)
+		}
+		review, err = m.reviewArchitecture(roleCtx, objective, architecture)
+		if err != nil {
+			return nil, nil, err
+		}
+		reviews = append(reviews, *review)
+		if !review.Passed {
+			return nil, &PlanningReport{Architecture: *architecture, Reviews: reviews}, fmt.Errorf("cassandra rejected repaired architecture: %s", review.Summary)
+		}
+	}
+	details := make([]DetailPlan, 0, len(architecture.Packages))
+	for _, work := range architecture.Packages {
+		detail, err := m.detailArchitectureWork(roleCtx, architecture, work)
+		if err != nil {
+			return nil, nil, fmt.Errorf("detail planning %s failed: %w", work.ID, err)
+		}
+		details = append(details, *detail)
+	}
+	plan, err := flattenArchitecturePlan(*architecture, details)
+	if err != nil {
+		return nil, nil, err
+	}
+	return plan, &PlanningReport{Architecture: *architecture, Reviews: reviews}, nil
 }
 
 func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, error) {

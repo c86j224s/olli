@@ -210,6 +210,9 @@ func TestTeamModelsUseRoleOverridesAndFallback(t *testing.T) {
 	if models.Planner != "planner" || models.Tester != "tester" || models.Coder != "fallback" || models.Reviewer != "fallback" {
 		t.Fatalf("unexpected model selection: %#v", models)
 	}
+	if models.Cassandra != "fallback" || models.DetailPlanner != "planner" {
+		t.Fatalf("unexpected planning model selection: %#v", models)
+	}
 	if models.reviewerModel(ReviewDimensionLogic) != "logic" || models.reviewerModel(ReviewDimensionSafety) != "fallback" {
 		t.Fatalf("unexpected specialist model selection: %#v", models)
 	}

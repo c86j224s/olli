@@ -128,7 +128,14 @@ func runTeamPlanningNode(ctx context.Context, raw agentgraph.State) (agentgraph.
 		return agentgraph.NodeResult{}, err
 	}
 	state.transition(TeamPhasePlanning)
-	plan, err := state.runner.roles.Plan(ctx, state.objective)
+	var plan *DevelopmentPlan
+	if pipeline, ok := state.runner.roles.(architecturePlanningRoles); ok {
+		var planning *PlanningReport
+		plan, planning, err = pipeline.PlanArchitecture(ctx, state.objective)
+		state.report.Planning = planning
+	} else {
+		plan, err = state.runner.roles.Plan(ctx, state.objective)
+	}
 	if err != nil {
 		return agentgraph.NodeResult{}, state.nodeError("planning failed: %v", err)
 	}

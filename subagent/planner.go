@@ -20,7 +20,7 @@ RULES:
 - Never modify files and never run commands.
 - Use list_dir and view_file to inspect relevant files. Use grep_search only when file names are unknown.
 - After two relevant files have been read successfully, stop calling tools and return the final JSON.
-- Plan 1-12 minimal sequential milestones that cumulatively satisfy the ENTIRE delegated objective.
+- Plan 1-24 minimal sequential milestones that cumulatively satisfy the ENTIRE delegated objective.
 - Decompose substantial work as finely as practical: one cohesive state change or behavior per milestone, normally 3-8 milestones for a feature and up to 12 for a larger objective.
 - A file may appear in multiple milestones. Every milestone must leave all touched source parseable and must be independently inspectable by deterministic static preflight.
 - Prefer one milestone only for a genuinely small edit. Never combine unrelated data structures, algorithms, I/O, and UI behavior merely because they share one file.
@@ -89,7 +89,7 @@ func (r *SubagentRunner) repairDevelopmentPlan(ctx context.Context, task string,
 			{Role: "system", Content: plannerSystemPrompt},
 			{Role: "user", Content: task},
 			{Role: "assistant", Content: invalid},
-			{Role: "system", Content: fmt.Sprintf("The plan was rejected by deterministic validation: %v. Correct only the JSON plan. Do not call tools. Return one JSON object. Keep genuinely small edits in one milestone; decompose substantial work into minimal cohesive parseable milestones, up to 12.", validationErr)},
+			{Role: "system", Content: fmt.Sprintf("The plan was rejected by deterministic validation: %v. Correct only the JSON plan. Do not call tools. Return one JSON object. Keep genuinely small edits in one milestone; decompose substantial work into minimal cohesive parseable milestones, up to 24.", validationErr)},
 		},
 		Format: developmentPlanSchema(),
 		Options: &ollama.Options{

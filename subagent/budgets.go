@@ -22,6 +22,8 @@ type roleBudget struct {
 	Timeout    time.Duration
 }
 
+const planningPipelineTimeout = 6 * time.Minute
+
 func defaultRoleBudget(subType SubagentType) roleBudget {
 	switch subType {
 	case TypePlanner:

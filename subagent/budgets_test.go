@@ -26,6 +26,12 @@ func TestDefaultRoleBudgetsAreBoundedAndOrdered(t *testing.T) {
 	}
 }
 
+func TestPlanningPipelineBudgetExceedsOnePlannerCall(t *testing.T) {
+	if planningPipelineTimeout <= defaultPlannerTimeout {
+		t.Fatalf("planning pipeline cannot fit architect, Cassandra, and detail calls: %v", planningPipelineTimeout)
+	}
+}
+
 func TestWithRoleTimeoutPreservesEarlierParentDeadline(t *testing.T) {
 	parent, cancelParent := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancelParent()
