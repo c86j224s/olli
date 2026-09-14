@@ -40,6 +40,7 @@ func TestDevelopmentTeamBuildsTextTetrisSmoke(t *testing.T) {
 	roles.models.Reviewer = coderModel
 	thinking := false
 	roles.models.CoderThinking = &thinking
+	roles.models.ReviewerThinking = &thinking
 	roles.runner.callbacks.OnToolCall = func(subType string, toolName string, _ map[string]interface{}, _ string, execErr error) {
 		t.Logf("%s tool=%s err=%v", subType, toolName, execErr)
 	}

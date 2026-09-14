@@ -61,11 +61,12 @@ RULES:
 - Return JSON only, matching ReviewReport.`
 
 type TeamModels struct {
-	Planner       string
-	Coder         string
-	Tester        string
-	Reviewer      string
-	CoderThinking *bool
+	Planner          string
+	Coder            string
+	Tester           string
+	Reviewer         string
+	CoderThinking    *bool
+	ReviewerThinking *bool
 }
 
 type ModelTeamRoles struct {
@@ -216,7 +217,11 @@ func (m *ModelTeamRoles) Review(ctx context.Context, reviewContext ReviewContext
 	evidence.CompletionReady = func() bool {
 		return len(evidence.missingRequiredTools()) == 0 && requireReviewerFileEvidence(reviewContext.CodeReports, evidence, m.runner.workspace) == nil
 	}
-	report, err := m.runner.withModel(m.models.Reviewer).executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer"), string(TypeReviewer), string(payload), reviewerTeamPrompt, reg, reviewReportSchema(), &temperature, evidence)
+	reviewerRunner := m.runner.withModel(m.models.Reviewer)
+	if m.models.ReviewerThinking != nil {
+		reviewerRunner = reviewerRunner.withThinking(*m.models.ReviewerThinking)
+	}
+	report, err := reviewerRunner.executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer"), string(TypeReviewer), string(payload), reviewerTeamPrompt, reg, reviewReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
