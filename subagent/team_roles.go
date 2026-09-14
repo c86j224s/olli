@@ -55,6 +55,7 @@ RULES:
 - Report only correctness, security, required-behavior, or unsafe-test defects.
 - Use view_file immediately to read every changed file completely. Use one unbounded call for a small file or enough non-overlapping ranges to cover a large file, then stop calling tools.
 - Every new finding needs a stable id, real file and line, concise defect, concrete failure scenario, required outcome, and canonical verification commands.
+- Verification entries may only be: "go_test", "go_test ./path", "go_vet", "go_vet ./path", "git_status", "git_diff", or "git_diff file". Never return go run or prose instructions.
 - For every previous finding id, return resolved or unresolved with concrete current evidence. Unresolved previous findings must also remain in findings with the same id.
 - Describe outcomes, not exact replacement strings or patches. The Coder must reread the current file and choose the implementation.
 - Do not report style preferences or vague concerns.
