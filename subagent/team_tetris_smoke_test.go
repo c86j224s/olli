@@ -33,6 +33,12 @@ func TestDevelopmentTeamBuildsTextTetrisSmoke(t *testing.T) {
 	roles := smokeModelRoles(t, root)
 	roles.runner.cfg.NumCtx = 16384
 	roles.runner.heartbeatInterval = 10 * time.Second
+	roles.runner.budgetOverrides = map[SubagentType]roleBudget{
+		TypePlanner:  {NumPredict: defaultPlannerNumPredict, Timeout: defaultPlannerTimeout},
+		TypeCoder:    {NumPredict: 2048, Timeout: 5 * time.Minute},
+		TypeTester:   {NumPredict: defaultTesterNumPredict, Timeout: defaultTesterTimeout},
+		TypeReviewer: {NumPredict: defaultReviewerNumPredict, Timeout: defaultReviewerTimeout},
+	}
 	roles.runner.callbacks.OnModelHeartbeat = func(subType string, elapsed time.Duration) {
 		t.Logf("%s model response still generating after %s", subType, elapsed)
 	}
