@@ -18,16 +18,20 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+const modelHeartbeatInterval = 30 * time.Second
+
 type SubagentRunner struct {
-	client        *ollama.Client
-	model         string
-	cfg           *config.Config
-	outputDir     string
-	workspace     string
-	workspaceRoot string
-	sessionFile   string
-	callbacks     SubagentCallbacks
-	think         *bool
+	client            *ollama.Client
+	model             string
+	cfg               *config.Config
+	outputDir         string
+	workspace         string
+	workspaceRoot     string
+	sessionFile       string
+	callbacks         SubagentCallbacks
+	think             *bool
+	budgetOverrides   map[SubagentType]roleBudget
+	heartbeatInterval time.Duration
 }
 
 func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string, sessionFile string, callbacks SubagentCallbacks, workspaceRootArg ...string) *SubagentRunner {
@@ -84,6 +88,22 @@ func (r *SubagentRunner) withThinking(enabled bool) *SubagentRunner {
 	clone := *r
 	clone.think = &enabled
 	return &clone
+}
+
+func (r *SubagentRunner) roleBudget(subType SubagentType) roleBudget {
+	if r != nil && r.budgetOverrides != nil {
+		if budget, exists := r.budgetOverrides[subType]; exists {
+			return budget
+		}
+	}
+	return defaultRoleBudget(subType)
+}
+
+func (r *SubagentRunner) heartbeatEvery() time.Duration {
+	if r != nil && r.heartbeatInterval > 0 {
+		return r.heartbeatInterval
+	}
+	return modelHeartbeatInterval
 }
 
 func (r *SubagentRunner) newRoleRegistry() *tools.Registry {
@@ -150,6 +170,10 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	}
 
 	options := &ollama.Options{NumCtx: numCtx}
+	if budget := r.roleBudget(SubagentType(subType)); budget.NumPredict > 0 {
+		numPredict := budget.NumPredict
+		options.NumPredict = &numPredict
+	}
 	if temperature != nil {
 		options.Temperature = *temperature
 	}
@@ -231,7 +255,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			termination = reason
 			break
 		}
-		resp, err := r.client.ChatStreamFullWithContext(ctx, req, streamCB)
+		resp, err := r.callModelWithHeartbeat(ctx, subType, req, streamCB)
 		if err != nil {
 			if ctx.Err() != nil || err == context.Canceled || err == context.DeadlineExceeded {
 				reason, status, summary := contextTermination(ctx)
@@ -341,7 +365,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 					termination = reason
 					break
 				}
-				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB, format)
+				finalAnswer, err = r.requestStructuredCompletion(ctx, subType, req, messages, streamCB, format)
 				if err != nil {
 					return nil, err
 				}
@@ -378,7 +402,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 					termination = reason
 					break
 				}
-				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB, format)
+				finalAnswer, err = r.requestStructuredCompletion(ctx, subType, req, messages, streamCB, format)
 				if err != nil {
 					return nil, err
 				}
@@ -418,7 +442,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 				termination = reason
 				break
 			}
-			finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB, format)
+			finalAnswer, err = r.requestStructuredCompletion(ctx, subType, req, messages, streamCB, format)
 			if err != nil {
 				return nil, err
 			}
@@ -436,7 +460,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	if termination == agentloop.TerminationSucceeded && format != nil && successfulToolCalls > 0 && !looksLikeJSONObject(finalAnswer) {
 		if reason := guard.RecordFormatRepair(); reason == "" {
 			if reason := guard.RecordModelCall(); reason == "" {
-				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB, format)
+				finalAnswer, err = r.requestStructuredCompletion(ctx, subType, req, messages, streamCB, format)
 				if err != nil {
 					return nil, err
 				}
@@ -521,6 +545,34 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	return report, nil
 }
 
+func (r *SubagentRunner) callModelWithHeartbeat(ctx context.Context, subType string, req ollama.ChatRequest, streamCB ollama.StreamCallbacks) (*ollama.Message, error) {
+	if r.callbacks.OnModelHeartbeat == nil {
+		return r.client.ChatStreamFullWithContext(ctx, req, streamCB)
+	}
+	type result struct {
+		message *ollama.Message
+		err     error
+	}
+	started := time.Now()
+	resultChan := make(chan result, 1)
+	go func() {
+		message, err := r.client.ChatStreamFullWithContext(ctx, req, streamCB)
+		resultChan <- result{message: message, err: err}
+	}()
+	ticker := time.NewTicker(r.heartbeatEvery())
+	defer ticker.Stop()
+	for {
+		select {
+		case completed := <-resultChan:
+			return completed.message, completed.err
+		case <-ticker.C:
+			r.callbacks.OnModelHeartbeat(subType, time.Since(started).Round(time.Second))
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
 func contextTermination(ctx context.Context) (agentloop.TerminationReason, string, string) {
 	if ctx != nil && ctx.Err() == context.DeadlineExceeded {
 		return agentloop.TerminationTimedOut, "TIMED_OUT", "Subagent execution timed out."
@@ -589,7 +641,7 @@ func buildEvidenceCompletion(subType string, task string, evidence *executionEvi
 	}
 }
 
-func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, req ollama.ChatRequest, messages []ollama.Message, streamCB ollama.StreamCallbacks, format any) (string, error) {
+func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, subType string, req ollama.ChatRequest, messages []ollama.Message, streamCB ollama.StreamCallbacks, format any) (string, error) {
 	if format == nil {
 		return "", fmt.Errorf("structured completion format is required")
 	}
@@ -620,7 +672,7 @@ func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, req ol
 		Options: req.Options,
 		Think:   req.Think,
 	}
-	completion, err := r.client.ChatStreamFullWithContext(ctx, completionReq, streamCB)
+	completion, err := r.callModelWithHeartbeat(ctx, subType, completionReq, streamCB)
 	if err != nil {
 		return "", fmt.Errorf("subagent final structured response failed: %w", err)
 	}

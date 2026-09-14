@@ -7,6 +7,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/c86j224s/olli/config"
 	agentloop "github.com/c86j224s/olli/loop"
@@ -44,6 +45,7 @@ type Callbacks struct {
 	OnSubagentThinkingToken          func(token string)
 	OnSubagentThinkingEnd            func()
 	OnSubagentToolCall               func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
+	OnSubagentHeartbeat              func(subType string, elapsed time.Duration)
 }
 
 type Agent struct {

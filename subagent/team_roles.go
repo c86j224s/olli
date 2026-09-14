@@ -143,11 +143,15 @@ func (m *ModelTeamRoles) TeamWorkspace() string {
 }
 
 func (m *ModelTeamRoles) Plan(ctx context.Context, objective string) (*DevelopmentPlan, error) {
-	_, plan, err := m.runner.withModel(m.models.Planner).RunPlannerWithContext(ctx, objective)
+	roleCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypePlanner))
+	defer cancel()
+	_, plan, err := m.runner.withModel(m.models.Planner).RunPlannerWithContext(roleCtx, objective)
 	return plan, err
 }
 
 func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, error) {
+	roleCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypeCoder))
+	defer cancel()
 	payload, err := json.Marshal(task)
 	if err != nil {
 		return nil, err
@@ -162,7 +166,7 @@ func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, 
 	if m.models.CoderThinking != nil {
 		coderRunner = coderRunner.withThinking(*m.models.CoderThinking)
 	}
-	report, err := coderRunner.executeSubagentLoopWithFormat(ctx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderTeamPrompt, reg, codeReportSchema(), &temperature, evidence)
+	report, err := coderRunner.executeSubagentLoopWithFormat(roleCtx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderTeamPrompt, reg, codeReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -201,6 +205,8 @@ func (m *ModelTeamRoles) Verify(ctx context.Context, commands []string) (*TestRe
 }
 
 func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []string) (*TestReport, error) {
+	roleCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypeTester))
+	defer cancel()
 	commands = uniqueStrings(commands)
 	if len(commands) == 0 {
 		return nil, fmt.Errorf("tester requires verification commands")
@@ -217,7 +223,7 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 	evidence := &executionEvidence{ProgressMarker: commandProgressMarker, RequiredCalls: requiredCommandCalls(commands)}
 	evidence.ProgressState = func() string { return evidenceAttemptProgressSet(evidence) }
 	evidence.CompletionReady = func() bool { return len(evidence.missingRequiredTools()) == 0 }
-	report, err := m.runner.withModel(m.models.Tester).executeSubagentLoopWithFormat(ctx, newSubagentID(role), string(TypeTester), string(payload), testerTeamPrompt, reg, testReportSchema(), &temperature, evidence)
+	report, err := m.runner.withModel(m.models.Tester).executeSubagentLoopWithFormat(roleCtx, newSubagentID(role), string(TypeTester), string(payload), testerTeamPrompt, reg, testReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -244,6 +250,8 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 }
 
 func (m *ModelTeamRoles) Review(ctx context.Context, task ReviewTask) (*ReviewReport, error) {
+	roleCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypeReviewer))
+	defer cancel()
 	if err := validateReviewDimension(task.Dimension); err != nil {
 		return nil, err
 	}
@@ -272,7 +280,7 @@ func (m *ModelTeamRoles) Review(ctx context.Context, task ReviewTask) (*ReviewRe
 	if err != nil {
 		return nil, err
 	}
-	report, err := reviewerRunner.executeSubagentLoopWithFormat(ctx, newSubagentID("team-reviewer-"+string(task.Dimension)), string(TypeReviewer), string(payload), prompt, reg, reviewReportSchema(), &temperature, evidence)
+	report, err := reviewerRunner.executeSubagentLoopWithFormat(roleCtx, newSubagentID("team-reviewer-"+string(task.Dimension)), string(TypeReviewer), string(payload), prompt, reg, reviewReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}

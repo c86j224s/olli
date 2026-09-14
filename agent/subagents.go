@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/c86j224s/olli/config"
 	"github.com/c86j224s/olli/ollama"
@@ -33,6 +34,11 @@ func (a *Agent) buildSubagentCallbacks(ctx context.Context) subagent.SubagentCal
 		OnToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
 			if cb.OnSubagentToolCall != nil {
 				cb.OnSubagentToolCall(subType, toolName, args, result, execErr)
+			}
+		},
+		OnModelHeartbeat: func(subType string, elapsed time.Duration) {
+			if cb.OnSubagentHeartbeat != nil {
+				cb.OnSubagentHeartbeat(subType, elapsed)
 			}
 		},
 	}
@@ -123,8 +129,14 @@ func (a *Agent) registerSubagentTools() {
 			teamConfig = a.cfg.DevelopmentTeam.WithFallback(a.model)
 		}
 		roles, err := subagent.NewModelTeamRolesWithModels(runner, subagent.TeamModels{
-			Planner: teamConfig.PlannerModel, Reviewer: teamConfig.ReviewerModel,
-			Coder: teamConfig.CoderModel, Tester: teamConfig.TesterModel,
+			Planner:             teamConfig.PlannerModel,
+			Coder:               teamConfig.CoderModel,
+			Tester:              teamConfig.TesterModel,
+			Reviewer:            teamConfig.ReviewerModel,
+			RequirementReviewer: teamConfig.RequirementReviewerModel,
+			LogicReviewer:       teamConfig.LogicReviewerModel,
+			SafetyReviewer:      teamConfig.SafetyReviewerModel,
+			TestReviewer:        teamConfig.TestReviewerModel,
 		})
 		if err != nil {
 			return "", err

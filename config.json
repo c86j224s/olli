@@ -5,7 +5,11 @@
     "planner_model": "",
     "coder_model": "",
     "tester_model": "",
-    "reviewer_model": ""
+    "reviewer_model": "",
+    "requirement_reviewer_model": "",
+    "logic_reviewer_model": "",
+    "safety_reviewer_model": "",
+    "test_reviewer_model": ""
   },
   "whitelist_tools": [
     "calculator",

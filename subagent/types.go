@@ -4,6 +4,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"time"
 
 	agentloop "github.com/c86j224s/olli/loop"
 )
@@ -21,10 +22,11 @@ const (
 )
 
 type SubagentCallbacks struct {
-	OnThinkingStart func(subType string)
-	OnThinkingToken func(token string)
-	OnThinkingEnd   func()
-	OnToolCall      func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
+	OnThinkingStart  func(subType string)
+	OnThinkingToken  func(token string)
+	OnThinkingEnd    func()
+	OnToolCall       func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
+	OnModelHeartbeat func(subType string, elapsed time.Duration)
 }
 
 type successfulToolCall struct {

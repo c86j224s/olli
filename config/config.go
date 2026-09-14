@@ -21,10 +21,14 @@ type Config struct {
 }
 
 type DevelopmentTeamConfig struct {
-	PlannerModel  string `json:"planner_model"`
-	CoderModel    string `json:"coder_model"`
-	TesterModel   string `json:"tester_model"`
-	ReviewerModel string `json:"reviewer_model"`
+	PlannerModel             string `json:"planner_model"`
+	CoderModel               string `json:"coder_model"`
+	TesterModel              string `json:"tester_model"`
+	ReviewerModel            string `json:"reviewer_model"`
+	RequirementReviewerModel string `json:"requirement_reviewer_model,omitempty"`
+	LogicReviewerModel       string `json:"logic_reviewer_model,omitempty"`
+	SafetyReviewerModel      string `json:"safety_reviewer_model,omitempty"`
+	TestReviewerModel        string `json:"test_reviewer_model,omitempty"`
 }
 
 func (c DevelopmentTeamConfig) WithFallback(fallback string) DevelopmentTeamConfig {
@@ -39,6 +43,18 @@ func (c DevelopmentTeamConfig) WithFallback(fallback string) DevelopmentTeamConf
 	}
 	if c.ReviewerModel == "" {
 		c.ReviewerModel = fallback
+	}
+	if c.RequirementReviewerModel == "" {
+		c.RequirementReviewerModel = c.ReviewerModel
+	}
+	if c.LogicReviewerModel == "" {
+		c.LogicReviewerModel = c.ReviewerModel
+	}
+	if c.SafetyReviewerModel == "" {
+		c.SafetyReviewerModel = c.ReviewerModel
+	}
+	if c.TestReviewerModel == "" {
+		c.TestReviewerModel = c.ReviewerModel
 	}
 	return c
 }

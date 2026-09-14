@@ -80,6 +80,7 @@ func (r *SubagentRunner) repairDevelopmentPlan(ctx context.Context, task string,
 	if r.cfg != nil && r.cfg.NumCtx > 0 {
 		numCtx = r.cfg.NumCtx
 	}
+	numPredict := defaultPlannerNumPredict
 	request := ollama.ChatRequest{
 		Model: r.model,
 		Messages: []ollama.Message{
@@ -91,6 +92,7 @@ func (r *SubagentRunner) repairDevelopmentPlan(ctx context.Context, task string,
 		Format: developmentPlanSchema(),
 		Options: &ollama.Options{
 			NumCtx:      numCtx,
+			NumPredict:  &numPredict,
 			Temperature: 0.0,
 		},
 		Think: r.think,

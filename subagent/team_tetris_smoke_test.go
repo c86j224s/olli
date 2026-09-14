@@ -32,6 +32,10 @@ func TestDevelopmentTeamBuildsTextTetrisSmoke(t *testing.T) {
 
 	roles := smokeModelRoles(t, root)
 	roles.runner.cfg.NumCtx = 16384
+	roles.runner.heartbeatInterval = 10 * time.Second
+	roles.runner.callbacks.OnModelHeartbeat = func(subType string, elapsed time.Duration) {
+		t.Logf("%s model response still generating after %s", subType, elapsed)
+	}
 	coderModel := os.Getenv("OLLI_TETRIS_CODER_MODEL")
 	if coderModel == "" {
 		coderModel = "qwen3.8:27b"

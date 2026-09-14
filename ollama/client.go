@@ -31,6 +31,7 @@ func NewClient(baseURL string) *Client {
 
 type Options struct {
 	NumCtx      int     `json:"num_ctx,omitempty"`
+	NumPredict  *int    `json:"num_predict,omitempty"`
 	Temperature float64 `json:"temperature,omitempty"`
 }
 
