@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/tools"
 )
 
@@ -22,6 +23,8 @@ RULES:
 - Existing public APIs and entry points must remain explicit in acceptance criteria.
 - Each package must leave the repository parseable and identify dependencies on earlier packages.
 - Cover the entire objective; do not defer requirements.
+- Use exactly these top-level keys: goal, packages, final_verification. Never use architecture_plan or work_packages.
+- Each packages item uses exactly: id, objective, files, depends_on, acceptance.
 - Return JSON only, matching ArchitecturePlan.`
 
 const cassandraPrompt = `ROLE: Cassandra, a hostile read-only reviewer of software architecture plans.
@@ -148,11 +151,135 @@ func detailPlanSchema() map[string]any {
 	}
 }
 
+func decodePlanningJSON(raw string, target any) error {
+	raw = strings.TrimSpace(raw)
+	if strings.HasPrefix(raw, "```") {
+		lines := strings.Split(raw, "\n")
+		if len(lines) >= 3 && strings.HasPrefix(lines[0], "```") && strings.TrimSpace(lines[len(lines)-1]) == "```" {
+			raw = strings.Join(lines[1:len(lines)-1], "\n")
+		}
+	}
+	return decodeStrictJSON(raw, target)
+}
+
+func normalizeArchitectureJSON(raw string) string {
+	raw = trimPlanningFence(raw)
+	var value map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &value); err != nil {
+		return raw
+	}
+	if _, exists := value["packages"]; !exists {
+		if packages, found := value["work_packages"]; found {
+			value["packages"] = packages
+			delete(value, "work_packages")
+		}
+	}
+	if rawVerification, exists := value["final_verification"]; exists {
+		var text string
+		if json.Unmarshal(rawVerification, &text) == nil {
+			value["final_verification"] = mustMarshalPlanningJSON(extractVerificationCommands(text))
+		}
+	}
+	if rawPackages, exists := value["packages"]; exists {
+		var packages []map[string]json.RawMessage
+		if json.Unmarshal(rawPackages, &packages) == nil {
+			idMap := make(map[string]string, len(packages))
+			for index := range packages {
+				var oldID string
+				if json.Unmarshal(packages[index]["id"], &oldID) != nil {
+					var numericID int
+					if json.Unmarshal(packages[index]["id"], &numericID) == nil {
+						oldID = fmt.Sprint(numericID)
+					}
+				}
+				canonical := fmt.Sprintf("package-%d", index+1)
+				idMap[oldID] = canonical
+				idMap[canonical] = canonical
+				packages[index]["id"] = mustMarshalPlanningJSON(canonical)
+			}
+			for index := range packages {
+				if rawDependencies, found := packages[index]["depends_on"]; found {
+					var dependencies []any
+					if json.Unmarshal(rawDependencies, &dependencies) == nil {
+						canonicalDependencies := make([]string, 0, len(dependencies))
+						for _, dependency := range dependencies {
+							key := fmt.Sprint(dependency)
+							if canonical, found := idMap[key]; found {
+								canonicalDependencies = append(canonicalDependencies, canonical)
+							} else {
+								canonicalDependencies = append(canonicalDependencies, key)
+							}
+						}
+						packages[index]["depends_on"] = mustMarshalPlanningJSON(canonicalDependencies)
+					}
+				}
+				if rawAcceptance, found := packages[index]["acceptance"]; found {
+					var acceptance string
+					if json.Unmarshal(rawAcceptance, &acceptance) == nil {
+						packages[index]["acceptance"] = mustMarshalPlanningJSON([]string{acceptance})
+					}
+				}
+			}
+			value["packages"] = mustMarshalPlanningJSON(packages)
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return string(encoded)
+}
+
+func trimPlanningFence(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !strings.HasPrefix(raw, "```") {
+		return raw
+	}
+	lines := strings.Split(raw, "\n")
+	if len(lines) >= 3 && strings.HasPrefix(lines[0], "```") && strings.TrimSpace(lines[len(lines)-1]) == "```" {
+		return strings.Join(lines[1:len(lines)-1], "\n")
+	}
+	return raw
+}
+
+func mustMarshalPlanningJSON(value any) json.RawMessage {
+	encoded, _ := json.Marshal(value)
+	return encoded
+}
+
+func normalizeArchitectureVerification(commands []string) []string {
+	var normalized []string
+	for _, command := range commands {
+		lower := strings.ToLower(strings.TrimSpace(command))
+		switch {
+		case strings.HasPrefix(lower, "go_test"), strings.HasPrefix(lower, "go test"):
+			normalized = append(normalized, "go_test ./...")
+		case strings.HasPrefix(lower, "go_vet"), strings.HasPrefix(lower, "go vet"):
+			normalized = append(normalized, "go_vet ./...")
+		default:
+			normalized = append(normalized, command)
+		}
+	}
+	return uniqueStrings(normalized)
+}
+
+func extractVerificationCommands(value string) []string {
+	var commands []string
+	lower := strings.ToLower(value)
+	if strings.Contains(lower, "go_test") || strings.Contains(lower, "go test") {
+		commands = append(commands, "go_test ./...")
+	}
+	if strings.Contains(lower, "go_vet") || strings.Contains(lower, "go vet") {
+		commands = append(commands, "go_vet ./...")
+	}
+	return commands
+}
+
 func validateArchitecturePlan(plan *ArchitecturePlan) error {
 	if plan == nil || strings.TrimSpace(plan.Goal) == "" || len(plan.Packages) == 0 || len(plan.Packages) > 8 {
 		return fmt.Errorf("architecture requires a goal and 1-8 work packages")
 	}
-	plan.FinalVerification = uniqueStrings(plan.FinalVerification)
+	plan.FinalVerification = normalizeArchitectureVerification(plan.FinalVerification)
 	for index, command := range plan.FinalVerification {
 		canonical, err := normalizeVerificationCommand(command)
 		if err != nil {
@@ -282,10 +409,31 @@ func flattenArchitecturePlan(architecture ArchitecturePlan, details []DetailPlan
 	return plan, nil
 }
 
+func registerArchitectTools(reg *tools.Registry, required []requiredToolCall) {
+	if len(required) == 1 {
+		registerArchitectViewFile(reg)
+		return
+	}
+	registerPlannerTools(reg)
+}
+
+func registerArchitectViewFile(reg *tools.Registry) {
+	reg.Register(ollama.Tool{Type: "function", Function: ollama.FunctionDef{
+		Name: "view_file", Description: "Read the one explicit existing source file",
+		Parameters: ollama.FunctionParamSchema{Type: "object", Properties: map[string]ollama.FunctionParamProperty{
+			"file_path": {Type: "string", Description: "Workspace-relative source file"},
+		}, Required: []string{"file_path"}},
+	}}, func(args map[string]interface{}) (string, error) {
+		path, _ := args["file_path"].(string)
+		path = normalizePlannerToolPath(path, reg.GetWorkspace())
+		return tools.ViewFile(path, 0, 0, reg.GetWorkspace(), reg.GetWorkspaceRoot())
+	})
+}
+
 func (m *ModelTeamRoles) createArchitecture(ctx context.Context, objective string, feedback []ArchitectureFinding) (*ArchitecturePlan, error) {
 	payload, _ := json.Marshal(map[string]any{"objective": objective, "cassandra_findings": feedback})
 	reg := m.runner.newRoleRegistry()
-	registerPlannerTools(reg)
+	registerArchitectTools(reg, requiredPlannerViewCalls(objective))
 	temperature := 0.1
 	evidence := &executionEvidence{ProgressMarker: plannerProgressMarker, RequiredCalls: requiredPlannerViewCalls(objective)}
 	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
@@ -300,11 +448,11 @@ func (m *ModelTeamRoles) createArchitecture(ctx context.Context, objective strin
 		return nil, fmt.Errorf("architect loop %s: %s", report.Termination, report.Summary)
 	}
 	var plan ArchitecturePlan
-	if err := decodeStrictJSON(report.Summary, &plan); err != nil {
+	if err := decodePlanningJSON(normalizeArchitectureJSON(report.Summary), &plan); err != nil {
 		return nil, err
 	}
 	if err := validateArchitecturePlan(&plan); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("architect output validation failed: %w", err)
 	}
 	return &plan, nil
 }
@@ -319,7 +467,7 @@ func (m *ModelTeamRoles) reviewArchitecture(ctx context.Context, objective strin
 	if m.models.ReviewerThinking != nil {
 		cassandraRunner = cassandraRunner.withThinking(*m.models.ReviewerThinking)
 	}
-	report, err := cassandraRunner.executeSubagentLoopWithFormat(callCtx, newSubagentID("cassandra"), string(TypeReviewer), string(payload), cassandraPrompt, reg, architectureReviewSchema(), &temperature, nil)
+	report, err := cassandraRunner.executeSubagentLoopWithFormat(callCtx, newSubagentID("cassandra"), string(TypePlanner), string(payload), cassandraPrompt, reg, architectureReviewSchema(), &temperature, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +475,7 @@ func (m *ModelTeamRoles) reviewArchitecture(ctx context.Context, objective strin
 		return nil, fmt.Errorf("cassandra loop %s: %s", report.Termination, report.Summary)
 	}
 	var review ArchitectureReview
-	if err := decodeStrictJSON(report.Summary, &review); err != nil {
+	if err := decodePlanningJSON(report.Summary, &review); err != nil {
 		return nil, err
 	}
 	if err := validateArchitectureReview(plan, &review); err != nil {
@@ -350,7 +498,7 @@ func (m *ModelTeamRoles) detailArchitectureWork(ctx context.Context, architectur
 		return nil, fmt.Errorf("detail planner loop %s: %s", report.Termination, report.Summary)
 	}
 	var detail DetailPlan
-	if err := decodeStrictJSON(report.Summary, &detail); err != nil {
+	if err := decodePlanningJSON(report.Summary, &detail); err != nil {
 		return nil, err
 	}
 	if err := validateDetailPlan(work, &detail); err != nil {

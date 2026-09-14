@@ -256,6 +256,24 @@ if [ "${OLLI_SAFE_NETWORK_MODE:-}" = "ollama" ]; then
     NETWORK_RULES='(deny network*)
 (allow network-outbound (remote ip "localhost:11434"))'
     CHILD_ENV+=("OLLI_MODEL_SMOKE=1")
+    if [ "${OLLI_ARCHITECTURE_SMOKE:-}" = "1" ]; then
+        CHILD_ENV+=("OLLI_ARCHITECTURE_SMOKE=1")
+        for model_var in OLLI_ARCHITECT_MODEL OLLI_CASSANDRA_MODEL; do
+            model_value="${!model_var:-}"
+            if [ -n "$model_value" ]; then
+                case "$model_value" in
+                    *[!A-Za-z0-9._:/-]*)
+                        printf '[safe-exec] refusing unsafe architecture model name: %s\n' "$model_value" >&2
+                        exit 1
+                        ;;
+                esac
+                CHILD_ENV+=("$model_var=$model_value")
+            fi
+        done
+    elif [ -n "${OLLI_ARCHITECTURE_SMOKE:-}" ]; then
+        printf '[safe-exec] refusing invalid architecture smoke flag\n' >&2
+        exit 1
+    fi
     if [ "${OLLI_TETRIS_SMOKE:-}" = "1" ]; then
         CHILD_ENV+=("OLLI_TETRIS_SMOKE=1")
         if [ -n "${OLLI_TETRIS_CODER_MODEL:-}" ]; then

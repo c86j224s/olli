@@ -1,6 +1,76 @@
 package subagent
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/c86j224s/olli/tools"
+)
+
+func TestDecodePlanningJSONAcceptsOneFencedObject(t *testing.T) {
+	var value map[string]any
+	if err := decodePlanningJSON("```json\n{\"ok\":true}\n```", &value); err != nil {
+		t.Fatal(err)
+	}
+	if value["ok"] != true {
+		t.Fatalf("unexpected decoded value: %#v", value)
+	}
+}
+
+func TestRegisterArchitectToolsNarrowsExplicitFileTask(t *testing.T) {
+	reg := tools.NewEmptyRegistry()
+	reg.SetWorkspace(t.TempDir())
+	reg.SetWorkspaceRoot(reg.GetWorkspace())
+	registerArchitectTools(reg, []requiredToolCall{{Name: "view_file"}})
+	if _, ok := reg.GetDefinition("view_file"); !ok {
+		t.Fatal("explicit-file architect is missing view_file")
+	}
+	for _, forbidden := range []string{"list_dir", "grep_search"} {
+		if _, ok := reg.GetDefinition(forbidden); ok {
+			t.Fatalf("explicit-file architect received distracting tool %s", forbidden)
+		}
+	}
+}
+
+func TestNormalizeArchitectureJSONAcceptsWorkPackagesAlias(t *testing.T) {
+	raw := `{"goal":"g","work_packages":[],"final_verification":[]}`
+	normalized := normalizeArchitectureJSON(raw)
+	if strings.Contains(normalized, "work_packages") || !strings.Contains(normalized, `"packages"`) {
+		t.Fatalf("architecture alias was not normalized: %s", normalized)
+	}
+}
+
+func TestNormalizeArchitectureJSONRepairsCommonSmallModelShapes(t *testing.T) {
+	raw := `{"goal":"g","packages":[{"id":1,"objective":"o","files":["main.go"],"depends_on":[],"acceptance":"works"}],"final_verification":"go test ./... and go vet ./..."}`
+	var plan ArchitecturePlan
+	if err := decodePlanningJSON(normalizeArchitectureJSON(raw), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Packages[0].ID != "package-1" || len(plan.Packages[0].Acceptance) != 1 || len(plan.FinalVerification) != 2 {
+		t.Fatalf("common architecture shapes were not normalized: %#v", plan)
+	}
+}
+
+func TestValidateArchitecturePlanNormalizesGoCommandSpelling(t *testing.T) {
+	plan := &ArchitecturePlan{Goal: "g", Packages: []ArchitectureWork{{ID: "package-1", Objective: "o", Files: []string{"main.go"}, Acceptance: []string{"works"}}}, FinalVerification: []string{"go test ./...", "go vet ./..."}}
+	if err := validateArchitecturePlan(plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.FinalVerification[0] != "go_test ./..." || plan.FinalVerification[1] != "go_vet ./..." {
+		t.Fatalf("verification spelling was not normalized: %#v", plan.FinalVerification)
+	}
+}
+
+func TestNormalizeArchitectureJSONRemapsNamedDependencies(t *testing.T) {
+	raw := `{"goal":"g","packages":[{"id":"board","objective":"state","files":["board.go"],"depends_on":[],"acceptance":"state"},{"id":"rules","objective":"rules","files":["rules.go"],"depends_on":["board"],"acceptance":"rules"}],"final_verification":["go_test ./..."]}`
+	var plan ArchitecturePlan
+	if err := decodePlanningJSON(normalizeArchitectureJSON(raw), &plan); err != nil {
+		t.Fatal(err)
+	}
+	if plan.Packages[1].DependsOn[0] != "package-1" {
+		t.Fatalf("named dependency was not remapped: %#v", plan)
+	}
+}
 
 func TestValidateArchitecturePlanAcceptsCohesiveFilePackages(t *testing.T) {
 	plan := &ArchitecturePlan{

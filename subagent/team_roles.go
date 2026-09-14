@@ -156,32 +156,43 @@ func (m *ModelTeamRoles) Plan(ctx context.Context, objective string) (*Developme
 	return plan, err
 }
 
-func (m *ModelTeamRoles) PlanArchitecture(ctx context.Context, objective string) (*DevelopmentPlan, *PlanningReport, error) {
+func (m *ModelTeamRoles) ReviewArchitecture(ctx context.Context, objective string) (*PlanningReport, error) {
 	roleCtx, cancel := withRoleTimeout(ctx, roleBudget{Timeout: planningPipelineTimeout})
 	defer cancel()
 	architecture, err := m.createArchitecture(roleCtx, objective, nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	review, err := m.reviewArchitecture(roleCtx, objective, architecture)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	reviews := []ArchitectureReview{*review}
 	if !review.Passed {
 		architecture, err = m.createArchitecture(roleCtx, objective, review.Findings)
 		if err != nil {
-			return nil, nil, fmt.Errorf("architect repair failed: %w", err)
+			return nil, fmt.Errorf("architect repair failed: %w", err)
 		}
 		review, err = m.reviewArchitecture(roleCtx, objective, architecture)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		reviews = append(reviews, *review)
-		if !review.Passed {
-			return nil, &PlanningReport{Architecture: *architecture, Reviews: reviews}, fmt.Errorf("cassandra rejected repaired architecture: %s", review.Summary)
-		}
 	}
+	return &PlanningReport{Architecture: *architecture, Reviews: reviews}, nil
+}
+
+func (m *ModelTeamRoles) PlanArchitecture(ctx context.Context, objective string) (*DevelopmentPlan, *PlanningReport, error) {
+	planning, err := m.ReviewArchitecture(ctx, objective)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(planning.Reviews) == 0 || !planning.Reviews[len(planning.Reviews)-1].Passed {
+		return nil, planning, fmt.Errorf("cassandra rejected repaired architecture: %s", planning.Reviews[len(planning.Reviews)-1].Summary)
+	}
+	architecture := &planning.Architecture
+	roleCtx, cancel := withRoleTimeout(ctx, roleBudget{Timeout: planningPipelineTimeout})
+	defer cancel()
 	details := make([]DetailPlan, 0, len(architecture.Packages))
 	for _, work := range architecture.Packages {
 		detail, err := m.detailArchitectureWork(roleCtx, architecture, work)
@@ -194,7 +205,7 @@ func (m *ModelTeamRoles) PlanArchitecture(ctx context.Context, objective string)
 	if err != nil {
 		return nil, nil, err
 	}
-	return plan, &PlanningReport{Architecture: *architecture, Reviews: reviews}, nil
+	return plan, planning, nil
 }
 
 func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, error) {
