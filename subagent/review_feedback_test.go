@@ -13,13 +13,19 @@ func TestValidateReviewReportTracksPreviousFindingResolution(t *testing.T) {
 	}
 
 	missing := &ReviewReport{}
-	if err := validateReviewReport(plan, previous, missing); err == nil {
-		t.Fatal("missing prior-finding resolution accepted")
+	if err := validateReviewReport(plan, previous, missing); err != nil {
+		t.Fatalf("missing prior-finding resolution was not retained conservatively: %v", err)
+	}
+	if len(missing.Findings) != 1 || len(missing.FindingResolutions) != 1 || missing.FindingResolutions[0].Status != "unresolved" {
+		t.Fatalf("missing prior-finding resolution did not preserve active finding: %#v", missing)
 	}
 
 	unresolvedWithoutFinding := &ReviewReport{FindingResolutions: []FindingResolution{{ID: "finding-1", Status: "unresolved", Evidence: "still panics"}}}
-	if err := validateReviewReport(plan, previous, unresolvedWithoutFinding); err == nil {
-		t.Fatal("unresolved finding omitted from current findings")
+	if err := validateReviewReport(plan, previous, unresolvedWithoutFinding); err != nil {
+		t.Fatalf("omitted unresolved finding was not restored: %v", err)
+	}
+	if len(unresolvedWithoutFinding.Findings) != 1 || unresolvedWithoutFinding.Findings[0].ID != "finding-1" {
+		t.Fatalf("restored unresolved finding is missing: %#v", unresolvedWithoutFinding)
 	}
 
 	unresolved := &ReviewReport{Findings: []Finding{finding}, FindingResolutions: []FindingResolution{{ID: "finding-1", Status: "unresolved", Evidence: "still panics"}}}

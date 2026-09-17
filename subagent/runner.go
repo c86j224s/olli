@@ -418,6 +418,11 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		}
 
 		finalAnswer = resp.Content
+		if format != nil {
+			if normalized, ok := normalizedJSONObject(finalAnswer); ok {
+				finalAnswer = normalized
+			}
+		}
 		if missing := evidence.missingRequiredTools(); len(missing) > 0 {
 			guidance := ollama.Message{Role: "system", Content: fmt.Sprintf("The task is not complete. Before returning the final JSON, successfully call these required tools: %s.", strings.Join(missing, ", "))}
 			messages = append(messages, *resp, guidance)
@@ -431,13 +436,18 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			}
 			continue
 		}
-		if format != nil && successfulToolCalls > 0 && looksLikeJSONObject(finalAnswer) {
-			termination = agentloop.TerminationSucceeded
-			logEvent("assistant", finalAnswer, nil)
-			break
-		}
-		if format != nil && successfulToolCalls > 0 {
+		if format != nil {
+			if looksLikeJSONObject(finalAnswer) {
+				termination = agentloop.TerminationSucceeded
+				logEvent("assistant", finalAnswer, nil)
+				break
+			}
 			messages = append(messages, *resp)
+			if reason := guard.RecordFormatRepair(); reason != "" {
+				termination = reason
+				logEvent("assistant", finalAnswer, nil)
+				break
+			}
 			if reason := guard.RecordModelCall(); reason != "" {
 				termination = reason
 				break
@@ -446,9 +456,12 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			if err != nil {
 				return nil, err
 			}
+			if normalized, ok := normalizedJSONObject(finalAnswer); ok {
+				finalAnswer = normalized
+			}
+			logEvent("assistant", finalAnswer, nil)
 			if !looksLikeJSONObject(finalAnswer) {
 				termination = agentloop.TerminationInvalidOutput
-				logEvent("assistant", finalAnswer, nil)
 				break
 			}
 		}
@@ -581,17 +594,25 @@ func contextTermination(ctx context.Context) (agentloop.TerminationReason, strin
 }
 
 func looksLikeJSONObject(value string) bool {
-	value = strings.TrimSpace(value)
+	_, ok := normalizedJSONObject(value)
+	return ok
+}
+
+func normalizedJSONObject(value string) (string, bool) {
+	value = extractPlanningJSONObject(value)
 	if !strings.HasPrefix(value, "{") || !strings.HasSuffix(value, "}") {
-		return false
+		return "", false
 	}
 	var decoded map[string]any
 	decoder := json.NewDecoder(strings.NewReader(value))
 	if err := decoder.Decode(&decoded); err != nil || decoded == nil {
-		return false
+		return "", false
 	}
 	var trailing any
-	return decoder.Decode(&trailing) == io.EOF
+	if decoder.Decode(&trailing) != io.EOF {
+		return "", false
+	}
+	return value, true
 }
 
 func buildEvidenceCompletion(subType string, task string, evidence *executionEvidence) (string, error) {
@@ -639,6 +660,47 @@ func buildEvidenceCompletion(subType string, task string, evidence *executionEvi
 	default:
 		return "", fmt.Errorf("%s requires model-authored structured completion", subType)
 	}
+}
+
+func (r *SubagentRunner) requestStructuredRepair(ctx context.Context, subType string, payload string, rolePrompt string, invalidOutput string, validationErr error, format any, temperature *float64) (string, error) {
+	if format == nil {
+		return "", fmt.Errorf("structured repair format is required")
+	}
+	numCtx := 32768
+	if r.cfg != nil && r.cfg.NumCtx > 0 {
+		numCtx = r.cfg.NumCtx
+	}
+	options := &ollama.Options{NumCtx: numCtx}
+	if budget := r.roleBudget(SubagentType(subType)); budget.NumPredict > 0 {
+		numPredict := budget.NumPredict
+		options.NumPredict = &numPredict
+	}
+	if temperature != nil {
+		options.Temperature = *temperature
+	}
+	prompt := "Return only a corrected JSON object matching the supplied schema. Do not call tools and do not add prose."
+	if strings.TrimSpace(rolePrompt) != "" {
+		prompt += "\n\nROLE CONTRACT:\n" + rolePrompt
+	}
+	content := "TASK:\n" + payload + "\n\nINVALID OUTPUT:\n" + invalidOutput
+	if validationErr != nil {
+		content += "\n\nVALIDATION ERROR:\n" + validationErr.Error()
+	}
+	req := ollama.ChatRequest{
+		Model: r.model,
+		Messages: []ollama.Message{
+			{Role: "system", Content: prompt},
+			{Role: "user", Content: content},
+		},
+		Format:  format,
+		Options: options,
+		Think:   r.think,
+	}
+	completion, err := r.callModelWithHeartbeat(ctx, subType, req, ollama.StreamCallbacks{})
+	if err != nil {
+		return "", fmt.Errorf("subagent structured repair failed: %w", err)
+	}
+	return completion.Content, nil
 }
 
 func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, subType string, req ollama.ChatRequest, messages []ollama.Message, streamCB ollama.StreamCallbacks, format any) (string, error) {

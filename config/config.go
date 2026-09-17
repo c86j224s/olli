@@ -23,6 +23,7 @@ type Config struct {
 type DevelopmentTeamConfig struct {
 	PlannerModel             string `json:"planner_model"`
 	CoderModel               string `json:"coder_model"`
+	TestCoderModel           string `json:"test_coder_model,omitempty"`
 	TesterModel              string `json:"tester_model"`
 	ReviewerModel            string `json:"reviewer_model"`
 	CassandraModel           string `json:"cassandra_model,omitempty"`
@@ -39,6 +40,9 @@ func (c DevelopmentTeamConfig) WithFallback(fallback string) DevelopmentTeamConf
 	}
 	if c.CoderModel == "" {
 		c.CoderModel = fallback
+	}
+	if c.TestCoderModel == "" {
+		c.TestCoderModel = c.CoderModel
 	}
 	if c.TesterModel == "" {
 		c.TesterModel = fallback

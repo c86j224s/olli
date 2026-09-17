@@ -25,6 +25,20 @@ func TestContextTerminationDistinguishesDeadlineAndCancellation(t *testing.T) {
 	}
 }
 
+func TestNormalizedJSONObjectAcceptsFencedObjectWithProse(t *testing.T) {
+	raw := "Structured output:\n```json\n{\"ok\":true}\n```\nDone"
+	normalized, ok := normalizedJSONObject(raw)
+	if !ok || normalized != `{"ok":true}` {
+		t.Fatalf("structured object was not normalized: ok=%v value=%q", ok, normalized)
+	}
+}
+
+func TestNormalizedJSONObjectRejectsProseWithoutObject(t *testing.T) {
+	if normalized, ok := normalizedJSONObject("Structured output unavailable"); ok || normalized != "" {
+		t.Fatalf("prose was accepted as structured output: ok=%v value=%q", ok, normalized)
+	}
+}
+
 func TestLoopMetricsCarryTerminationReason(t *testing.T) {
 	guard, _ := agentloop.NewController(agentloop.DefaultPolicy(false))
 	guard.BeginIteration()

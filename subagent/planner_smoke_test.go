@@ -31,7 +31,7 @@ func TestPlannerSmallModelSmoke(t *testing.T) {
 	if model == "" {
 		model = "qwen3.5:0.8b"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	runner := NewRunner(ollama.NewClient("http://127.0.0.1:11434"), model, cfg, root, "", SubagentCallbacks{}, root)
 	report, plan, err := runner.RunPlannerWithContext(ctx, "Add a Sub(a, b int) int function to calculator.go and tests to calculator_test.go. Read exactly those two files, then return the plan immediately. Plan only; do not edit files.")

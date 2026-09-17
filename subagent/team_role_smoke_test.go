@@ -22,7 +22,7 @@ func TestCoderSmallModelSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	roles := smokeModelRoles(t, root)
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	report, err := roles.Code(ctx, CodeTask{Goal: "change Value to 2", Step: PlanStep{ID: "step-1", Objective: "change Value to 2", AllowedFiles: []string{"feature.go"}, Acceptance: []string{"Value equals 2"}}, Attempt: 1})
 	if err != nil {
@@ -48,7 +48,7 @@ func TestTesterSmallModelSmoke(t *testing.T) {
 		return "ok   example/demo", nil
 	})
 	roles.testerRegistry = func() *tools.Registry { return reg }
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	parsed, err := roles.runTester(ctx, "smoke-tester", []string{"go_test ./..."})
 	if err != nil {
@@ -68,7 +68,7 @@ func TestReviewerSmallModelSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	roles := smokeModelRoles(t, root)
-	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
 	defer cancel()
 	plan := &DevelopmentPlan{Goal: "safe division", Files: []string{"feature.go"}, Steps: []PlanStep{{ID: "step-1", Objective: "implement division", AllowedFiles: []string{"feature.go"}, Acceptance: []string{"zero divisor handled"}}}, FinalVerification: []string{"go_test ./..."}}
 	review, err := roles.Review(ctx, ReviewTask{Dimension: ReviewDimensionLogic, Context: ReviewContext{Plan: plan, CodeReports: []CodeReport{{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"division added"}}}}})

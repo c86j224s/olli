@@ -112,7 +112,7 @@ func (a *Agent) registerSubagentTools() {
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_dev_team",
-			Description: "[PREFERRED TOOL FOR END-TO-END DEVELOPMENT] Run a deterministic Planner -> Coder -> Tester -> Reviewer -> Verifier team with one writer and bounded fix rounds",
+			Description: "[PREFERRED TOOL FOR END-TO-END DEVELOPMENT] Run Architect -> Cassandra review/repair -> per-package Detail Planner -> Coder/static preflight milestones -> specialist Reviewer pool -> Verifier, with one writer and bounded repairs",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
@@ -131,6 +131,7 @@ func (a *Agent) registerSubagentTools() {
 		roles, err := subagent.NewModelTeamRolesWithModels(runner, subagent.TeamModels{
 			Planner:             teamConfig.PlannerModel,
 			Coder:               teamConfig.CoderModel,
+			TestCoder:           teamConfig.TestCoderModel,
 			Tester:              teamConfig.TesterModel,
 			Reviewer:            teamConfig.ReviewerModel,
 			Cassandra:           teamConfig.CassandraModel,

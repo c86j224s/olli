@@ -25,10 +25,12 @@ const (
 const defaultMaxTeamFixRounds = 2
 
 type CodeTask struct {
-	Goal        string    `json:"goal"`
-	Step        PlanStep  `json:"step"`
-	ReviewFixes []Finding `json:"review_fixes,omitempty"`
-	Attempt     int       `json:"attempt"`
+	Goal            string            `json:"goal"`
+	Step            PlanStep          `json:"step"`
+	ReadOnlyFiles   []string          `json:"read_only_files,omitempty"`
+	SourceSnapshots map[string]string `json:"source_snapshots,omitempty"`
+	ReviewFixes     []Finding         `json:"review_fixes,omitempty"`
+	Attempt         int               `json:"attempt"`
 }
 
 type CodeReport struct {
@@ -107,6 +109,7 @@ type ReviewContext struct {
 	PreviousTestSummaries []TestSummary     `json:"previous_test_summaries"`
 	PreviousReviews       []DimensionReview `json:"previous_reviews"`
 	ReviewScope           []string          `json:"review_scope,omitempty"`
+	SourceSnapshots       map[string]string `json:"source_snapshots,omitempty"`
 }
 
 type TestSummary struct {
@@ -257,8 +260,8 @@ func requireVerificationCommands(required []string, report *TestReport) error {
 	return nil
 }
 
-func unresolvedFindingIDs(reviews []ReviewReport) map[string]struct{} {
-	active := make(map[string]struct{})
+func unresolvedFindings(reviews []ReviewReport) map[string]Finding {
+	active := make(map[string]Finding)
 	for _, review := range reviews {
 		for _, resolution := range review.FindingResolutions {
 			if resolution.Status == "resolved" {
@@ -266,10 +269,19 @@ func unresolvedFindingIDs(reviews []ReviewReport) map[string]struct{} {
 			}
 		}
 		for _, finding := range review.Findings {
-			active[finding.ID] = struct{}{}
+			active[finding.ID] = finding
 		}
 	}
 	return active
+}
+
+func unresolvedFindingIDs(reviews []ReviewReport) map[string]struct{} {
+	active := unresolvedFindings(reviews)
+	ids := make(map[string]struct{}, len(active))
+	for id := range active {
+		ids[id] = struct{}{}
+	}
+	return ids
 }
 
 func validateReviewReport(plan *DevelopmentPlan, previous []ReviewReport, report *ReviewReport) error {
@@ -287,7 +299,7 @@ func validateDimensionReviewReport(plan *DevelopmentPlan, dimension ReviewDimens
 	for _, path := range plan.Files {
 		allowed[path] = struct{}{}
 	}
-	seenIDs := make(map[string]struct{}, len(report.Findings))
+	seenIDs := make(map[string]int, len(report.Findings))
 	for index := range report.Findings {
 		finding := &report.Findings[index]
 		finding.ID = strings.TrimSpace(finding.ID)
@@ -302,10 +314,11 @@ func validateDimensionReviewReport(plan *DevelopmentPlan, dimension ReviewDimens
 			finding.Dimension = dimension
 			finding.Reviewers = uniqueStrings(append(finding.Reviewers, string(dimension)))
 		}
-		if _, exists := seenIDs[finding.ID]; exists {
-			return fmt.Errorf("review finding id %q is duplicated", finding.ID)
+		baseID := finding.ID
+		seenIDs[baseID]++
+		if seenIDs[baseID] > 1 {
+			finding.ID = fmt.Sprintf("%s-%d", baseID, seenIDs[baseID])
 		}
-		seenIDs[finding.ID] = struct{}{}
 		path, err := normalizePlanPath(finding.File)
 		if err != nil {
 			return fmt.Errorf("review finding file %q: %w", finding.File, err)
@@ -326,8 +339,14 @@ func validateDimensionReviewReport(plan *DevelopmentPlan, dimension ReviewDimens
 			finding.Verification[verificationIndex] = canonical
 		}
 	}
-	previousIDs := unresolvedFindingIDs(previous)
+	previousFindings := unresolvedFindings(previous)
+	previousIDs := make(map[string]struct{}, len(previousFindings))
+	for id := range previousFindings {
+		previousIDs[id] = struct{}{}
+	}
 	resolutionByID := make(map[string]string, len(report.FindingResolutions))
+	resolutionIndexByID := make(map[string]int, len(report.FindingResolutions))
+	uniqueResolutions := report.FindingResolutions[:0]
 	for index := range report.FindingResolutions {
 		resolution := &report.FindingResolutions[index]
 		resolution.ID = strings.TrimSpace(resolution.ID)
@@ -338,30 +357,122 @@ func validateDimensionReviewReport(plan *DevelopmentPlan, dimension ReviewDimens
 			}
 		}
 		if _, exists := previousIDs[resolution.ID]; !exists {
-			return fmt.Errorf("resolution references unknown finding %q", resolution.ID)
+			if matched := matchingKnownResolutionID(resolutionByID, resolution.ID); matched != "" {
+				resolution.ID = matched
+			} else if matched := matchingPriorFindingID(previousIDs, resolution.ID); matched != "" {
+				resolution.ID = matched
+			} else if len(previousIDs) == 1 {
+				for onlyID := range previousIDs {
+					resolution.ID = onlyID
+				}
+			} else {
+				continue
+			}
 		}
 		if resolution.Status != "resolved" && resolution.Status != "unresolved" {
 			return fmt.Errorf("resolution for finding %q has invalid status %q", resolution.ID, resolution.Status)
 		}
-		if _, duplicate := resolutionByID[resolution.ID]; duplicate || strings.TrimSpace(resolution.Evidence) == "" {
-			return fmt.Errorf("resolution for finding %q is duplicate or lacks evidence", resolution.ID)
+		if strings.TrimSpace(resolution.Evidence) == "" {
+			return fmt.Errorf("resolution for finding %q lacks evidence", resolution.ID)
 		}
+		if priorIndex, duplicate := resolutionIndexByID[resolution.ID]; duplicate {
+			prior := &uniqueResolutions[priorIndex]
+			prior.Evidence = strings.TrimSpace(prior.Evidence + "; " + resolution.Evidence)
+			if prior.Status == "unresolved" || resolution.Status == "unresolved" {
+				prior.Status = "unresolved"
+				resolutionByID[resolution.ID] = "unresolved"
+			}
+			continue
+		}
+		resolutionIndexByID[resolution.ID] = len(uniqueResolutions)
+		uniqueResolutions = append(uniqueResolutions, *resolution)
 		resolutionByID[resolution.ID] = resolution.Status
+	}
+	report.FindingResolutions = uniqueResolutions
+	for id, status := range resolutionByID {
+		if status != "resolved" {
+			continue
+		}
+		if _, remains := seenIDs[id]; !remains {
+			continue
+		}
+		filtered := report.Findings[:0]
+		for _, finding := range report.Findings {
+			if finding.ID != id {
+				filtered = append(filtered, finding)
+			}
+		}
+		report.Findings = filtered
+		delete(seenIDs, id)
 	}
 	for id := range previousIDs {
 		status, exists := resolutionByID[id]
 		if !exists {
-			return fmt.Errorf("previous finding %q has no resolution", id)
+			status = "unresolved"
+			resolutionByID[id] = status
+			report.FindingResolutions = append(report.FindingResolutions, FindingResolution{
+				ID:       id,
+				Status:   status,
+				Evidence: "reviewer omitted the required disposition; host conservatively retained the finding",
+			})
 		}
 		_, remains := seenIDs[id]
 		if status == "unresolved" && !remains {
-			return fmt.Errorf("unresolved finding %q is missing from findings", id)
+			finding := previousFindings[id]
+			finding.Dimension = dimension
+			finding.Reviewers = uniqueStrings(append(finding.Reviewers, string(dimension)))
+			report.Findings = append(report.Findings, finding)
+			seenIDs[id] = 1
+			remains = true
 		}
 		if status == "resolved" && remains {
-			return fmt.Errorf("resolved finding %q must not remain in findings", id)
+			return fmt.Errorf("resolved finding %q remained after normalization", id)
 		}
 	}
 	return nil
+}
+
+func matchingKnownResolutionID(known map[string]string, candidate string) string {
+	ids := make(map[string]struct{}, len(known))
+	for id := range known {
+		ids[id] = struct{}{}
+	}
+	return matchingPriorFindingID(ids, candidate)
+}
+
+func matchingPriorFindingID(previous map[string]struct{}, candidate string) string {
+	candidateKey := findingIdentityKey(candidate)
+	if candidateKey == "" {
+		return ""
+	}
+	matched := ""
+	for id := range previous {
+		if findingIdentityKey(id) != candidateKey {
+			continue
+		}
+		if matched != "" {
+			return ""
+		}
+		matched = id
+	}
+	return matched
+}
+
+func findingIdentityKey(id string) string {
+	parts := strings.Split(strings.ToUpper(strings.TrimSpace(id)), "-")
+	for len(parts) > 0 && isReviewDimensionToken(parts[0]) {
+		parts = parts[1:]
+	}
+	return strings.Join(parts, "-")
+}
+
+func isReviewDimensionToken(value string) bool {
+	switch value {
+	case "REQUIREMENTS", "LOGIC", "SAFETY", "TESTS":
+		return true
+	default:
+		return false
+	}
 }
 
 func findingFiles(findings []Finding) []string {

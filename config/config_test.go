@@ -243,7 +243,7 @@ func TestDevelopmentTeamConfigUsesConfiguredModelsAndFallback(t *testing.T) {
 	cfg := config.DevelopmentTeamConfig{
 		PlannerModel: "gemma4:e4b", ReviewerModel: "gemma4:12b", LogicReviewerModel: "qwen3.8:27b",
 	}.WithFallback("fallback")
-	if cfg.PlannerModel != "gemma4:e4b" || cfg.ReviewerModel != "gemma4:12b" || cfg.CoderModel != "fallback" || cfg.TesterModel != "fallback" {
+	if cfg.PlannerModel != "gemma4:e4b" || cfg.ReviewerModel != "gemma4:12b" || cfg.CoderModel != "fallback" || cfg.TestCoderModel != "fallback" || cfg.TesterModel != "fallback" {
 		t.Fatalf("unexpected development team config: %#v", cfg)
 	}
 	if cfg.CassandraModel != "gemma4:12b" || cfg.DetailPlannerModel != "gemma4:e4b" {

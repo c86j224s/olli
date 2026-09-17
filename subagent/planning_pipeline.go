@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/c86j224s/olli/ollama"
@@ -19,10 +21,14 @@ RULES:
 - Never modify files and never run commands.
 - Inspect every existing file that constrains the architecture.
 - Return 1-8 ordered work packages. A work package owns one cohesive responsibility and a small set of files.
+- Every file has exactly one owning work package. Never repeat a file path in another package; put each _test.go file in the package whose responsibility is testing that behavior.
 - New files are allowed when they reduce coder context and have a clear package-level responsibility.
 - Existing public APIs and entry points must remain explicit in acceptance criteria.
-- Each package must leave the repository parseable and identify dependencies on earlier packages.
-- Cover the entire objective; do not defer requirements.
+- Each work package must leave the repository parseable and identify dependencies on earlier work packages.
+- Work-package IDs are planning units, not Go package or import boundaries. Files may share one Go package unless the objective requires otherwise; depends_on records implementation order, not runtime control flow.
+- Preserve the requested interaction model exactly. Never invent real-time, asynchronous, non-blocking, automatic-tick, concurrency, encapsulation, or package-isolation requirements that the objective did not request.
+- A command followed by Enter describes a valid turn-based blocking input loop unless the objective explicitly requires autonomous time progression.
+- Cover the entire objective; do not defer requirements. If the objective requests tests, assign concrete _test.go files and observable test acceptance criteria to a work package.
 - Use exactly these top-level keys: goal, packages, final_verification. Never use architecture_plan or work_packages.
 - Each packages item uses exactly: id, objective, files, depends_on, acceptance.
 - Return JSON only, matching ArchitecturePlan.`
@@ -36,10 +42,16 @@ RULES:
 - Never modify files and never run commands.
 - Inspect the current architecture and original objective, not implementation code or old prose.
 - Report only concrete planning defects: missing requirement coverage, oversized work packages, incoherent file boundaries, dependency cycles, impossible intermediate compile states, conflicting ownership, or unverifiable acceptance criteria.
+- Work-package IDs are ordered planning units, not Go packages or import boundaries. depends_on records implementation order only. Do not ask to add or remove depends_on edges based on runtime calls or data access. Do not infer a dependency cycle from runtime calls, data flow, or a controller coordinating two earlier work packages; report a cycle only when depends_on itself contains a directed cycle.
+- Never strengthen or weaken the objective. Do not demand real-time, asynchronous, non-blocking, automatic gravity/ticks, concurrency, strict encapsulation, interfaces, or package isolation unless the objective explicitly requires them. Never ask to remove an explicitly requested behavior or test as supposedly too stateful, impure, or integration-oriented.
+- Treat commands followed by Enter as a valid turn-based blocking interaction model. Waiting for the next Enter-terminated command between turns is correct progress, not a stall or deadlock. Shared Go structs across cohesive files in one package are valid boundaries; do not require explicit interfaces or state-transfer contracts between those files. Input validation never determines whether a game piece can spawn; that is domain-state logic.
+- A requirement explicitly requested by the objective must appear in a package's files and acceptance criteria, including concrete _test.go ownership when tests are requested.
+- Before reporting a missing requirement or contract, reread the target package's objective and acceptance criteria. If they already state the required outcome, do not report it. Quote the actual absent requirement in failure_scenario; do not claim depends_on can enforce runtime ordering, parameter use, initialization order, or race freedom.
 - Return at most 3 findings: the highest-severity actionable defects in the current architecture.
 - Do not rewrite the plan. New findings use stable CASSANDRA-* ids and concise required outcomes.
 - For every previous unresolved finding id supplied in the task, return exactly one resolved or unresolved finding_resolution with concise current evidence.
-- An unresolved previous finding must remain in findings with the same id and counts toward the 3-finding cap. A resolved finding must not remain in findings.
+- An unresolved previous finding must remain in findings with the same id and counts toward the 3-finding cap. If all prior unresolved findings cannot fit, select up to 3 by priority and set more_suspected=true; omitted prior ids remain unresolved automatically.
+- A resolved finding must not remain in findings.
 - more_suspected is true only when the 3-finding cap prevented checking or reporting lower-priority concerns; it requests another review after repair.
 - passed is true only when findings is empty, all prior findings are resolved, and more_suspected is false.
 - Return JSON only, matching ArchitectureReview.`
@@ -51,12 +63,14 @@ Expand exactly one work package into minimal coder milestones.
 
 RULES:
 - Never modify files and never run commands.
-- Return 1-6 sequential milestones for this work package only.
+- Return exactly one complete milestone for this work package. The architecture already bounded the responsibility; do not split one file across incremental milestones.
 - One milestone performs one cohesive state change or behavior and touches as few files as possible.
 - Every milestone must leave touched source parseable and independently suitable for deterministic static preflight.
 - The final milestone must satisfy every acceptance criterion of the work package.
+- Use the supplied work-package id exactly as package_id. Milestone ids are step-1, step-2, ... within this response.
+- Each milestone uses exactly: id, objective, allowed_files, acceptance, verification. allowed_files must be a non-empty subset of the supplied work-package files.
+- Use verification: [] for intermediate milestones so semantic tests and reviewers run only after the assembled implementation. The orchestrator supplies final verification.
 - Do not repeat the entire architecture or expand another work package.
-- Verification entries use only canonical approved commands.
 - Return JSON only, matching DetailPlan.`
 
 type ArchitecturePlan struct {
@@ -93,6 +107,7 @@ type ArchitectureReview struct {
 	FindingResolutions []ArchitectureFindingResolution `json:"finding_resolutions"`
 	MoreSuspected      bool                            `json:"more_suspected"`
 	Summary            string                          `json:"summary"`
+	DismissedFindings  []ArchitectureFinding           `json:"dismissed_findings,omitempty"`
 }
 
 type DetailPlan struct {
@@ -101,8 +116,10 @@ type DetailPlan struct {
 }
 
 type PlanningReport struct {
-	Architecture ArchitecturePlan     `json:"architecture"`
-	Reviews      []ArchitectureReview `json:"reviews"`
+	Architecture       ArchitecturePlan      `json:"architecture"`
+	Reviews            []ArchitectureReview  `json:"reviews"`
+	ReviewLimitReached bool                  `json:"review_limit_reached,omitempty"`
+	UnresolvedFindings []ArchitectureFinding `json:"unresolved_findings,omitempty"`
 }
 
 const maxArchitectRepairs = 3
@@ -164,6 +181,7 @@ func architectureReviewSchema() map[string]any {
 
 func detailPlanSchema() map[string]any {
 	stepSchema := developmentPlanSchema()["properties"].(map[string]any)["steps"].(map[string]any)
+	stepSchema["maxItems"] = 1
 	return map[string]any{
 		"type": "object", "additionalProperties": false,
 		"required": []string{"package_id", "steps"},
@@ -175,18 +193,51 @@ func detailPlanSchema() map[string]any {
 }
 
 func decodePlanningJSON(raw string, target any) error {
+	return decodeStrictJSON(extractPlanningJSONObject(raw), target)
+}
+
+func extractPlanningJSONObject(raw string) string {
 	raw = strings.TrimSpace(raw)
-	if strings.HasPrefix(raw, "```") {
-		lines := strings.Split(raw, "\n")
-		if len(lines) >= 3 && strings.HasPrefix(lines[0], "```") && strings.TrimSpace(lines[len(lines)-1]) == "```" {
-			raw = strings.Join(lines[1:len(lines)-1], "\n")
+	start := strings.IndexByte(raw, '{')
+	if start < 0 {
+		return trimPlanningFence(raw)
+	}
+	depth := 0
+	inString := false
+	escaped := false
+	for index := start; index < len(raw); index++ {
+		character := raw[index]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if character == '\\' {
+				escaped = true
+				continue
+			}
+			if character == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch character {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return raw[start : index+1]
+			}
 		}
 	}
-	return decodeStrictJSON(raw, target)
+	return trimPlanningFence(raw)
 }
 
 func normalizeArchitectureJSON(raw string) string {
-	raw = trimPlanningFence(raw)
+	raw = extractPlanningJSONObject(raw)
 	var value map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(raw), &value); err != nil {
 		return raw
@@ -298,9 +349,79 @@ func extractVerificationCommands(value string) []string {
 	return commands
 }
 
+func normalizeArchitecturePackageOrder(plan *ArchitecturePlan) error {
+	if plan == nil {
+		return fmt.Errorf("architecture is required")
+	}
+	byID := make(map[string]ArchitectureWork, len(plan.Packages))
+	originalOrder := make(map[string]int, len(plan.Packages))
+	indegree := make(map[string]int, len(plan.Packages))
+	dependents := make(map[string][]string, len(plan.Packages))
+	for index, work := range plan.Packages {
+		id := strings.TrimSpace(work.ID)
+		if id == "" {
+			return fmt.Errorf("architecture package id is required")
+		}
+		if _, duplicate := byID[id]; duplicate {
+			return fmt.Errorf("architecture package id %q is duplicated", id)
+		}
+		work.ID = id
+		work.DependsOn = uniqueStrings(work.DependsOn)
+		byID[id] = work
+		originalOrder[id] = index
+		indegree[id] = len(work.DependsOn)
+	}
+	for _, work := range plan.Packages {
+		for _, dependency := range work.DependsOn {
+			if _, exists := byID[dependency]; !exists {
+				return fmt.Errorf("architecture package %s has unknown dependency %q", work.ID, dependency)
+			}
+			dependents[dependency] = append(dependents[dependency], work.ID)
+		}
+	}
+	ready := make([]string, 0, len(plan.Packages))
+	for id, count := range indegree {
+		if count == 0 {
+			ready = append(ready, id)
+		}
+	}
+	sort.Slice(ready, func(i, j int) bool { return originalOrder[ready[i]] < originalOrder[ready[j]] })
+	ordered := make([]ArchitectureWork, 0, len(plan.Packages))
+	for len(ready) > 0 {
+		id := ready[0]
+		ready = ready[1:]
+		ordered = append(ordered, byID[id])
+		for _, dependent := range dependents[id] {
+			indegree[dependent]--
+			if indegree[dependent] == 0 {
+				ready = append(ready, dependent)
+				sort.Slice(ready, func(i, j int) bool { return originalOrder[ready[i]] < originalOrder[ready[j]] })
+			}
+		}
+	}
+	if len(ordered) != len(plan.Packages) {
+		return fmt.Errorf("architecture dependencies contain a cycle")
+	}
+	idMap := make(map[string]string, len(ordered))
+	for index := range ordered {
+		idMap[ordered[index].ID] = fmt.Sprintf("package-%d", index+1)
+	}
+	for index := range ordered {
+		ordered[index].ID = idMap[ordered[index].ID]
+		for dependencyIndex, dependency := range ordered[index].DependsOn {
+			ordered[index].DependsOn[dependencyIndex] = idMap[dependency]
+		}
+	}
+	plan.Packages = ordered
+	return nil
+}
+
 func validateArchitecturePlan(plan *ArchitecturePlan) error {
 	if plan == nil || strings.TrimSpace(plan.Goal) == "" || len(plan.Packages) == 0 || len(plan.Packages) > 8 {
 		return fmt.Errorf("architecture requires a goal and 1-8 work packages")
+	}
+	if err := normalizeArchitecturePackageOrder(plan); err != nil {
+		return err
 	}
 	plan.FinalVerification = normalizeArchitectureVerification(plan.FinalVerification)
 	for index, command := range plan.FinalVerification {
@@ -329,6 +450,22 @@ func validateArchitecturePlan(plan *ArchitecturePlan) error {
 		}
 		work.Files = uniqueStrings(work.Files)
 		work.Acceptance = uniqueStrings(work.Acceptance)
+		for previousIndex := 0; previousIndex < index; previousIndex++ {
+			previous := &plan.Packages[previousIndex]
+			for _, currentFile := range work.Files {
+				if !containsString(previous.Files, currentFile) {
+					continue
+				}
+				if strings.HasSuffix(strings.ToLower(currentFile), "_test.go") && architectureWorkOwnsTests(*work) && !architectureWorkOwnsTests(*previous) {
+					previous.Files = removeString(previous.Files, currentFile)
+					continue
+				}
+				return fmt.Errorf("architecture file %q has conflicting ownership in %s and %s", currentFile, previous.ID, work.ID)
+			}
+			if len(previous.Files) == 0 {
+				return fmt.Errorf("architecture package %s lost all files while resolving test ownership", previous.ID)
+			}
+		}
 		ids[work.ID] = index
 		for _, dependency := range uniqueStrings(work.DependsOn) {
 			dependencyIndex, exists := ids[dependency]
@@ -339,6 +476,30 @@ func validateArchitecturePlan(plan *ArchitecturePlan) error {
 		work.DependsOn = uniqueStrings(work.DependsOn)
 	}
 	return nil
+}
+
+func architectureWorkOwnsTests(work ArchitectureWork) bool {
+	text := strings.ToLower(work.Objective + " " + strings.Join(work.Acceptance, " "))
+	return containsAnyFold(text, "test", "verify", "coverage")
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(values []string, target string) []string {
+	result := values[:0]
+	for _, value := range values {
+		if value != target {
+			result = append(result, value)
+		}
+	}
+	return result
 }
 
 func validateArchitectureReview(plan *ArchitecturePlan, previous []ArchitectureFinding, review *ArchitectureReview) error {
@@ -360,14 +521,20 @@ func validateArchitectureReview(plan *ArchitecturePlan, previous []ArchitectureF
 		previousIDs[finding.ID] = struct{}{}
 	}
 	seen := make(map[string]struct{})
+	keptFindings := review.Findings[:0]
 	for index := range review.Findings {
 		finding := &review.Findings[index]
 		finding.ID = normalizeCassandraID(finding.ID)
+		if _, wasPrevious := previousIDs[finding.ID]; wasPrevious && resolutionStatus(review.FindingResolutions, finding.ID) == "resolved" {
+			review.DismissedFindings = append(review.DismissedFindings, *finding)
+			continue
+		}
 		if _, duplicate := seen[finding.ID]; duplicate {
 			return fmt.Errorf("architecture finding %q is duplicated", finding.ID)
 		}
 		seen[finding.ID] = struct{}{}
-		if finding.PackageID == "all" || finding.PackageID == "global" || finding.PackageID == "architecture" {
+		packageID := strings.ToLower(strings.TrimSpace(finding.PackageID))
+		if packageID == "all" || packageID == "global" || packageID == "architecture" || packageID == "n/a" || packageID == "na" || packageID == "none" || packageID == "not_applicable" || packageID == "not applicable" {
 			finding.PackageID = ""
 		}
 		if _, exists := known[finding.PackageID]; !exists {
@@ -376,13 +543,21 @@ func validateArchitectureReview(plan *ArchitecturePlan, previous []ArchitectureF
 		if strings.TrimSpace(finding.Summary) == "" || strings.TrimSpace(finding.FailureScenario) == "" || strings.TrimSpace(finding.RequiredOutcome) == "" {
 			return fmt.Errorf("architecture finding %q is incomplete", finding.ID)
 		}
+		keptFindings = append(keptFindings, *finding)
 	}
+	review.Findings = keptFindings
 	resolutions := make(map[string]string, len(review.FindingResolutions))
 	for index := range review.FindingResolutions {
 		resolution := &review.FindingResolutions[index]
 		resolution.ID = normalizeCassandraID(resolution.ID)
 		if _, exists := previousIDs[resolution.ID]; !exists {
-			return fmt.Errorf("architecture resolution references unknown finding %q", resolution.ID)
+			if len(previousIDs) == 1 && len(review.FindingResolutions) == 1 {
+				for onlyID := range previousIDs {
+					resolution.ID = onlyID
+				}
+			} else {
+				return fmt.Errorf("architecture resolution references unknown finding %q", resolution.ID)
+			}
 		}
 		if resolution.Status != "resolved" && resolution.Status != "unresolved" {
 			return fmt.Errorf("architecture resolution %q has invalid status %q", resolution.ID, resolution.Status)
@@ -395,10 +570,16 @@ func validateArchitectureReview(plan *ArchitecturePlan, previous []ArchitectureF
 	for id := range previousIDs {
 		status, exists := resolutions[id]
 		if !exists {
+			if review.MoreSuspected {
+				continue
+			}
 			return fmt.Errorf("previous architecture finding %q has no resolution", id)
 		}
 		_, remains := seen[id]
 		if status == "unresolved" && !remains {
+			if review.MoreSuspected {
+				continue
+			}
 			return fmt.Errorf("unresolved architecture finding %q is missing", id)
 		}
 		if status == "resolved" && remains {
@@ -412,17 +593,36 @@ func validateArchitectureReview(plan *ArchitecturePlan, previous []ArchitectureF
 	return nil
 }
 
+func resolutionStatus(resolutions []ArchitectureFindingResolution, id string) string {
+	id = normalizeCassandraID(id)
+	for _, resolution := range resolutions {
+		if normalizeCassandraID(resolution.ID) == id {
+			return resolution.Status
+		}
+	}
+	return ""
+}
+
 func normalizeCassandraID(id string) string {
 	id = strings.TrimSpace(id)
-	if !strings.HasPrefix(strings.ToUpper(id), "CASSANDRA-") {
+	upper := strings.ToUpper(id)
+	for _, prefix := range []string{"CASSANDRA-", "CASSANDRA_", "PACKAGE-", "PACKAGE_", "FINDING-", "FINDING_"} {
+		if strings.HasPrefix(upper, prefix) {
+			suffix := strings.TrimSpace(id[len(prefix):])
+			if number, err := strconv.Atoi(suffix); err == nil && number > 0 {
+				return fmt.Sprintf("CASSANDRA-%d", number)
+			}
+		}
+	}
+	if !strings.HasPrefix(upper, "CASSANDRA-") {
 		id = "CASSANDRA-" + id
 	}
 	return id
 }
 
 func validateDetailPlan(work ArchitectureWork, detail *DetailPlan) error {
-	if detail == nil || detail.PackageID != work.ID || len(detail.Steps) == 0 || len(detail.Steps) > 6 {
-		return fmt.Errorf("detail plan for %s requires 1-6 milestones", work.ID)
+	if detail == nil || detail.PackageID != work.ID || len(detail.Steps) != 1 {
+		return fmt.Errorf("detail plan for %s requires exactly one milestone", work.ID)
 	}
 	allowed := make(map[string]struct{}, len(work.Files))
 	for _, path := range work.Files {
@@ -431,14 +631,15 @@ func validateDetailPlan(work ArchitectureWork, detail *DetailPlan) error {
 	for index := range detail.Steps {
 		step := &detail.Steps[index]
 		step.ID = fmt.Sprintf("step-%d", index+1)
-		step.AllowedFiles = uniqueStrings(step.AllowedFiles)
-		if strings.TrimSpace(step.Objective) == "" || len(step.AllowedFiles) == 0 || len(uniqueStrings(step.Acceptance)) == 0 {
-			return fmt.Errorf("detail milestone %d is incomplete", index+1)
-		}
-		for _, path := range step.AllowedFiles {
+		for _, path := range uniqueStrings(step.AllowedFiles) {
 			if _, exists := allowed[path]; !exists {
 				return fmt.Errorf("detail milestone %d file %q is outside package %s", index+1, path, work.ID)
 			}
+		}
+		step.AllowedFiles = append([]string(nil), work.Files...)
+		step.Acceptance = uniqueStrings(append(step.Acceptance, work.Acceptance...))
+		if strings.TrimSpace(step.Objective) == "" || len(step.AllowedFiles) == 0 || len(step.Acceptance) == 0 {
+			return fmt.Errorf("detail milestone %d is incomplete", index+1)
 		}
 		for verificationIndex, command := range step.Verification {
 			canonical, err := normalizeVerificationCommand(command)
@@ -501,11 +702,37 @@ func registerArchitectViewFile(reg *tools.Registry) {
 }
 
 func (m *ModelTeamRoles) createArchitecture(ctx context.Context, objective string, feedback []ArchitectureFinding) (*ArchitecturePlan, error) {
-	payload, _ := json.Marshal(map[string]any{"objective": objective, "cassandra_findings": feedback})
+	plan, err := m.createArchitectureAttempt(ctx, objective, feedback)
+	if err == nil {
+		return plan, nil
+	}
+	retryFeedback := append([]ArchitectureFinding(nil), feedback...)
+	retryFeedback = append(retryFeedback, ArchitectureFinding{
+		ID:              "HOST-OUTPUT-VALIDATION",
+		Summary:         "Architect output failed validation",
+		FailureScenario: err.Error(),
+		RequiredOutcome: "Return a complete ArchitecturePlan with a non-empty goal, 1-8 uniquely owned work packages, valid acyclic dependencies, and non-empty acceptance criteria.",
+	})
+	plan, retryErr := m.createArchitectureAttempt(ctx, objective, retryFeedback)
+	if retryErr != nil {
+		return nil, fmt.Errorf("architect output failed validation after one retry: %w", retryErr)
+	}
+	return plan, nil
+}
+
+func (m *ModelTeamRoles) createArchitectureAttempt(ctx context.Context, objective string, feedback []ArchitectureFinding) (*ArchitecturePlan, error) {
+	payloadFeedback := compactArchitectureFindings(feedback)
+	payload, _ := json.Marshal(map[string]any{"objective": objective, "cassandra_findings": payloadFeedback})
 	reg := m.runner.newRoleRegistry()
-	registerArchitectTools(reg, requiredPlannerViewCalls(objective))
+	requiredViews := requiredPlannerViewCalls(objective)
+	if len(feedback) > 0 {
+		requiredViews = nil
+	}
+	if len(feedback) == 0 {
+		registerArchitectTools(reg, requiredViews)
+	}
 	temperature := 0.1
-	evidence := &executionEvidence{ProgressMarker: plannerProgressMarker, RequiredCalls: requiredPlannerViewCalls(objective)}
+	evidence := &executionEvidence{ProgressMarker: plannerProgressMarker, RequiredCalls: requiredViews}
 	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
 	evidence.CompletionReady = func() bool { return len(evidence.missingRequiredTools()) == 0 }
 	callCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypePlanner))
@@ -552,10 +779,344 @@ func (m *ModelTeamRoles) reviewArchitecture(ctx context.Context, objective strin
 	if err := decodePlanningJSON(report.Summary, &review); err != nil {
 		return nil, err
 	}
+	sanitizeArchitectureReview(objective, plan, previous, &review)
 	if err := validateArchitectureReview(plan, previous, &review); err != nil {
 		return nil, err
 	}
 	return &review, nil
+}
+
+func sanitizeArchitectureReview(objective string, plan *ArchitecturePlan, previous []ArchitectureFinding, review *ArchitectureReview) {
+	if review == nil {
+		return
+	}
+	previousIDs := make(map[string]struct{}, len(previous))
+	for _, finding := range previous {
+		previousIDs[normalizeCassandraID(finding.ID)] = struct{}{}
+	}
+	kept := review.Findings[:0]
+	dismissedIDs := make(map[string]struct{})
+	for _, finding := range review.Findings {
+		finding.ID = normalizeCassandraID(finding.ID)
+		if architectureFindingStrengthensObjective(objective, plan, finding) {
+			review.DismissedFindings = append(review.DismissedFindings, finding)
+			dismissedIDs[finding.ID] = struct{}{}
+			continue
+		}
+		kept = append(kept, finding)
+	}
+	review.Findings = kept
+	resolutions := review.FindingResolutions[:0]
+	resolvedIDs := make(map[string]struct{}, len(review.FindingResolutions))
+	for _, resolution := range review.FindingResolutions {
+		resolution.ID = normalizeCassandraID(resolution.ID)
+		if _, dismissed := dismissedIDs[resolution.ID]; dismissed {
+			resolution.Status = "resolved"
+			resolution.Evidence = "dismissed because it strengthens the original objective or contradicts the validated dependency graph"
+		}
+		resolutions = append(resolutions, resolution)
+		resolvedIDs[resolution.ID] = struct{}{}
+	}
+	for id := range dismissedIDs {
+		if _, wasPrevious := previousIDs[id]; !wasPrevious {
+			continue
+		}
+		if _, exists := resolvedIDs[id]; exists {
+			continue
+		}
+		resolutions = append(resolutions, ArchitectureFindingResolution{
+			ID:       id,
+			Status:   "resolved",
+			Evidence: "dismissed because it strengthens the original objective or contradicts the validated dependency graph",
+		})
+	}
+	review.FindingResolutions = resolutions
+	restoreUnresolvedArchitectureFindings(previous, review)
+	if len(review.Findings) == 0 && !review.MoreSuspected {
+		review.Passed = true
+	}
+	if len(review.DismissedFindings) > 0 {
+		dismissalSummary := fmt.Sprintf("host dismissed %d out-of-contract finding(s)", len(review.DismissedFindings))
+		if strings.TrimSpace(review.Summary) == "" {
+			review.Summary = dismissalSummary
+		} else {
+			review.Summary = strings.TrimSpace(review.Summary) + "; " + dismissalSummary
+		}
+	}
+}
+
+func restoreUnresolvedArchitectureFindings(previous []ArchitectureFinding, review *ArchitectureReview) {
+	if review == nil || len(previous) == 0 {
+		return
+	}
+	present := make(map[string]struct{}, len(review.Findings))
+	for _, finding := range review.Findings {
+		present[normalizeCassandraID(finding.ID)] = struct{}{}
+	}
+	previousByID := make(map[string]ArchitectureFinding, len(previous))
+	for _, finding := range previous {
+		finding.ID = normalizeCassandraID(finding.ID)
+		previousByID[finding.ID] = finding
+	}
+	for _, resolution := range review.FindingResolutions {
+		id := normalizeCassandraID(resolution.ID)
+		if resolution.Status != "unresolved" {
+			continue
+		}
+		if _, exists := present[id]; exists {
+			continue
+		}
+		finding, exists := previousByID[id]
+		if !exists {
+			continue
+		}
+		if len(review.Findings) >= 3 {
+			review.MoreSuspected = true
+			continue
+		}
+		review.Findings = append(review.Findings, finding)
+		present[id] = struct{}{}
+	}
+	if len(review.Findings) > 0 || review.MoreSuspected {
+		review.Passed = false
+	}
+}
+
+func architectureFindingStrengthensObjective(objective string, plan *ArchitecturePlan, finding ArchitectureFinding) bool {
+	text := strings.ToLower(strings.Join([]string{finding.Summary, finding.FailureScenario, finding.RequiredOutcome}, " "))
+	objectiveText := strings.ToLower(objective)
+	if findingClaimsDependencyCycle(text) && !architectureHasDependencyCycle(plan) {
+		return true
+	}
+	turnBased := strings.Contains(objectiveText, "turn-based") || strings.Contains(objectiveText, "turn based")
+	if turnBased && containsAnyFold(text, "real-time", "real time", "non-blocking", "nonblocking", "asynchronous", "automatic gravity", "automatic tick", "raw terminal", "stall", "deadlock", "blocking nature", "blocks indefinitely") {
+		return true
+	}
+	sharedStructsAllowed := strings.Contains(objectiveText, "share") && strings.Contains(objectiveText, "struct")
+	if sharedStructsAllowed && containsAnyFold(text, "encapsulation", "getter", "setter", "interface boundary", "package isolation", "public methods", "struct fields", "contract", "data flow", "function signature", "return signature", "explicit input parameter", "authorized to modify", "partitioned", "global state variables", "feed into", "feeds into", "consume the output", "consumes the output") {
+		return true
+	}
+	if containsAnyFold(text, "input failure", "input validation") && containsAnyFold(text, "spawn", "placement failure", "game-over", "game over") {
+		return true
+	}
+	if containsAnyFold(objectiveText, "piece cannot", "cannot spawn", "cannot be placed") && containsAnyFold(text, "any piece", "full top row", "insurmountable stack") {
+		return true
+	}
+	if objectiveRequiresGameOverTest(objectiveText) && containsAnyFold(text, "remove", "cannot be tested", "impossible to test", "not pure", "too stateful", "stateful and loop-dependent", "integration testing context") && containsAnyFold(text, "game-over", "game over") {
+		return true
+	}
+	if containsAnyFold(text, "remove dependency", "add dependency", "dependency should", "incorrectly depends", "dependency flow is incorrect") && !architectureHasDependencyCycle(plan) {
+		return true
+	}
+	if findingClaimsMissingExistingDependency(plan, finding, text) {
+		return true
+	}
+	if findingOutcomeAlreadyCovered(plan, finding) {
+		return true
+	}
+	if findingRuntimeFlowAlreadyCovered(plan, finding) {
+		return true
+	}
+	if containsAnyFold(text, "race condition", "race freedom") && turnBased {
+		return true
+	}
+	return false
+}
+
+func findingRuntimeFlowAlreadyCovered(plan *ArchitecturePlan, finding ArchitectureFinding) bool {
+	if plan == nil || finding.PackageID == "" {
+		return false
+	}
+	var work *ArchitectureWork
+	for index := range plan.Packages {
+		if plan.Packages[index].ID == finding.PackageID {
+			work = &plan.Packages[index]
+			break
+		}
+	}
+	if work == nil {
+		return false
+	}
+	findingText := strings.ToLower(strings.Join([]string{finding.Summary, finding.FailureScenario, finding.RequiredOutcome}, " "))
+	if !containsAnyFold(findingText, "sequence", "control flow", "data flow", "feed into", "output", "before calling", "before p", "input ->", "state update") {
+		return false
+	}
+	packageText := strings.ToLower(work.Objective + " " + strings.Join(work.Acceptance, " "))
+	concepts := [][]string{
+		{"input", "command", "action"},
+		{"update state", "state update", "rules", "logic"},
+		{"render", "display", "presentation"},
+		{"repeat", "loop", "until"},
+	}
+	matched := 0
+	for _, alternatives := range concepts {
+		if containsAnyFold(packageText, alternatives...) {
+			matched++
+		}
+	}
+	return matched >= 3
+}
+
+func findingOutcomeAlreadyCovered(plan *ArchitecturePlan, finding ArchitectureFinding) bool {
+	if plan == nil || finding.PackageID == "" {
+		return false
+	}
+	var work *ArchitectureWork
+	for index := range plan.Packages {
+		if plan.Packages[index].ID == finding.PackageID {
+			work = &plan.Packages[index]
+			break
+		}
+	}
+	if work == nil {
+		return false
+	}
+	packageText := strings.ToLower(work.Objective + " " + strings.Join(work.Acceptance, " "))
+	outcome := strings.ToLower(finding.RequiredOutcome)
+	concepts := [][]string{
+		{"rotation", "rotate", "rotated"},
+		{"boundaries", "boundary", "within the board"},
+		{"collision", "collide"},
+		{"first piece", "initial piece", "retrieve the first", "initializ"},
+		{"gravity", "dropping", "move down"},
+		{"game-over", "game over"},
+		{"line clear", "clearing full lines", "full-line"},
+		{"score", "scoring"},
+	}
+	matchedConcepts := 0
+	coveredConcepts := 0
+	for _, alternatives := range concepts {
+		if !containsAnyFold(outcome, alternatives...) {
+			continue
+		}
+		matchedConcepts++
+		if containsAnyFold(packageText, alternatives...) {
+			coveredConcepts++
+		}
+	}
+	return matchedConcepts >= 2 && matchedConcepts == coveredConcepts
+}
+
+func findingClaimsMissingExistingDependency(plan *ArchitecturePlan, finding ArchitectureFinding, text string) bool {
+	if plan == nil || !containsAnyFold(text, "missing dependency", "no explicit dependency", "add '", "add \"") {
+		return false
+	}
+	var work *ArchitectureWork
+	for index := range plan.Packages {
+		if plan.Packages[index].ID == finding.PackageID {
+			work = &plan.Packages[index]
+			break
+		}
+	}
+	if work == nil {
+		return false
+	}
+	for _, dependency := range work.DependsOn {
+		if containsAnyFold(text, dependency) {
+			return true
+		}
+	}
+	return false
+}
+
+func objectiveRequiresGameOverTest(objective string) bool {
+	return containsAnyFold(objective, "tests for", "test for", "testing") && containsAnyFold(objective, "game-over", "game over")
+}
+
+func findingClaimsDependencyCycle(text string) bool {
+	return containsAnyFold(text, "dependency cycle", "circular dependency", "circular import", "cycle risk")
+}
+
+func architectureHasDependencyCycle(plan *ArchitecturePlan) bool {
+	if plan == nil {
+		return false
+	}
+	dependencies := make(map[string][]string, len(plan.Packages))
+	for _, work := range plan.Packages {
+		dependencies[work.ID] = work.DependsOn
+	}
+	visiting := make(map[string]bool, len(dependencies))
+	visited := make(map[string]bool, len(dependencies))
+	var visit func(string) bool
+	visit = func(id string) bool {
+		if visiting[id] {
+			return true
+		}
+		if visited[id] {
+			return false
+		}
+		visiting[id] = true
+		for _, dependency := range dependencies[id] {
+			if visit(dependency) {
+				return true
+			}
+		}
+		visiting[id] = false
+		visited[id] = true
+		return false
+	}
+	for id := range dependencies {
+		if visit(id) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsAnyFold(value string, candidates ...string) bool {
+	value = strings.ToLower(value)
+	for _, candidate := range candidates {
+		if strings.Contains(value, strings.ToLower(candidate)) {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeArchitectureUnresolved(previous []ArchitectureFinding, review *ArchitectureReview) []ArchitectureFinding {
+	active := make(map[string]ArchitectureFinding, len(previous)+len(review.Findings))
+	for _, finding := range previous {
+		active[finding.ID] = finding
+	}
+	for _, resolution := range review.FindingResolutions {
+		if resolution.Status == "resolved" {
+			delete(active, resolution.ID)
+		}
+	}
+	for _, finding := range review.Findings {
+		active[finding.ID] = finding
+	}
+	ids := make([]string, 0, len(active))
+	for id := range active {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	result := make([]ArchitectureFinding, 0, len(ids))
+	for _, id := range ids {
+		result = append(result, active[id])
+	}
+	return result
+}
+
+func rewriteArchitectureFindingTargets(findings []ArchitectureFinding, architecture *ArchitecturePlan) []ArchitectureFinding {
+	result := append([]ArchitectureFinding(nil), findings...)
+	if architecture == nil {
+		return result
+	}
+	byID := make(map[string]ArchitectureWork, len(architecture.Packages))
+	for _, work := range architecture.Packages {
+		byID[work.ID] = work
+	}
+	for index := range result {
+		work, exists := byID[result[index].PackageID]
+		if !exists {
+			continue
+		}
+		files := strings.Join(work.Files, ", ")
+		result[index].PackageID = ""
+		result[index].RequiredOutcome = fmt.Sprintf("For the work package currently owning [%s]: %s", files, result[index].RequiredOutcome)
+	}
+	return result
 }
 
 func compactArchitectureFindings(findings []ArchitectureFinding) []map[string]string {

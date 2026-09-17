@@ -11,10 +11,10 @@ const (
 	defaultTesterNumPredict   = 512
 	defaultReviewerNumPredict = 1536
 
-	defaultPlannerTimeout  = 2 * time.Minute
-	defaultCoderTimeout    = 8 * time.Minute
-	defaultTesterTimeout   = 90 * time.Second
-	defaultReviewerTimeout = 2 * time.Minute
+	defaultPlannerTimeout  = 10 * time.Minute
+	defaultCoderTimeout    = 40 * time.Minute
+	defaultTesterTimeout   = 6 * time.Minute
+	defaultReviewerTimeout = 20 * time.Minute
 )
 
 type roleBudget struct {
@@ -22,7 +22,7 @@ type roleBudget struct {
 	Timeout    time.Duration
 }
 
-const planningPipelineTimeout = 20 * time.Minute
+const architectureReviewTimeout = 70 * time.Minute
 
 func defaultRoleBudget(subType SubagentType) roleBudget {
 	switch subType {

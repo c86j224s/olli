@@ -11,6 +11,9 @@ func TestDefaultRoleBudgetsAreBoundedAndOrdered(t *testing.T) {
 	coder := defaultRoleBudget(TypeCoder)
 	tester := defaultRoleBudget(TypeTester)
 	reviewer := defaultRoleBudget(TypeReviewer)
+	if planner.Timeout != 10*time.Minute || coder.Timeout != 40*time.Minute || tester.Timeout != 6*time.Minute || reviewer.Timeout != 20*time.Minute {
+		t.Fatalf("unexpected role timeouts: planner=%v coder=%v tester=%v reviewer=%v", planner.Timeout, coder.Timeout, tester.Timeout, reviewer.Timeout)
+	}
 	for role, budget := range map[SubagentType]roleBudget{
 		TypePlanner: planner, TypeCoder: coder, TypeTester: tester, TypeReviewer: reviewer,
 	} {
@@ -26,9 +29,10 @@ func TestDefaultRoleBudgetsAreBoundedAndOrdered(t *testing.T) {
 	}
 }
 
-func TestPlanningPipelineBudgetExceedsOnePlannerCall(t *testing.T) {
-	if planningPipelineTimeout <= defaultPlannerTimeout {
-		t.Fatalf("planning pipeline cannot fit architect, Cassandra, and detail calls: %v", planningPipelineTimeout)
+func TestArchitectureReviewBudgetFitsBoundedRepairCalls(t *testing.T) {
+	minimum := time.Duration(maxArchitectRepairs+1) * defaultPlannerTimeout
+	if architectureReviewTimeout != 70*time.Minute || architectureReviewTimeout <= minimum {
+		t.Fatalf("architecture review budget is invalid: %v, minimum %v", architectureReviewTimeout, minimum)
 	}
 }
 

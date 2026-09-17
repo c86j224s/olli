@@ -2,6 +2,10 @@ package subagent
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -36,6 +40,52 @@ func TestDevelopmentTeamContinuesAfterFixingEarlyPlanStep(t *testing.T) {
 	if report.Status != "SUCCESS" || roles.codeCalls != 3 {
 		t.Fatalf("later plan step was skipped after fix: %#v calls=%d", report, roles.codeCalls)
 	}
+}
+
+func TestExistingPlanContextFilesIncludesExistingReadOnlyFiles(t *testing.T) {
+	root := t.TempDir()
+	for _, path := range []string{"main.go", "prior.go"} {
+		if err := os.WriteFile(filepath.Join(root, path), []byte("package main\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan := &DevelopmentPlan{Files: []string{"main.go", "prior.go", "current.go", "future.go"}}
+	got := existingPlanContextFiles(plan, []string{"current.go"}, root)
+	if fmt.Sprint(got) != fmt.Sprint([]string{"main.go", "prior.go"}) {
+		t.Fatalf("unexpected existing plan context files: %v", got)
+	}
+}
+
+func TestDevelopmentTeamRetriesOneFailedCoderAttempt(t *testing.T) {
+	base := &scriptedTeamRoles{
+		plan:         teamTestPlan(),
+		codeReports:  []*CodeReport{{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"done"}}},
+		testReports:  []*TestReport{{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}}},
+		reviews:      []*ReviewReport{{Summary: "clean"}},
+		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
+	}
+	roles := &failFirstCoderRoles{scriptedTeamRoles: base}
+	runner, _ := NewDevelopmentTeamRunner(roles, 2)
+	report := runner.Run(context.Background(), "implement feature")
+	if report.Status != "SUCCESS" || roles.attempts != 2 || base.codeCalls != 1 {
+		t.Fatalf("failed Coder attempt was not retried once: %#v attempts=%d calls=%d", report, roles.attempts, base.codeCalls)
+	}
+}
+
+type failFirstCoderRoles struct {
+	*scriptedTeamRoles
+	attempts int
+}
+
+func (f *failFirstCoderRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, error) {
+	f.attempts++
+	if f.attempts == 1 {
+		return nil, fmt.Errorf("no progress")
+	}
+	if task.Attempt != 2 || !strings.Contains(task.Step.Objective, "previous Coder failed") {
+		return nil, fmt.Errorf("retry context missing")
+	}
+	return f.scriptedTeamRoles.Code(ctx, task)
 }
 
 func TestDevelopmentTeamVerifiesAfterCleanReviewWithoutStepVerification(t *testing.T) {

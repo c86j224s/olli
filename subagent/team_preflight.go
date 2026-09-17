@@ -102,6 +102,10 @@ func staticPreflightDirectory(ctx context.Context, workspace string, dir string)
 	for name := range packages {
 		packageNames = append(packageNames, name)
 	}
+	if len(packageNames) > 1 {
+		sort.Strings(packageNames)
+		return fmt.Errorf("directory %s contains multiple non-test Go packages: %s", filepath.Base(dir), strings.Join(packageNames, ", "))
+	}
 	sort.Strings(packageNames)
 	for _, name := range packageNames {
 		config := types.Config{Importer: importer.Default()}

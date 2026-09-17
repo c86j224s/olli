@@ -44,6 +44,20 @@ func TestStaticPreflightIncludesUnchangedPackageFiles(t *testing.T) {
 	}
 }
 
+func TestStaticPreflightRejectsMultipleImplementationPackagesInDirectory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "one.go"), []byte("package one\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "two.go"), []byte("package two\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report := runStaticPreflight(context.Background(), root, []string{"two.go"})
+	if report.Passed || !strings.Contains(report.Commands[0].Output, "multiple non-test Go packages") {
+		t.Fatalf("mixed implementation packages passed preflight: %#v", report)
+	}
+}
+
 func TestStaticPreflightIgnoresTestPackages(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package demo\n\nvar Value = 1\n"), 0600); err != nil {
@@ -76,11 +90,7 @@ func TestDevelopmentTeamRoutesStaticFailureDirectlyToCoder(t *testing.T) {
 				{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"draft"}},
 				{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"type fixed"}, AddressedFindings: []AddressedFinding{{ID: findingID, Status: "addressed", Evidence: "changed declaration"}}},
 			},
-			testReports: []*TestReport{{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}}},
-			reviews: []*ReviewReport{{
-				FindingResolutions: []FindingResolution{{ID: findingID, Status: "resolved", Evidence: "static preflight passed"}},
-				Summary:            "resolved",
-			}},
+			reviews:      []*ReviewReport{{Summary: "clean"}},
 			verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
 		},
 		path: path,
@@ -88,8 +98,8 @@ func TestDevelopmentTeamRoutesStaticFailureDirectlyToCoder(t *testing.T) {
 	runner, _ := NewDevelopmentTeamRunner(roles, 2)
 	runner = runner.WithWorkspace(root)
 	report := runner.Run(context.Background(), "fix feature")
-	if report.Status != "SUCCESS" || report.FixRounds != 1 || roles.reviewCalls != 1 {
-		t.Fatalf("static failure did not route through one coder fix then owning reviewer: %#v reviews=%d", report, roles.reviewCalls)
+	if report.Status != "SUCCESS" || report.FixRounds != 1 || roles.reviewCalls != len(defaultReviewDimensions) {
+		t.Fatalf("static failure did not route through one coder fix then assembled semantic review: %#v reviews=%d", report, roles.reviewCalls)
 	}
 	if len(report.Preflights) != 2 || report.Preflights[0].Passed || !report.Preflights[1].Passed {
 		t.Fatalf("static preflight evidence missing: %#v", report.Preflights)

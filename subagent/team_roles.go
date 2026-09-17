@@ -6,8 +6,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"go/ast"
+	"go/importer"
 	"go/parser"
 	"go/token"
+	"go/types"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,7 +29,9 @@ RULES:
 - When review_fixes are present, report each finding id in addressed_findings as addressed or not_addressed with concise evidence. This is a Coder claim; Reviewer and Tester make the final resolution decision.
 - When fixing compiler or test failures, correct those failures as well as the review findings before returning.
 - Modify only allowed_files. Never run tests or commands.
-- Inspect each target before editing.
+- Inspect each existing target before editing. A missing allowed file returns creation guidance; after that, create it immediately with replace_file.
+- source_snapshots contains authoritative complete text for existing read-only planned files. Reuse those definitions directly; do not call view_file for a file present in source_snapshots.
+- read_only_files are context only. Inspect only a file missing from source_snapshots and necessary to reuse existing types/functions; never edit it or explore unrelated names.
 - You MUST make at least one successful edit_file or replace_file call before returning CodeReport. Reading a file is not completion.
 - For the first milestone on a whole-file starter, use replace_file with complete parseable content. Do not implement later milestones early.
 - For later milestones, use edit_file with exact target_content copied from view_file; use replace_file only if a targeted edit cannot safely preserve parseability.
@@ -54,7 +59,7 @@ RULES:
 - Never modify code. Give structured findings to the Coder; the Coder alone implements fixes.
 - Compare the validated plan, changed files, latest test report, prior review findings, and current code.
 - Report only correctness, security, required-behavior, or unsafe-test defects.
-- Use view_file immediately to read every changed file completely. Use one unbounded call for a small file or enough non-overlapping ranges to cover a large file, then stop calling tools.
+- source_snapshots contains authoritative complete text for files the host already inspected. Review those directly. Use view_file only for a review_scope file missing from source_snapshots; then read it completely and stop calling tools.
 - Every new finding needs a stable id, real file and line, concise defect, concrete failure scenario, required outcome, and canonical verification commands.
 - Verification entries may only be: "go_test", "go_test ./path", "go_vet", "go_vet ./path", "git_status", "git_diff", or "git_diff file". Never return go run or prose instructions.
 - For every previous finding id, return resolved or unresolved with concrete current evidence. Unresolved previous findings must also remain in findings with the same id.
@@ -65,6 +70,7 @@ RULES:
 type TeamModels struct {
 	Planner             string
 	Coder               string
+	TestCoder           string
 	Tester              string
 	Reviewer            string
 	Cassandra           string
@@ -101,6 +107,9 @@ func (m TeamModels) withFallback(fallback string) TeamModels {
 	}
 	if strings.TrimSpace(m.Coder) == "" {
 		m.Coder = fallback
+	}
+	if strings.TrimSpace(m.TestCoder) == "" {
+		m.TestCoder = m.Coder
 	}
 	if strings.TrimSpace(m.Tester) == "" {
 		m.Tester = fallback
@@ -157,7 +166,7 @@ func (m *ModelTeamRoles) Plan(ctx context.Context, objective string) (*Developme
 }
 
 func (m *ModelTeamRoles) ReviewArchitecture(ctx context.Context, objective string) (*PlanningReport, error) {
-	roleCtx, cancel := withRoleTimeout(ctx, roleBudget{Timeout: planningPipelineTimeout})
+	roleCtx, cancel := withRoleTimeout(ctx, roleBudget{Timeout: architectureReviewTimeout})
 	defer cancel()
 	architecture, err := m.createArchitecture(roleCtx, objective, nil)
 	if err != nil {
@@ -175,13 +184,25 @@ func (m *ModelTeamRoles) ReviewArchitecture(ctx context.Context, objective strin
 			return &PlanningReport{Architecture: *architecture, Reviews: reviews}, nil
 		}
 		if round >= maxArchitectRepairs {
-			return &PlanningReport{Architecture: *architecture, Reviews: reviews}, nil
+			return planningReportAtLimit(architecture, unresolved, reviews, review), nil
 		}
-		unresolved = append([]ArchitectureFinding(nil), review.Findings...)
+		unresolved = mergeArchitectureUnresolved(unresolved, review)
+		unresolved = rewriteArchitectureFindingTargets(unresolved, architecture)
 		architecture, err = m.createArchitecture(roleCtx, objective, unresolved)
 		if err != nil {
 			return nil, fmt.Errorf("architect repair %d failed: %w", round+1, err)
 		}
+	}
+}
+
+func planningReportAtLimit(architecture *ArchitecturePlan, unresolved []ArchitectureFinding, reviews []ArchitectureReview, latest *ArchitectureReview) *PlanningReport {
+	unresolved = mergeArchitectureUnresolved(unresolved, latest)
+	unresolved = rewriteArchitectureFindingTargets(unresolved, architecture)
+	return &PlanningReport{
+		Architecture:       *architecture,
+		Reviews:            reviews,
+		ReviewLimitReached: true,
+		UnresolvedFindings: unresolved,
 	}
 }
 
@@ -190,15 +211,16 @@ func (m *ModelTeamRoles) PlanArchitecture(ctx context.Context, objective string)
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(planning.Reviews) == 0 || !planning.Reviews[len(planning.Reviews)-1].Passed {
+	if len(planning.Reviews) == 0 {
+		return nil, planning, fmt.Errorf("cassandra produced no architecture review")
+	}
+	if !planning.Reviews[len(planning.Reviews)-1].Passed && !planning.ReviewLimitReached {
 		return nil, planning, fmt.Errorf("cassandra rejected repaired architecture: %s", planning.Reviews[len(planning.Reviews)-1].Summary)
 	}
 	architecture := &planning.Architecture
-	roleCtx, cancel := withRoleTimeout(ctx, roleBudget{Timeout: planningPipelineTimeout})
-	defer cancel()
 	details := make([]DetailPlan, 0, len(architecture.Packages))
 	for _, work := range architecture.Packages {
-		detail, err := m.detailArchitectureWork(roleCtx, architecture, work)
+		detail, err := m.detailArchitectureWork(ctx, architecture, work)
 		if err != nil {
 			return nil, nil, fmt.Errorf("detail planning %s failed: %w", work.ID, err)
 		}
@@ -219,21 +241,42 @@ func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, 
 		return nil, err
 	}
 	reg := m.runner.newRoleRegistry()
-	registerTeamCoderTools(reg, task.Step.AllowedFiles)
+	missingSnapshots := filesMissingSnapshots(task.ReadOnlyFiles, task.SourceSnapshots)
+	registerTeamCoderTools(reg, task.Step.AllowedFiles, missingSnapshots)
 	temperature := 0.1
 	evidence := &executionEvidence{ProgressMarker: coderProgressMarker(m.runner.workspace), RequiredAnyTools: []string{"edit_file", "replace_file"}}
 	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
 	evidence.CompletionReady = func() bool { return len(evidence.missingRequiredTools()) == 0 }
-	coderRunner := m.runner.withModel(m.models.Coder)
+	testOnly := testOnlyPlanStep(task.Step)
+	coderModel := m.models.Coder
+	coderPrompt := coderTeamPrompt
+	if testOnly {
+		coderModel = m.models.TestCoder
+		coderPrompt += `
+
+TEST-ONLY MILESTONE:
+- All implementation APIs are already present in source_snapshots. Do not redesign or restate them.
+- Create every missing allowed _test.go file immediately with replace_file, using concise table-driven tests that compile against the snapshots.
+- Do not finish until the required test file has been written successfully.`
+		if task.Attempt > 1 {
+			coderModel = m.models.Coder
+			coderPrompt += "\n- The specialized test Coder failed. This is the single escalated attempt: write the test file before returning."
+		}
+	}
+	coderRunner := m.runner.withModel(coderModel)
 	if m.models.CoderThinking != nil {
 		coderRunner = coderRunner.withThinking(*m.models.CoderThinking)
 	}
-	report, err := coderRunner.executeSubagentLoopWithFormat(roleCtx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderTeamPrompt, reg, codeReportSchema(), &temperature, evidence)
+	report, err := coderRunner.executeSubagentLoopWithFormat(roleCtx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderPrompt, reg, codeReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
 	writes := evidence.SuccessfulTools["edit_file"] + evidence.SuccessfulTools["replace_file"]
 	if writes == 0 {
+		detail := latestFailedCoderToolResult(evidence)
+		if detail != "" {
+			return nil, fmt.Errorf("coder loop %s: coder returned without a successful edit_file or replace_file call; last write failure: %s", report.Termination, detail)
+		}
 		return nil, fmt.Errorf("coder loop %s: coder returned without a successful edit_file or replace_file call", report.Termination)
 	}
 	codeReport, parseErr := parseCodeReport(report.Summary)
@@ -318,21 +361,26 @@ func (m *ModelTeamRoles) Review(ctx context.Context, task ReviewTask) (*ReviewRe
 		return nil, err
 	}
 	reviewContext := task.Context
+	reviewFiles := reviewContext.ReviewScope
+	if len(reviewFiles) == 0 {
+		reviewFiles = changedFilesFromCodeReports(reviewContext.CodeReports)
+	}
+	reviewContext.SourceSnapshots = reviewSourceSnapshots(reviewFiles, m.runner.workspace)
 	payload, err := json.Marshal(reviewContext)
 	if err != nil {
 		return nil, err
 	}
 	reg := m.runner.newRoleRegistry()
-	registerTeamReviewerTools(reg)
 	temperature := 0.1
-	reviewFiles := reviewContext.ReviewScope
-	if len(reviewFiles) == 0 {
-		reviewFiles = changedFilesFromCodeReports(reviewContext.CodeReports)
-	}
-	evidence := &executionEvidence{ProgressMarker: inspectedFileProgressMarker, RequiredTools: map[string]int{"view_file": 1}}
-	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
-	evidence.CompletionReady = func() bool {
-		return len(evidence.missingRequiredTools()) == 0 && requireReviewerFileEvidence(reviewFiles, evidence, m.runner.workspace) == nil
+	missingSnapshots := filesMissingSnapshots(reviewFiles, reviewContext.SourceSnapshots)
+	var evidence *executionEvidence
+	if len(missingSnapshots) > 0 {
+		registerTeamReviewerTools(reg)
+		evidence = &executionEvidence{ProgressMarker: inspectedFileProgressMarker, RequiredTools: map[string]int{"view_file": 1}}
+		evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
+		evidence.CompletionReady = func() bool {
+			return len(evidence.missingRequiredTools()) == 0 && requireReviewerFileEvidence(missingSnapshots, evidence, m.runner.workspace) == nil
+		}
 	}
 	reviewerRunner := m.runner.withModel(m.models.reviewerModel(task.Dimension))
 	if m.models.ReviewerThinking != nil {
@@ -349,19 +397,35 @@ func (m *ModelTeamRoles) Review(ctx context.Context, task ReviewTask) (*ReviewRe
 	if report.Status != "SUCCESS" {
 		return nil, fmt.Errorf("reviewer loop %s: %s", report.Termination, report.Summary)
 	}
-	if err := requireReviewerFileEvidence(reviewFiles, evidence, m.runner.workspace); err != nil {
-		return nil, err
-	}
-	reviewReport, err := parseReviewReport(report.Summary)
-	if err != nil {
-		return nil, err
+	if len(missingSnapshots) > 0 {
+		if err := requireReviewerFileEvidence(missingSnapshots, evidence, m.runner.workspace); err != nil {
+			return nil, err
+		}
 	}
 	previous := dimensionReviewHistory(reviewContext.PreviousReviews, task.Dimension)
-	if len(previous) == 0 {
+	reviewReport, parseErr := parseReviewReport(report.Summary)
+	if reviewReport != nil && len(previous) == 0 {
 		reviewReport.FindingResolutions = nil
 	}
-	if err := validateDimensionReviewReport(reviewContext.Plan, task.Dimension, previous, reviewReport); err != nil {
-		return nil, err
+	validationErr := parseErr
+	if validationErr == nil {
+		validationErr = validateDimensionReviewReport(reviewContext.Plan, task.Dimension, previous, reviewReport)
+	}
+	if validationErr != nil {
+		repaired, repairErr := reviewerRunner.requestStructuredRepair(roleCtx, string(TypeReviewer), string(payload), prompt, report.Summary, validationErr, reviewReportSchema(), &temperature)
+		if repairErr != nil {
+			return nil, repairErr
+		}
+		reviewReport, parseErr = parseReviewReport(repaired)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		if len(previous) == 0 {
+			reviewReport.FindingResolutions = nil
+		}
+		if err := validateDimensionReviewReport(reviewContext.Plan, task.Dimension, previous, reviewReport); err != nil {
+			return nil, fmt.Errorf("reviewer output remained invalid after one repair: %w", err)
+		}
 	}
 	return reviewReport, nil
 }
@@ -531,6 +595,19 @@ func testReportFromEvidence(required []string, evidence *executionEvidence) *Tes
 	return &TestReport{Passed: passed, Commands: commands, Summary: summary}
 }
 
+func latestFailedCoderToolResult(evidence *executionEvidence) string {
+	if evidence == nil {
+		return ""
+	}
+	for index := len(evidence.AttemptedCalls) - 1; index >= 0; index-- {
+		call := evidence.AttemptedCalls[index]
+		if (call.Name == "edit_file" || call.Name == "replace_file") && !call.Succeeded {
+			return strings.TrimSpace(call.Result)
+		}
+	}
+	return ""
+}
+
 func codeReportFromEvidence(step PlanStep, evidence *executionEvidence) *CodeReport {
 	var changed []string
 	for _, call := range evidence.SuccessfulCalls {
@@ -559,7 +636,52 @@ func changedFilesFromCodeReports(codeReports []CodeReport) []string {
 	return uniqueStrings(files)
 }
 
+func reviewSourceSnapshots(files []string, workspace string) map[string]string {
+	snapshots := make(map[string]string, len(files))
+	for _, path := range uniqueStrings(files) {
+		normalized, err := normalizePlanPath(path)
+		if err != nil {
+			continue
+		}
+		safePath, err := tools.IsPathSafeFrom(normalized, workspace, workspace)
+		if err != nil {
+			continue
+		}
+		info, err := os.Lstat(safePath)
+		if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			continue
+		}
+		data, err := os.ReadFile(safePath)
+		if err != nil {
+			continue
+		}
+		snapshots[normalized] = string(data)
+	}
+	return snapshots
+}
+
+func filesMissingSnapshots(files []string, snapshots map[string]string) []string {
+	var missing []string
+	for _, path := range uniqueStrings(files) {
+		normalized, err := normalizePlanPath(path)
+		if err != nil {
+			missing = append(missing, path)
+			continue
+		}
+		if _, exists := snapshots[normalized]; !exists {
+			missing = append(missing, normalized)
+		}
+	}
+	return missing
+}
+
 func requireReviewerFileEvidence(requiredFiles []string, evidence *executionEvidence, workspace string) error {
+	if evidence == nil {
+		if len(requiredFiles) == 0 {
+			return nil
+		}
+		return fmt.Errorf("reviewer evidence is required for files without source snapshots")
+	}
 	required := make(map[string]struct{}, len(requiredFiles))
 	for _, path := range requiredFiles {
 		normalized, err := normalizePlanPath(path)
@@ -692,13 +814,22 @@ func canonicalActionCommand(action string, target string) string {
 	return action + " " + target
 }
 
-func registerTeamCoderTools(reg *tools.Registry, allowedFiles []string) {
+func registerTeamCoderTools(reg *tools.Registry, allowedFiles []string, readOnlyFiles ...[]string) {
 	allowed := make(map[string]struct{}, len(allowedFiles))
+	readable := make(map[string]struct{}, len(allowedFiles))
 	inspected := make(map[string][][2]int)
 	for _, path := range allowedFiles {
 		allowed[path] = struct{}{}
+		readable[path] = struct{}{}
 	}
-	check := func(path string) error {
+	for _, paths := range readOnlyFiles {
+		for _, path := range paths {
+			if normalized, err := normalizePlanPath(path); err == nil {
+				readable[normalized] = struct{}{}
+			}
+		}
+	}
+	checkWrite := func(path string) error {
 		path, err := normalizePlanPath(path)
 		if err != nil {
 			return err
@@ -708,42 +839,63 @@ func registerTeamCoderTools(reg *tools.Registry, allowedFiles []string) {
 		}
 		return nil
 	}
+	checkRead := func(path string) error {
+		path, err := normalizePlanPath(path)
+		if err != nil {
+			return err
+		}
+		if _, exists := readable[path]; !exists {
+			return fmt.Errorf("coder path %q is outside readable planned files", path)
+		}
+		return nil
+	}
 
 	reg.Register(ollama.Tool{Type: "function", Function: ollama.FunctionDef{Name: "view_file", Description: "View one allowed source file", Parameters: ollama.FunctionParamSchema{Type: "object", Properties: map[string]ollama.FunctionParamProperty{
 		"file_path": {Type: "string", Description: "Allowed workspace-relative file"}, "start_line": {Type: "integer", Description: "Optional start line"}, "end_line": {Type: "integer", Description: "Optional end line"},
 	}, Required: []string{"file_path"}}}}, func(args map[string]interface{}) (string, error) {
 		path, _ := args["file_path"].(string)
-		if err := check(path); err != nil {
+		if err := checkRead(path); err != nil {
 			return "", err
 		}
 		start := tools.ParseOptionalInt(args, "start_line")
 		end := tools.ParseOptionalInt(args, "end_line")
 		result, err := tools.ViewFile(path, start, end, reg.GetWorkspace(), reg.GetWorkspaceRoot())
-		if err == nil {
+		if err != nil {
 			normalized, normalizeErr := normalizePlanPath(path)
 			if normalizeErr != nil {
 				return "", normalizeErr
 			}
-			if start <= 0 {
-				start = 1
-			}
-			if end <= 0 {
-				if strings.Contains(result, "[Truncated at 800 lines limit]") {
-					end = start + 799
-				} else {
-					end = int(^uint(0) >> 1)
+			safePath, safeErr := tools.IsPathSafeFrom(normalized, reg.GetWorkspace(), reg.GetWorkspaceRoot())
+			if safeErr == nil {
+				if _, statErr := os.Lstat(safePath); os.IsNotExist(statErr) {
+					return fmt.Sprintf("Allowed file %q does not exist yet. Create it now with replace_file using complete parseable content; do not inspect files outside allowed_files.", normalized), nil
 				}
 			}
-			inspected[normalized] = append(inspected[normalized], [2]int{start, end})
+			return result, err
 		}
-		return result, err
+		normalized, normalizeErr := normalizePlanPath(path)
+		if normalizeErr != nil {
+			return "", normalizeErr
+		}
+		if start <= 0 {
+			start = 1
+		}
+		if end <= 0 {
+			if strings.Contains(result, "[Truncated at 800 lines limit]") {
+				end = start + 799
+			} else {
+				end = int(^uint(0) >> 1)
+			}
+		}
+		inspected[normalized] = append(inspected[normalized], [2]int{start, end})
+		return result, nil
 	})
 
 	reg.Register(ollama.Tool{Type: "function", Function: ollama.FunctionDef{Name: "edit_file", Description: "Replace one exact existing chunk in an allowed file", Parameters: ollama.FunctionParamSchema{Type: "object", Properties: map[string]ollama.FunctionParamProperty{
 		"file_path": {Type: "string", Description: "Allowed workspace-relative file"}, "target_content": {Type: "string", Description: "Exact non-empty existing content copied from view_file"}, "replacement_content": {Type: "string", Description: "Replacement content"},
 	}, Required: []string{"file_path", "target_content", "replacement_content"}}}}, func(args map[string]interface{}) (string, error) {
 		path, _ := args["file_path"].(string)
-		if err := check(path); err != nil {
+		if err := checkWrite(path); err != nil {
 			return "", err
 		}
 		normalized, _ := normalizePlanPath(path)
@@ -767,7 +919,7 @@ func registerTeamCoderTools(reg *tools.Registry, allowedFiles []string) {
 		"file_path": {Type: "string", Description: "Allowed workspace-relative file"}, "content": {Type: "string", Description: "Complete replacement file content"},
 	}, Required: []string{"file_path", "content"}}}}, func(args map[string]interface{}) (string, error) {
 		path, _ := args["file_path"].(string)
-		if err := check(path); err != nil {
+		if err := checkWrite(path); err != nil {
 			return "", err
 		}
 		normalized, _ := normalizePlanPath(path)
@@ -795,9 +947,8 @@ func registerTeamCoderTools(reg *tools.Registry, allowedFiles []string) {
 			return "", fmt.Errorf("replace_file requires non-empty complete content")
 		}
 		if strings.EqualFold(filepath.Ext(path), ".go") {
-			files := token.NewFileSet()
-			if _, err := parser.ParseFile(files, path, content, parser.AllErrors); err != nil {
-				return "", fmt.Errorf("replace_file rejected invalid Go source before write: %w", err)
+			if err := validateTeamGoReplacement(path, content, reg.GetWorkspace(), reg.GetWorkspaceRoot()); err != nil {
+				return "", err
 			}
 		}
 		return tools.EditFile(path, "", content, reg.GetWorkspace(), reg.GetWorkspaceRoot())
@@ -860,10 +1011,50 @@ func validateTeamGoEdit(path, target, replacement, workspace, root string) error
 	if !strings.Contains(content, target) {
 		return fmt.Errorf("target content chunk not found in file %q", safePath)
 	}
-	candidate := strings.Replace(content, target, replacement, 1)
-	files := token.NewFileSet()
-	if _, err := parser.ParseFile(files, path, candidate, parser.AllErrors); err != nil {
-		return fmt.Errorf("edit_file would make Go source invalid; original preserved: %w", err)
+	return validateTeamGoReplacement(path, strings.Replace(content, target, replacement, 1), workspace, root)
+}
+
+func validateTeamGoReplacement(path, replacement, workspace, root string) error {
+	safePath, err := tools.IsPathSafeFrom(path, workspace, root)
+	if err != nil {
+		return err
+	}
+	set := token.NewFileSet()
+	candidate, err := parser.ParseFile(set, path, replacement, parser.AllErrors)
+	if err != nil {
+		return fmt.Errorf("Go write would make source invalid; original preserved: %w", err)
+	}
+	dir := filepath.Dir(safePath)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	isTestCandidate := strings.HasSuffix(strings.ToLower(path), "_test.go")
+	files := []*ast.File{candidate}
+	for _, entry := range entries {
+		entryPath := filepath.Join(dir, entry.Name())
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".go") || filepath.Clean(entryPath) == filepath.Clean(safePath) {
+			continue
+		}
+		isTestEntry := strings.HasSuffix(strings.ToLower(entry.Name()), "_test.go")
+		if isTestEntry && !isTestCandidate {
+			continue
+		}
+		file, parseErr := parser.ParseFile(set, entryPath, nil, parser.AllErrors)
+		if parseErr != nil {
+			return fmt.Errorf("existing package source %s is invalid: %w", entry.Name(), parseErr)
+		}
+		if file.Name.Name != candidate.Name.Name {
+			if isTestEntry || isTestCandidate {
+				continue
+			}
+			return fmt.Errorf("Go write uses package %q but existing source %s uses package %q; original preserved", candidate.Name.Name, entry.Name(), file.Name.Name)
+		}
+		files = append(files, file)
+	}
+	config := types.Config{Importer: importer.Default()}
+	if _, err := config.Check(candidate.Name.Name, set, files, nil); err != nil {
+		return fmt.Errorf("Go write would fail package type check; original preserved: %w", err)
 	}
 	return nil
 }
@@ -896,6 +1087,18 @@ func registerTeamReviewerTools(reg *tools.Registry) {
 		end := tools.ParseOptionalInt(args, "end_line")
 		return tools.ViewFile(path, start, end, reg.GetWorkspace(), reg.GetWorkspaceRoot())
 	})
+}
+
+func testOnlyPlanStep(step PlanStep) bool {
+	if len(step.AllowedFiles) == 0 {
+		return false
+	}
+	for _, path := range step.AllowedFiles {
+		if !strings.HasSuffix(strings.ToLower(path), "_test.go") {
+			return false
+		}
+	}
+	return true
 }
 
 func formatCodeTask(task CodeTask) string {

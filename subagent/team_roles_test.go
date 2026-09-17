@@ -37,12 +37,44 @@ func TestTeamCoderRegistryEnforcesAllowedFiles(t *testing.T) {
 	if _, err := reg.Execute("edit_file", map[string]interface{}{"file_path": "allowed.go", "target_content": "", "replacement_content": "package changed\n"}); err == nil || !strings.Contains(err.Error(), "use replace_file") {
 		t.Fatalf("coder used edit_file for whole-file replacement: %v", err)
 	}
-	if _, err := reg.Execute("replace_file", map[string]interface{}{"file_path": "allowed.go", "content": "package changed\n"}); err != nil {
+	if _, err := reg.Execute("replace_file", map[string]interface{}{"file_path": "allowed.go", "content": "package demo\n\nvar Changed = true\n"}); err != nil {
 		t.Fatalf("coder could not replace an allowed file: %v", err)
 	}
 	content, err := os.ReadFile(filepath.Join(root, "outside.go"))
 	if err != nil || string(content) != "package demo\n" {
 		t.Fatalf("unplanned file changed: %q, %v", content, err)
+	}
+}
+
+func TestTeamCoderRegistryGuidesCreationOfMissingAllowedFile(t *testing.T) {
+	root := t.TempDir()
+	reg := tools.NewEmptyRegistry()
+	reg.SetWorkspaceRoot(root)
+	reg.SetWorkspace(root)
+	registerTeamCoderTools(reg, []string{"new.go"})
+	result, err := reg.Execute("view_file", map[string]interface{}{"file_path": "new.go"})
+	if err != nil || !strings.Contains(result, "does not exist yet") || !strings.Contains(result, "replace_file") {
+		t.Fatalf("missing allowed file did not return creation guidance: result=%q err=%v", result, err)
+	}
+	if _, err := reg.Execute("replace_file", map[string]interface{}{"file_path": "new.go", "content": "package demo\n"}); err != nil {
+		t.Fatalf("coder could not create missing allowed file after guidance: %v", err)
+	}
+}
+
+func TestTeamCoderRegistryReadsPriorPlannedFilesButCannotEditThem(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "prior.go"), []byte("package demo\n\ntype Shared struct{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewEmptyRegistry()
+	reg.SetWorkspaceRoot(root)
+	reg.SetWorkspace(root)
+	registerTeamCoderTools(reg, []string{"current.go"}, []string{"prior.go"})
+	if _, err := reg.Execute("view_file", map[string]interface{}{"file_path": "prior.go"}); err != nil {
+		t.Fatalf("coder could not inspect prior planned file: %v", err)
+	}
+	if _, err := reg.Execute("replace_file", map[string]interface{}{"file_path": "prior.go", "content": "package demo\n"}); err == nil || !strings.Contains(err.Error(), "outside allowed_files") {
+		t.Fatalf("coder modified read-only prior file: %v", err)
 	}
 }
 
@@ -60,6 +92,33 @@ func TestTeamCoderRegistryNormalizesEquivalentAllowedPaths(t *testing.T) {
 	}
 	if _, err := reg.Execute("replace_file", map[string]interface{}{"file_path": "allowed.go", "content": "package changed\n"}); err != nil {
 		t.Fatalf("equivalent inspected path was not recognized: %v", err)
+	}
+}
+
+func TestTeamCoderReplacementRejectsPackageTypeErrorBeforeWrite(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "allowed.go")
+	original := "package demo\n\nvar Value = 1\n"
+	if err := os.WriteFile(path, []byte(original), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "existing.go"), []byte("package demo\n\ntype Shared struct{}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	reg := tools.NewEmptyRegistry()
+	reg.SetWorkspaceRoot(root)
+	reg.SetWorkspace(root)
+	registerTeamCoderTools(reg, []string{"allowed.go"})
+	if _, err := reg.Execute("view_file", map[string]interface{}{"file_path": "allowed.go"}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := reg.Execute("replace_file", map[string]interface{}{"file_path": "allowed.go", "content": "package demo\n\ntype Shared struct{}\n"})
+	if err == nil || !strings.Contains(err.Error(), "package type check") {
+		t.Fatalf("package type error was accepted: %v", err)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || string(data) != original {
+		t.Fatalf("package type error changed original: %q, %v", data, readErr)
 	}
 }
 
@@ -86,6 +145,21 @@ func TestTeamCoderGoEditPreservesOriginalOnSyntaxError(t *testing.T) {
 	data, readErr := os.ReadFile(path)
 	if readErr != nil || string(data) != original {
 		t.Fatalf("syntax-breaking edit changed original: %q, %v", data, readErr)
+	}
+}
+
+func TestReviewSourceSnapshotsCaptureCompleteSafeFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "one.go"), []byte("package demo\n\nvar One = 1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	snapshots := reviewSourceSnapshots([]string{"one.go", "missing.go"}, root)
+	if snapshots["one.go"] != "package demo\n\nvar One = 1\n" {
+		t.Fatalf("review snapshot was incomplete: %#v", snapshots)
+	}
+	missing := filesMissingSnapshots([]string{"one.go", "missing.go"}, snapshots)
+	if len(missing) != 1 || missing[0] != "missing.go" {
+		t.Fatalf("missing review snapshots were not tracked: %v", missing)
 	}
 }
 
@@ -207,7 +281,7 @@ func TestRequireExecutedActionEvidenceRejectsFabricatedSuccess(t *testing.T) {
 
 func TestTeamModelsUseRoleOverridesAndFallback(t *testing.T) {
 	models := (TeamModels{Planner: "planner", Tester: "tester", LogicReviewer: "logic"}).withFallback("fallback")
-	if models.Planner != "planner" || models.Tester != "tester" || models.Coder != "fallback" || models.Reviewer != "fallback" {
+	if models.Planner != "planner" || models.Tester != "tester" || models.Coder != "fallback" || models.TestCoder != "fallback" || models.Reviewer != "fallback" {
 		t.Fatalf("unexpected model selection: %#v", models)
 	}
 	if models.Cassandra != "fallback" || models.DetailPlanner != "planner" {
@@ -215,6 +289,15 @@ func TestTeamModelsUseRoleOverridesAndFallback(t *testing.T) {
 	}
 	if models.reviewerModel(ReviewDimensionLogic) != "logic" || models.reviewerModel(ReviewDimensionSafety) != "fallback" {
 		t.Fatalf("unexpected specialist model selection: %#v", models)
+	}
+}
+
+func TestTestOnlyPlanStep(t *testing.T) {
+	if !testOnlyPlanStep(PlanStep{AllowedFiles: []string{"one_test.go", "two_test.go"}}) {
+		t.Fatal("test-only milestone was not detected")
+	}
+	if testOnlyPlanStep(PlanStep{AllowedFiles: []string{"one_test.go", "logic.go"}}) {
+		t.Fatal("mixed milestone was classified as test-only")
 	}
 }
 

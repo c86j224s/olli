@@ -25,7 +25,7 @@ func parseTestReport(raw string) (*TestReport, error) {
 
 func parseReviewReport(raw string) (*ReviewReport, error) {
 	var report ReviewReport
-	if err := decodeStrictJSON(raw, &report); err != nil {
+	if err := decodeStrictJSON(extractPlanningJSONObject(raw), &report); err != nil {
 		return nil, fmt.Errorf("reviewer output is not valid ReviewReport JSON: %w", err)
 	}
 	return &report, nil
