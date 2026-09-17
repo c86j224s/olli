@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	agentloop "github.com/c86j224s/olli/loop"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/tools"
 )
@@ -19,7 +20,12 @@ RULES:
 - Never modify files and never run commands.
 - Use list_dir and view_file to inspect relevant files. Use grep_search only when file names are unknown.
 - After two relevant files have been read successfully, stop calling tools and return the final JSON.
-- Plan 1-4 small sequential steps.
+- Plan 1-24 minimal sequential milestones that cumulatively satisfy the ENTIRE delegated objective.
+- Decompose substantial work as finely as practical: one cohesive state change or behavior per milestone, normally 3-8 milestones for a feature and up to 12 for a larger objective.
+- A file may appear in multiple milestones. Every milestone must leave all touched source parseable and must be independently inspectable by deterministic static preflight.
+- Prefer one milestone only for a genuinely small edit. Never combine unrelated data structures, algorithms, I/O, and UI behavior merely because they share one file.
+- Never reduce the requested scope to setup, scaffolding, a foundation, or a partial implementation. Never defer a requested requirement outside the plan.
+- The final step's acceptance criteria must cover every user-visible requirement not already completed by earlier steps.
 - Every step must name exact workspace-relative allowed_files and observable acceptance criteria.
 - Verification entries are machine commands, never prose. Allowed exact forms: "go_test", "go_test ./path", "go_vet", "go_vet ./path", "git_status", "git_diff", or "git_diff file".
 - final_verification must include "go_test ./..." and "go_vet ./...".
@@ -39,7 +45,9 @@ func (r *SubagentRunner) RunPlannerWithContext(ctx context.Context, task string)
 	registerPlannerTools(reg)
 
 	temperature := 0.1
-	evidence := &executionEvidence{}
+	evidence := &executionEvidence{ProgressMarker: plannerProgressMarker, RequiredCalls: requiredPlannerViewCalls(task)}
+	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
+	evidence.CompletionReady = func() bool { return len(evidence.missingRequiredTools()) == 0 }
 	report, err := r.executeSubagentLoopWithFormat(ctx, subID, string(TypePlanner), task, plannerSystemPrompt, reg, developmentPlanSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, nil, err
@@ -51,10 +59,94 @@ func (r *SubagentRunner) RunPlannerWithContext(ctx context.Context, task string)
 		return report, nil, fmt.Errorf("planner returned a plan without successfully inspecting workspace evidence")
 	}
 	plan, err := parseDevelopmentPlanForWorkspace(report.Summary, r.workspace)
+	if err == nil {
+		return report, plan, nil
+	}
+	repaired, repairErr := r.repairDevelopmentPlan(ctx, task, report.Summary, err)
+	if repairErr != nil {
+		return report, nil, fmt.Errorf("planner output validation failed (%v), repair failed: %w", err, repairErr)
+	}
+	plan, err = parseDevelopmentPlanForWorkspace(repaired, r.workspace)
 	if err != nil {
-		return report, nil, err
+		return report, nil, fmt.Errorf("planner output remained invalid after one repair: %w", err)
+	}
+	report.Summary = repaired
+	if report.LoopMetrics != nil {
+		report.LoopMetrics.FormatRepairs++
 	}
 	return report, plan, nil
+}
+
+func (r *SubagentRunner) repairDevelopmentPlan(ctx context.Context, task string, invalid string, validationErr error) (string, error) {
+	numCtx := 32768
+	if r.cfg != nil && r.cfg.NumCtx > 0 {
+		numCtx = r.cfg.NumCtx
+	}
+	numPredict := defaultPlannerNumPredict
+	request := ollama.ChatRequest{
+		Model: r.model,
+		Messages: []ollama.Message{
+			{Role: "system", Content: plannerSystemPrompt},
+			{Role: "user", Content: task},
+			{Role: "assistant", Content: invalid},
+			{Role: "system", Content: fmt.Sprintf("The plan was rejected by deterministic validation: %v. Correct only the JSON plan. Do not call tools. Return one JSON object. Keep genuinely small edits in one milestone; decompose substantial work into minimal cohesive parseable milestones, up to 24.", validationErr)},
+		},
+		Format: developmentPlanSchema(),
+		Options: &ollama.Options{
+			NumCtx:      numCtx,
+			NumPredict:  &numPredict,
+			Temperature: 0.0,
+		},
+		Think: r.think,
+	}
+	response, err := r.client.ChatStreamFullWithContext(ctx, request, ollama.StreamCallbacks{})
+	if err != nil {
+		return "", err
+	}
+	if !looksLikeJSONObject(response.Content) {
+		return "", fmt.Errorf("repair did not return a JSON object")
+	}
+	return response.Content, nil
+}
+
+func requiredPlannerViewCalls(task string) []requiredToolCall {
+	path := singleExplicitTaskFile(task)
+	if path == "" {
+		return nil
+	}
+	arguments := map[string]interface{}{"file_path": path}
+	return []requiredToolCall{{
+		Name:        "view_file",
+		Fingerprint: agentloop.ActionFingerprint("view_file", arguments),
+		Description: "view_file " + path,
+	}}
+}
+
+func singleExplicitTaskFile(task string) string {
+	words := strings.FieldsFunc(task, func(r rune) bool {
+		switch r {
+		case ' ', '\t', '\r', '\n', '`', '\'', '"', '[', ']', '(', ')', '{', '}', ',', ';', ':':
+			return true
+		default:
+			return false
+		}
+	})
+	var candidates []string
+	for _, word := range words {
+		word = strings.Trim(strings.TrimSpace(word), ".!?")
+		if _, err := normalizePlanPath(word); err != nil || filepath.Ext(word) == "" {
+			continue
+		}
+		if strings.EqualFold(filepath.Base(word), "go.mod") || strings.EqualFold(filepath.Base(word), "go.sum") {
+			continue
+		}
+		candidates = append(candidates, filepath.Clean(word))
+	}
+	candidates = uniqueStrings(candidates)
+	if len(candidates) == 1 {
+		return candidates[0]
+	}
+	return ""
 }
 
 func registerPlannerTools(reg *tools.Registry) {

@@ -4,18 +4,22 @@ import (
 	"context"
 	"fmt"
 	"testing"
+
+	agentgraph "github.com/c86j224s/olli/graph"
 )
 
 type scriptedTeamRoles struct {
-	plan          *DevelopmentPlan
-	codeReports   []*CodeReport
-	testReports   []*TestReport
-	reviews       []*ReviewReport
-	verification  *TestReport
-	codeCalls     int
-	testCalls     int
-	reviewCalls   int
-	transitionLog []string
+	plan           *DevelopmentPlan
+	codeReports    []*CodeReport
+	testReports    []*TestReport
+	reviews        []*ReviewReport
+	verification   *TestReport
+	codeCalls      int
+	testCalls      int
+	reviewCalls    int
+	transitionLog  []string
+	poolRound      int
+	lastReviewStep string
 }
 
 func (s *scriptedTeamRoles) Plan(context.Context, string) (*DevelopmentPlan, error) {
@@ -39,13 +43,23 @@ func (s *scriptedTeamRoles) Test(_ context.Context, step PlanStep) (*TestReport,
 	s.testCalls++
 	return report, nil
 }
-func (s *scriptedTeamRoles) Review(context.Context, *DevelopmentPlan, []CodeReport) (*ReviewReport, error) {
-	if s.reviewCalls >= len(s.reviews) {
+func (s *scriptedTeamRoles) Review(_ context.Context, task ReviewTask) (*ReviewReport, error) {
+	if s.lastReviewStep != "" && task.Context.StepID != s.lastReviewStep {
+		s.poolRound++
+	}
+	s.lastReviewStep = task.Context.StepID
+	if s.poolRound >= len(s.reviews) {
 		return nil, fmt.Errorf("unexpected review call")
 	}
-	report := s.reviews[s.reviewCalls]
+	report := s.reviews[s.poolRound]
 	s.reviewCalls++
-	return report, nil
+	if len(task.Context.PreviousReviews) > 0 {
+		return report, nil
+	}
+	if task.Dimension == ReviewDimensionRequirements {
+		return report, nil
+	}
+	return &ReviewReport{Summary: "clean"}, nil
 }
 func (s *scriptedTeamRoles) Verify(context.Context, []string) (*TestReport, error) {
 	return s.verification, nil
@@ -96,9 +110,12 @@ func TestDevelopmentTeamRunnerSuccessOrder(t *testing.T) {
 	if report.Status != "SUCCESS" || report.Phase != TeamPhaseDone {
 		t.Fatalf("unexpected team result: %#v", report)
 	}
-	want := []TeamPhase{TeamPhasePlanning, TeamPhaseCoding, TeamPhaseTesting, TeamPhaseReviewing, TeamPhaseVerifying, TeamPhaseDone}
+	want := []TeamPhase{TeamPhasePlanning, TeamPhaseCoding, TeamPhasePreflight, TeamPhaseTesting, TeamPhaseReviewing, TeamPhaseVerifying, TeamPhaseDone}
 	if fmt.Sprint(report.Transitions) != fmt.Sprint(want) {
 		t.Fatalf("unexpected transitions: %v", report.Transitions)
+	}
+	if report.Graph == nil || report.Graph.Status != agentgraph.StatusSucceeded || report.Graph.Visits[teamNodeCoding] != 1 {
+		t.Fatalf("missing graph execution evidence: %#v", report.Graph)
 	}
 }
 
@@ -107,15 +124,15 @@ func TestDevelopmentTeamRunnerFixesReviewedFindingOnce(t *testing.T) {
 		plan: teamTestPlan(),
 		codeReports: []*CodeReport{
 			{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"initial implementation"}},
-			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"nil case fixed"}},
+			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"nil case fixed"}, AddressedFindings: []AddressedFinding{{ID: "finding-1", Status: "addressed", Evidence: "added nil handling"}}},
 		},
 		testReports: []*TestReport{
 			{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}},
 			{Passed: true, Commands: []CommandResult{passingCommand("go_test ./...")}},
 		},
 		reviews: []*ReviewReport{
-			{Findings: []Finding{{Severity: "high", File: "feature.go", Line: 10, Summary: "nil input panics", FailureScenario: "nil input reaches dereference"}}},
-			{Findings: nil, Summary: "clean"},
+			{Findings: []Finding{{ID: "finding-1", Severity: "high", File: "feature.go", Line: 10, Summary: "nil input panics", FailureScenario: "nil input reaches dereference", RequiredOutcome: "nil input is handled", Verification: []string{"go_test ./..."}}}},
+			{Findings: nil, FindingResolutions: []FindingResolution{{ID: "finding-1", Status: "resolved", Evidence: "nil input is now handled and tests pass"}}, Summary: "clean"},
 		},
 		verification: &TestReport{Passed: true, Commands: []CommandResult{passingCommand("go_test ./..."), passingCommand("go_vet ./...")}},
 	}
@@ -162,18 +179,21 @@ func TestValidateTestReportTrustsExitCodesNotSelfAssessment(t *testing.T) {
 }
 
 func TestDevelopmentTeamRunnerStopsAfterFixLimit(t *testing.T) {
-	finding := Finding{Severity: "high", File: "feature.go", Line: 10, Summary: "still broken", FailureScenario: "input crashes"}
+	finding := Finding{ID: "finding-1", Severity: "high", File: "feature.go", Line: 10, Summary: "still broken", FailureScenario: "input crashes", RequiredOutcome: "input no longer crashes", Verification: []string{"go_test ./..."}}
 	roles := &scriptedTeamRoles{
 		plan: teamTestPlan(),
 		codeReports: []*CodeReport{
 			{StepID: "step-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"initial"}},
-			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"fix one"}},
+			{StepID: "step-review-fix-1", ChangedFiles: []string{"feature.go"}, Completed: []string{"fix one"}, AddressedFindings: []AddressedFinding{{ID: "finding-1", Status: "addressed", Evidence: "attempted crash fix"}}},
 		},
 		testReports: []*TestReport{
 			{Passed: true, Commands: []CommandResult{passingCommand("go_test")}},
 			{Passed: true, Commands: []CommandResult{passingCommand("go_test")}},
 		},
-		reviews: []*ReviewReport{{Findings: []Finding{finding}}, {Findings: []Finding{finding}}},
+		reviews: []*ReviewReport{
+			{Findings: []Finding{finding}},
+			{Findings: []Finding{finding}, FindingResolutions: []FindingResolution{{ID: "finding-1", Status: "unresolved", Evidence: "input still crashes"}}},
+		},
 	}
 	runner, _ := NewDevelopmentTeamRunner(roles, 1)
 	report := runner.Run(context.Background(), "implement feature")

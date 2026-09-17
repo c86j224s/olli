@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/ergochat/readline"
 
@@ -289,6 +290,11 @@ func main() {
 					subThinkingActive = false
 					fmt.Printf("%s\n", cli.ColorReset)
 				}
+			},
+			OnSubagentHeartbeat: func(subType string, elapsed time.Duration) {
+				spinner.Stop()
+				boldColor, _ := cli.GetSubagentPalette(subType)
+				fmt.Printf("   %s↳ ⏳ [%s]%s model response is still generating (%s)\n", boldColor, subType, cli.ColorReset, elapsed)
 			},
 			OnSubagentToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
 				spinner.Stop()

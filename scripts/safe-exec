@@ -256,6 +256,84 @@ if [ "${OLLI_SAFE_NETWORK_MODE:-}" = "ollama" ]; then
     NETWORK_RULES='(deny network*)
 (allow network-outbound (remote ip "localhost:11434"))'
     CHILD_ENV+=("OLLI_MODEL_SMOKE=1")
+    if [ "${OLLI_ARCHITECTURE_SMOKE:-}" = "1" ]; then
+        CHILD_ENV+=("OLLI_ARCHITECTURE_SMOKE=1")
+        for model_var in OLLI_ARCHITECT_MODEL OLLI_CASSANDRA_MODEL; do
+            model_value="${!model_var:-}"
+            if [ -n "$model_value" ]; then
+                case "$model_value" in
+                    *[!A-Za-z0-9._:/-]*)
+                        printf '[safe-exec] refusing unsafe architecture model name: %s\n' "$model_value" >&2
+                        exit 1
+                        ;;
+                esac
+                CHILD_ENV+=("$model_var=$model_value")
+            fi
+        done
+    elif [ -n "${OLLI_ARCHITECTURE_SMOKE:-}" ]; then
+        printf '[safe-exec] refusing invalid architecture smoke flag\n' >&2
+        exit 1
+    fi
+    if [ "${OLLI_PRODUCT_SMOKE:-}" = "1" ]; then
+        CHILD_ENV+=("OLLI_PRODUCT_SMOKE=1")
+        for model_var in OLLI_PRODUCT_CODER_MODEL OLLI_PRODUCT_TEST_CODER_MODEL OLLI_PRODUCT_REVIEWER_MODEL; do
+            model_value="${!model_var:-}"
+            if [ -n "$model_value" ]; then
+                case "$model_value" in
+                    *[!A-Za-z0-9._:/-]*)
+                        printf '[safe-exec] refusing unsafe product smoke model name: %s\n' "$model_value" >&2
+                        exit 1
+                        ;;
+                esac
+                CHILD_ENV+=("$model_var=$model_value")
+            fi
+        done
+    elif [ -n "${OLLI_PRODUCT_SMOKE:-}" ]; then
+        printf '[safe-exec] refusing invalid product smoke flag\n' >&2
+        exit 1
+    fi
+    if [ "${OLLI_TEST_CODER_SMOKE:-}" = "1" ]; then
+        CHILD_ENV+=("OLLI_TEST_CODER_SMOKE=1")
+        if [ -n "${OLLI_TEST_CODER_MODEL:-}" ]; then
+            case "$OLLI_TEST_CODER_MODEL" in
+                *[!A-Za-z0-9._:/-]*)
+                    printf '[safe-exec] refusing unsafe test Coder model name: %s\n' "$OLLI_TEST_CODER_MODEL" >&2
+                    exit 1
+                    ;;
+            esac
+            CHILD_ENV+=("OLLI_TEST_CODER_MODEL=$OLLI_TEST_CODER_MODEL")
+        fi
+    elif [ -n "${OLLI_TEST_CODER_SMOKE:-}" ]; then
+        printf '[safe-exec] refusing invalid test Coder smoke flag\n' >&2
+        exit 1
+    fi
+    if [ "${OLLI_TETRIS_SMOKE:-}" = "1" ]; then
+        CHILD_ENV+=("OLLI_TETRIS_SMOKE=1")
+        if [ -n "${OLLI_CASSANDRA_MODEL:-}" ]; then
+            case "$OLLI_CASSANDRA_MODEL" in
+                *[!A-Za-z0-9._:/-]*)
+                    printf '[safe-exec] refusing unsafe Cassandra model name: %s\n' "$OLLI_CASSANDRA_MODEL" >&2
+                    exit 1
+                    ;;
+            esac
+            CHILD_ENV+=("OLLI_CASSANDRA_MODEL=$OLLI_CASSANDRA_MODEL")
+        fi
+        for model_var in OLLI_TETRIS_CODER_MODEL OLLI_TETRIS_TEST_CODER_MODEL OLLI_TETRIS_REVIEWER_MODEL; do
+            model_value="${!model_var:-}"
+            if [ -n "$model_value" ]; then
+                case "$model_value" in
+                    *[!A-Za-z0-9._:/-]*)
+                        printf '[safe-exec] refusing unsafe Tetris coder model name: %s\n' "$model_value" >&2
+                        exit 1
+                        ;;
+                esac
+                CHILD_ENV+=("$model_var=$model_value")
+            fi
+        done
+    elif [ -n "${OLLI_TETRIS_SMOKE:-}" ]; then
+        printf '[safe-exec] refusing invalid Tetris smoke flag\n' >&2
+        exit 1
+    fi
     if [ -n "${OLLI_SMOKE_MODEL:-}" ]; then
         case "$OLLI_SMOKE_MODEL" in
             *[!A-Za-z0-9._:/-]*)

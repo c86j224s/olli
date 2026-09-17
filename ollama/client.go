@@ -31,6 +31,7 @@ func NewClient(baseURL string) *Client {
 
 type Options struct {
 	NumCtx      int     `json:"num_ctx,omitempty"`
+	NumPredict  *int    `json:"num_predict,omitempty"`
 	Temperature float64 `json:"temperature,omitempty"`
 }
 
@@ -83,6 +84,7 @@ type ChatRequest struct {
 	Tools    []Tool      `json:"tools,omitempty"`
 	Format   interface{} `json:"format,omitempty"`
 	Options  *Options    `json:"options,omitempty"`
+	Think    *bool       `json:"think,omitempty"`
 	Stream   bool        `json:"stream"`
 }
 

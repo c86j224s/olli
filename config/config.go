@@ -21,10 +21,17 @@ type Config struct {
 }
 
 type DevelopmentTeamConfig struct {
-	PlannerModel  string `json:"planner_model"`
-	CoderModel    string `json:"coder_model"`
-	TesterModel   string `json:"tester_model"`
-	ReviewerModel string `json:"reviewer_model"`
+	PlannerModel             string `json:"planner_model"`
+	CoderModel               string `json:"coder_model"`
+	TestCoderModel           string `json:"test_coder_model,omitempty"`
+	TesterModel              string `json:"tester_model"`
+	ReviewerModel            string `json:"reviewer_model"`
+	CassandraModel           string `json:"cassandra_model,omitempty"`
+	DetailPlannerModel       string `json:"detail_planner_model,omitempty"`
+	RequirementReviewerModel string `json:"requirement_reviewer_model,omitempty"`
+	LogicReviewerModel       string `json:"logic_reviewer_model,omitempty"`
+	SafetyReviewerModel      string `json:"safety_reviewer_model,omitempty"`
+	TestReviewerModel        string `json:"test_reviewer_model,omitempty"`
 }
 
 func (c DevelopmentTeamConfig) WithFallback(fallback string) DevelopmentTeamConfig {
@@ -34,11 +41,32 @@ func (c DevelopmentTeamConfig) WithFallback(fallback string) DevelopmentTeamConf
 	if c.CoderModel == "" {
 		c.CoderModel = fallback
 	}
+	if c.TestCoderModel == "" {
+		c.TestCoderModel = c.CoderModel
+	}
 	if c.TesterModel == "" {
 		c.TesterModel = fallback
 	}
 	if c.ReviewerModel == "" {
 		c.ReviewerModel = fallback
+	}
+	if c.CassandraModel == "" {
+		c.CassandraModel = c.ReviewerModel
+	}
+	if c.DetailPlannerModel == "" {
+		c.DetailPlannerModel = c.PlannerModel
+	}
+	if c.RequirementReviewerModel == "" {
+		c.RequirementReviewerModel = c.ReviewerModel
+	}
+	if c.LogicReviewerModel == "" {
+		c.LogicReviewerModel = c.ReviewerModel
+	}
+	if c.SafetyReviewerModel == "" {
+		c.SafetyReviewerModel = c.ReviewerModel
+	}
+	if c.TestReviewerModel == "" {
+		c.TestReviewerModel = c.ReviewerModel
 	}
 	return c
 }

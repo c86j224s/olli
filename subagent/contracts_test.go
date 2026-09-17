@@ -58,7 +58,7 @@ func TestValidateDevelopmentPlanRejectsUnsafeOrAmbiguousPlans(t *testing.T) {
 				copy.ID = "step-" + strconv.Itoa(index)
 				plan.Steps = append(plan.Steps, copy)
 			}
-		}, wantErr: "1-6"},
+		}, wantErr: "1-24"},
 	}
 
 	for _, tt := range tests {
@@ -70,6 +70,29 @@ func TestValidateDevelopmentPlanRejectsUnsafeOrAmbiguousPlans(t *testing.T) {
 				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestValidateDevelopmentPlanAllowsBoundedMilestonesForOneFile(t *testing.T) {
+	plan := validDevelopmentPlan()
+	plan.Files = []string{"subagent/planner.go"}
+	plan.Steps[0].AllowedFiles = []string{"subagent/planner.go"}
+	plan.Steps[0].Objective = "Add parseable data structures"
+	plan.Steps = append(plan.Steps, PlanStep{ID: "step-2", Objective: "Complete behavior", AllowedFiles: []string{"subagent/planner.go"}, Acceptance: []string{"entire objective works"}})
+	if err := validateDevelopmentPlan(plan); err != nil {
+		t.Fatalf("bounded single-file milestones rejected: %v", err)
+	}
+}
+
+func TestValidateDevelopmentPlanAddsCoreVerification(t *testing.T) {
+	plan := validDevelopmentPlan()
+	plan.FinalVerification = []string{"git_status"}
+	if err := validateDevelopmentPlan(plan); err != nil {
+		t.Fatalf("safe planner verification defaulting failed: %v", err)
+	}
+	joined := strings.Join(plan.FinalVerification, "|")
+	if !strings.Contains(joined, "go_test ./...") || !strings.Contains(joined, "go_vet ./...") {
+		t.Fatalf("core final verification was not added: %v", plan.FinalVerification)
 	}
 }
 

@@ -4,7 +4,22 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 )
+
+func TestSubagentHeartbeatRemainsRequestScoped(t *testing.T) {
+	var elapsed time.Duration
+	ctx := context.WithValue(context.Background(), callbackContextKey{}, Callbacks{OnSubagentHeartbeat: func(role string, value time.Duration) {
+		if role == "Coder" {
+			elapsed = value
+		}
+	}})
+	callbacks := (&Agent{}).buildSubagentCallbacks(ctx)
+	callbacks.OnModelHeartbeat("Coder", 30*time.Second)
+	if elapsed != 30*time.Second {
+		t.Fatalf("heartbeat callback was not forwarded: %v", elapsed)
+	}
+}
 
 func TestSubagentCallbacksRemainRequestScopedConcurrently(t *testing.T) {
 	var mu sync.Mutex

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/c86j224s/olli/config"
 	"github.com/c86j224s/olli/ollama"
@@ -33,6 +34,11 @@ func (a *Agent) buildSubagentCallbacks(ctx context.Context) subagent.SubagentCal
 		OnToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
 			if cb.OnSubagentToolCall != nil {
 				cb.OnSubagentToolCall(subType, toolName, args, result, execErr)
+			}
+		},
+		OnModelHeartbeat: func(subType string, elapsed time.Duration) {
+			if cb.OnSubagentHeartbeat != nil {
+				cb.OnSubagentHeartbeat(subType, elapsed)
 			}
 		},
 	}
@@ -106,7 +112,7 @@ func (a *Agent) registerSubagentTools() {
 		Type: "function",
 		Function: ollama.FunctionDef{
 			Name:        "delegate_dev_team",
-			Description: "[PREFERRED TOOL FOR END-TO-END DEVELOPMENT] Run a deterministic Planner -> Coder -> Tester -> Reviewer -> Verifier team with one writer and bounded fix rounds",
+			Description: "[PREFERRED TOOL FOR END-TO-END DEVELOPMENT] Run Architect -> Cassandra review/repair -> per-package Detail Planner -> Coder/static preflight milestones -> specialist Reviewer pool -> Verifier, with one writer and bounded repairs",
 			Parameters: ollama.FunctionParamSchema{
 				Type: "object",
 				Properties: map[string]ollama.FunctionParamProperty{
@@ -123,8 +129,17 @@ func (a *Agent) registerSubagentTools() {
 			teamConfig = a.cfg.DevelopmentTeam.WithFallback(a.model)
 		}
 		roles, err := subagent.NewModelTeamRolesWithModels(runner, subagent.TeamModels{
-			Planner: teamConfig.PlannerModel, Reviewer: teamConfig.ReviewerModel,
-			Coder: teamConfig.CoderModel, Tester: teamConfig.TesterModel,
+			Planner:             teamConfig.PlannerModel,
+			Coder:               teamConfig.CoderModel,
+			TestCoder:           teamConfig.TestCoderModel,
+			Tester:              teamConfig.TesterModel,
+			Reviewer:            teamConfig.ReviewerModel,
+			Cassandra:           teamConfig.CassandraModel,
+			DetailPlanner:       teamConfig.DetailPlannerModel,
+			RequirementReviewer: teamConfig.RequirementReviewerModel,
+			LogicReviewer:       teamConfig.LogicReviewerModel,
+			SafetyReviewer:      teamConfig.SafetyReviewerModel,
+			TestReviewer:        teamConfig.TestReviewerModel,
 		})
 		if err != nil {
 			return "", err
@@ -196,6 +211,9 @@ func (a *Agent) registerSubagentTools() {
 		if err != nil {
 			return "", fmt.Errorf("researcher subagent failed: %w", err)
 		}
+		if report.Status != "SUCCESS" {
+			return "", fmt.Errorf("researcher subagent returned %s (%s): %s", report.Status, report.Termination, report.Summary)
+		}
 		return formatSubagentReport("🔍 [Researcher Subagent Report]", report), nil
 	})
 
@@ -224,6 +242,9 @@ func (a *Agent) registerSubagentTools() {
 		report, err := runner.RunCoderWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
+		}
+		if report.Status != "SUCCESS" {
+			return "", fmt.Errorf("coder subagent returned %s (%s): %s", report.Status, report.Termination, report.Summary)
 		}
 		return formatSubagentReport("💻 [Coder Subagent Report]", report), nil
 	})
@@ -254,6 +275,9 @@ func (a *Agent) registerSubagentTools() {
 		if err != nil {
 			return "", fmt.Errorf("tester subagent failed: %w", err)
 		}
+		if report.Status != "SUCCESS" {
+			return "", fmt.Errorf("tester subagent returned %s (%s): %s", report.Status, report.Termination, report.Summary)
+		}
 		return formatSubagentReport("🧪 [Tester Subagent Report]", report), nil
 	})
 
@@ -282,6 +306,9 @@ func (a *Agent) registerSubagentTools() {
 		report, err := runner.RunReviewerWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("reviewer subagent failed: %w", err)
+		}
+		if report.Status != "SUCCESS" {
+			return "", fmt.Errorf("reviewer subagent returned %s (%s): %s", report.Status, report.Termination, report.Summary)
 		}
 		return formatSubagentReport("🧐 [Reviewer Subagent Report]", report), nil
 	})

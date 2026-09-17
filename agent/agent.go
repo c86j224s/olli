@@ -7,8 +7,10 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/c86j224s/olli/config"
+	agentloop "github.com/c86j224s/olli/loop"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/session"
 	"github.com/c86j224s/olli/tools"
@@ -43,6 +45,7 @@ type Callbacks struct {
 	OnSubagentThinkingToken          func(token string)
 	OnSubagentThinkingEnd            func()
 	OnSubagentToolCall               func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
+	OnSubagentHeartbeat              func(subType string, elapsed time.Duration)
 }
 
 type Agent struct {
@@ -503,22 +506,37 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 	}
 
 	var lastContent string
+	successfulActions := make(map[string]struct{})
+	guard, err := agentloop.NewController(agentloop.MainAgentPolicy())
+	if err != nil {
+		return "", err
+	}
+	termination := agentloop.TerminationRunning
 
-	for step := 0; step < 10; step++ {
+	for {
+		if reason := guard.BeginIteration(); reason != "" {
+			termination = reason
+			break
+		}
+		step := guard.Metrics().Iterations - 1
 		select {
 		case <-ctx.Done():
 			cancelMsg := ollama.Message{
 				Role:    "system",
-				Content: "⚠️ Agent generation was interrupted by user (ESC Key).",
+				Content: "Agent generation stopped: " + ctx.Err().Error(),
 			}
 			a.history = append(a.history, cancelMsg)
 			if a.sessMgr != nil {
 				a.sessMgr.AppendEvent(cancelMsg)
 			}
-			return "", context.Canceled
+			return "", ctx.Err()
 		default:
 		}
 
+		if reason := guard.RecordModelCall(); reason != "" {
+			termination = reason
+			break
+		}
 		req := ollama.ChatRequest{
 			Model:    a.model,
 			Messages: a.buildMessagesPayload(),
@@ -542,16 +560,17 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 		})
 
 		if err != nil {
-			if ctx.Err() == context.Canceled || err == context.Canceled {
-				cancelMsg := ollama.Message{
-					Role:    "system",
-					Content: "⚠️ Agent generation was interrupted by user (ESC Key).",
+			if ctx.Err() != nil || err == context.Canceled || err == context.DeadlineExceeded {
+				ctxErr := ctx.Err()
+				if ctxErr == nil {
+					ctxErr = err
 				}
+				cancelMsg := ollama.Message{Role: "system", Content: "Agent generation stopped: " + ctxErr.Error()}
 				a.history = append(a.history, cancelMsg)
 				if a.sessMgr != nil {
 					a.sessMgr.AppendEvent(cancelMsg)
 				}
-				return "", context.Canceled
+				return "", ctxErr
 			}
 			return "", err
 		}
@@ -567,33 +586,53 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 				a.sessMgr.AppendEvent(*resp)
 			}
 
-			for _, tc := range resp.ToolCalls {
-				if ctx.Err() == context.Canceled {
-					return "", context.Canceled
+			for index, tc := range resp.ToolCalls {
+				if ctx.Err() != nil {
+					termination = contextLoopTermination(ctx)
+					appendSkippedToolResults(a, resp.ToolCalls[index:], "not executed because the request context ended")
+					break
+				}
+				if reason := guard.RecordToolCall(tc.Function.Name, tc.Function.Arguments); reason != "" {
+					termination = reason
+					appendSkippedToolResults(a, resp.ToolCalls[index:], "not executed because the agent loop terminated")
+					break
 				}
 
 				var toolRes string
 				var tErr error
 
 				if a.ShouldRequirePermission(tc.Function.Name) {
-					if cb.ConfirmToolCallWithAction != nil {
-						allowed, always := cb.ConfirmToolCallWithAction(tc.Function.Name, tc.Function.Arguments)
-						if always && a.cfg != nil {
+					var allowed, always bool
+					switch {
+					case cb.ConfirmToolCallWithActionContext != nil:
+						allowed, always = cb.ConfirmToolCallWithActionContext(ctx, tc.Function.Name, tc.Function.Arguments)
+					case cb.ConfirmToolCallWithAction != nil:
+						allowed, always = cb.ConfirmToolCallWithAction(tc.Function.Name, tc.Function.Arguments)
+					default:
+						tErr = fmt.Errorf("permission check required for '%s' but no prompt callback set", tc.Function.Name)
+					}
+					if tErr == nil {
+						if ctx.Err() != nil {
+							termination = contextLoopTermination(ctx)
+							tErr = ctx.Err()
+						} else if always && a.cfg != nil {
 							_ = a.cfg.AddWhitelist(tc.Function.Name)
 							_ = a.cfg.Save()
 						}
-						if !allowed {
+						if tErr == nil && !allowed {
+							termination = agentloop.TerminationDenied
 							tErr = fmt.Errorf("user denied execution of tool '%s'", tc.Function.Name)
-						} else {
+						} else if tErr == nil {
 							toolRes, tErr = a.registry.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
 						}
-					} else {
-						tErr = fmt.Errorf("permission check required for '%s' but no prompt callback set", tc.Function.Name)
 					}
 				} else {
 					toolRes, tErr = a.registry.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
 				}
 
+				if tErr == nil {
+					successfulActions[agentloop.ActionFingerprint(tc.Function.Name, tc.Function.Arguments)] = struct{}{}
+				}
 				if cb.OnToolCall != nil {
 					cb.OnToolCall(tc.Function.Name, tc.Function.Arguments, toolRes, tErr)
 				}
@@ -602,17 +641,32 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 				if tErr != nil {
 					resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)
 				}
-
-				toolMsg := ollama.Message{Role: "tool", Content: resContent}
-				a.history = append(a.history, toolMsg)
-				if a.sessMgr != nil {
-					a.sessMgr.AppendEvent(toolMsg)
+				appendToolMessage(a, resContent)
+				if termination != agentloop.TerminationRunning {
+					appendSkippedToolResults(a, resp.ToolCalls[index+1:], "not executed after an earlier tool stopped the batch")
+					break
 				}
+			}
+			if termination != agentloop.TerminationRunning {
+				break
+			}
+			if guard.ConsumeRepetitionRepair() {
+				guidance := ollama.Message{Role: "system", Content: "The same tool action was repeated without progress. Do not repeat it. Choose a different valid action or provide the final answer."}
+				a.history = append(a.history, guidance)
+				if a.sessMgr != nil {
+					a.sessMgr.AppendEvent(guidance)
+				}
+			}
+			progress := fmt.Sprintf("unique-successful-actions:%d", len(successfulActions))
+			if reason := guard.ObserveProgress(progress); reason != "" {
+				termination = reason
+				break
 			}
 			continue
 		}
 
 		lastContent = resp.Content
+		termination = agentloop.TerminationSucceeded
 		a.history = append(a.history, ollama.Message{Role: "assistant", Content: lastContent})
 		if a.sessMgr != nil {
 			a.sessMgr.AppendEvent(ollama.Message{Role: "assistant", Content: lastContent})
@@ -620,5 +674,35 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 		break
 	}
 
+	if termination != agentloop.TerminationSucceeded {
+		message := fmt.Sprintf("agent loop terminated: %s", termination)
+		loopMsg := ollama.Message{Role: "system", Content: message}
+		a.history = append(a.history, loopMsg)
+		if a.sessMgr != nil {
+			a.sessMgr.AppendEvent(loopMsg)
+		}
+		return "", fmt.Errorf("%s", message)
+	}
 	return lastContent, nil
+}
+
+func contextLoopTermination(ctx context.Context) agentloop.TerminationReason {
+	if ctx != nil && ctx.Err() == context.DeadlineExceeded {
+		return agentloop.TerminationTimedOut
+	}
+	return agentloop.TerminationCancelled
+}
+
+func appendToolMessage(a *Agent, content string) {
+	message := ollama.Message{Role: "tool", Content: content}
+	a.history = append(a.history, message)
+	if a.sessMgr != nil {
+		a.sessMgr.AppendEvent(message)
+	}
+}
+
+func appendSkippedToolResults(a *Agent, calls []ollama.ToolCall, reason string) {
+	for _, call := range calls {
+		appendToolMessage(a, fmt.Sprintf("Tool %s %s.", call.Function.Name, reason))
+	}
 }

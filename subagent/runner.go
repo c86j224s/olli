@@ -11,21 +11,27 @@ import (
 	"time"
 
 	"github.com/c86j224s/olli/config"
+	agentloop "github.com/c86j224s/olli/loop"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/session"
 	"github.com/c86j224s/olli/tools"
 	"golang.org/x/sys/unix"
 )
 
+const modelHeartbeatInterval = 30 * time.Second
+
 type SubagentRunner struct {
-	client        *ollama.Client
-	model         string
-	cfg           *config.Config
-	outputDir     string
-	workspace     string
-	workspaceRoot string
-	sessionFile   string
-	callbacks     SubagentCallbacks
+	client            *ollama.Client
+	model             string
+	cfg               *config.Config
+	outputDir         string
+	workspace         string
+	workspaceRoot     string
+	sessionFile       string
+	callbacks         SubagentCallbacks
+	think             *bool
+	budgetOverrides   map[SubagentType]roleBudget
+	heartbeatInterval time.Duration
 }
 
 func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string, sessionFile string, callbacks SubagentCallbacks, workspaceRootArg ...string) *SubagentRunner {
@@ -76,6 +82,28 @@ func (r *SubagentRunner) withModel(model string) *SubagentRunner {
 		clone.model = strings.TrimSpace(model)
 	}
 	return &clone
+}
+
+func (r *SubagentRunner) withThinking(enabled bool) *SubagentRunner {
+	clone := *r
+	clone.think = &enabled
+	return &clone
+}
+
+func (r *SubagentRunner) roleBudget(subType SubagentType) roleBudget {
+	if r != nil && r.budgetOverrides != nil {
+		if budget, exists := r.budgetOverrides[subType]; exists {
+			return budget
+		}
+	}
+	return defaultRoleBudget(subType)
+}
+
+func (r *SubagentRunner) heartbeatEvery() time.Duration {
+	if r != nil && r.heartbeatInterval > 0 {
+		return r.heartbeatInterval
+	}
+	return modelHeartbeatInterval
 }
 
 func (r *SubagentRunner) newRoleRegistry() *tools.Registry {
@@ -142,18 +170,27 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	}
 
 	options := &ollama.Options{NumCtx: numCtx}
+	if budget := r.roleBudget(SubagentType(subType)); budget.NumPredict > 0 {
+		numPredict := budget.NumPredict
+		options.NumPredict = &numPredict
+	}
 	if temperature != nil {
 		options.Temperature = *temperature
 	}
+	definitions := reg.GetDefinitions()
 	req := ollama.ChatRequest{
 		Model:    r.model,
 		Messages: messages,
-		Tools:    reg.GetDefinitions(),
-		Format:   format,
+		Tools:    definitions,
 		Options:  options,
+		Think:    r.think,
+	}
+	if len(definitions) == 0 {
+		req.Format = format
 	}
 
 	toolCallsRun := 0
+	successfulToolCalls := 0
 	var finalAnswer string
 	var artifactFiles []string
 	var createdFiles []string
@@ -181,42 +218,60 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		},
 	}
 
-	maxTurns := 5
-	if format != nil {
-		maxTurns = 8
+	policy := agentloop.DefaultPolicy(format != nil)
+	guard, err := agentloop.NewController(policy)
+	if err != nil {
+		return nil, err
 	}
-	for turn := 0; turn < maxTurns; turn++ {
+	termination := agentloop.TerminationFailed
+	for {
+		if reason := guard.BeginIteration(); reason != "" {
+			termination = reason
+			break
+		}
 		select {
 		case <-ctx.Done():
-			logEvent("system", "⚠️ Subagent execution canceled by user interrupt (ESC Key)", nil)
+			reason, status, summary := contextTermination(ctx)
+			metrics := guard.Terminate(reason)
+			logEvent("system", summary, nil)
 			return &ResultReport{
 				SubagentID:    subID,
 				Type:          subType,
 				Task:          task,
-				Status:        "INTERRUPTED",
-				Summary:       "⚠️ Subagent execution was interrupted by user (ESC Key).",
+				Status:        status,
+				Summary:       summary,
 				JSONLFile:     jsonlPath,
 				ToolCallsRun:  toolCallsRun,
 				WorkingDir:    r.workspace,
+				Termination:   reason,
+				LoopMetrics:   &metrics,
 				ArtifactFiles: artifactFiles,
 				CreatedFiles:  createdFiles,
 			}, nil
 		default:
 		}
 
-		resp, err := r.client.ChatStreamFullWithContext(ctx, req, streamCB)
+		if reason := guard.RecordModelCall(); reason != "" {
+			termination = reason
+			break
+		}
+		resp, err := r.callModelWithHeartbeat(ctx, subType, req, streamCB)
 		if err != nil {
-			if ctx.Err() == context.Canceled || err == context.Canceled {
-				logEvent("system", "⚠️ Subagent LLM stream canceled by user interrupt (ESC Key)", nil)
+			if ctx.Err() != nil || err == context.Canceled || err == context.DeadlineExceeded {
+				reason, status, summary := contextTermination(ctx)
+				metrics := guard.Terminate(reason)
+				logEvent("system", summary, nil)
 				return &ResultReport{
 					SubagentID:    subID,
 					Type:          subType,
 					Task:          task,
-					Status:        "INTERRUPTED",
-					Summary:       "⚠️ Subagent execution was interrupted by user (ESC Key).",
+					Status:        status,
+					Summary:       summary,
 					JSONLFile:     jsonlPath,
 					ToolCallsRun:  toolCallsRun,
 					WorkingDir:    r.workspace,
+					Termination:   reason,
+					LoopMetrics:   &metrics,
 					ArtifactFiles: artifactFiles,
 					CreatedFiles:  createdFiles,
 				}, nil
@@ -237,30 +292,44 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 
 			for _, tc := range resp.ToolCalls {
 				if ctx.Err() != nil {
-					logEvent("system", "⚠️ Subagent tool execution canceled by user interrupt (ESC Key)", nil)
+					reason, status, summary := contextTermination(ctx)
+					metrics := guard.Terminate(reason)
+					logEvent("system", summary, nil)
 					return &ResultReport{
 						SubagentID:    subID,
 						Type:          subType,
 						Task:          task,
-						Status:        "INTERRUPTED",
-						Summary:       "⚠️ Subagent execution was interrupted by user (ESC Key).",
+						Status:        status,
+						Summary:       summary,
 						JSONLFile:     jsonlPath,
 						ToolCallsRun:  toolCallsRun,
 						WorkingDir:    r.workspace,
+						Termination:   reason,
+						LoopMetrics:   &metrics,
 						ArtifactFiles: artifactFiles,
 						CreatedFiles:  createdFiles,
 					}, nil
 				}
 
+				if reason := guard.RecordToolCall(tc.Function.Name, tc.Function.Arguments); reason != "" {
+					termination = reason
+					break
+				}
 				toolCallsRun++
 				candidatePath, existedBefore, isArtifactCandidate := artifactCandidatePath(tc.Function.Arguments, r.workspace, r.workspaceRoot)
 				toolRes, tErr := reg.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
-				if tErr == nil {
-					evidence.recordSuccess(tc.Function.Name, tc.Function.Arguments)
-				}
 				resContent := toolRes
 				if tErr != nil {
-					resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)
+					if strings.TrimSpace(toolRes) == "" {
+						resContent = fmt.Sprintf("Error executing tool %s: %v", tc.Function.Name, tErr)
+					} else {
+						resContent = fmt.Sprintf("%s\nError executing tool %s: %v", toolRes, tc.Function.Name, tErr)
+					}
+				}
+				attempt := evidence.recordAttempt(tc.Function.Name, tc.Function.Arguments, resContent, tErr)
+				if tErr == nil {
+					successfulToolCalls++
+					evidence.recordSuccess(attempt)
 				}
 				if tErr == nil && isArtifactWriteTool(tc.Function.Name) && isArtifactCandidate {
 					req := artifactRequirementForSubagent(subType)
@@ -282,31 +351,166 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			}
 
 			req.Messages = messages
-			if turn == maxTurns-1 && format != nil {
-				finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
+			if termination != agentloop.TerminationFailed {
+				break
+			}
+			if format != nil && evidence != nil && evidence.CompletionReady != nil && evidence.CompletionReady() {
+				finalAnswer, err = buildEvidenceCompletion(subType, task, evidence)
+				if err == nil {
+					logEvent("assistant", finalAnswer, nil)
+					termination = agentloop.TerminationSucceeded
+					break
+				}
+				if reason := guard.RecordModelCall(); reason != "" {
+					termination = reason
+					break
+				}
+				finalAnswer, err = r.requestStructuredCompletion(ctx, subType, req, messages, streamCB, format)
 				if err != nil {
 					return nil, err
 				}
 				logEvent("assistant", finalAnswer, nil)
+				if looksLikeJSONObject(finalAnswer) {
+					termination = agentloop.TerminationSucceeded
+				} else {
+					termination = agentloop.TerminationInvalidOutput
+				}
+				break
+			}
+			if guard.ConsumeRepetitionRepair() {
+				guidance := ollama.Message{Role: "system", Content: "The same tool action was repeated without progress. Do not repeat it. Choose a different valid action or return the final answer now."}
+				messages = append(messages, guidance)
+				req.Messages = messages
+				logEvent("system", guidance.Content, nil)
+			}
+			progress := fmt.Sprintf("successful-tools:%d", successfulToolCalls)
+			if evidence != nil {
+				if evidence.ProgressState != nil {
+					progress = evidence.ProgressState()
+				} else if len(evidence.SuccessfulCalls) > 0 {
+					if marker := evidence.SuccessfulCalls[len(evidence.SuccessfulCalls)-1].ProgressMarker; marker != "" {
+						progress = marker
+					}
+				}
+			}
+			if reason := guard.ObserveProgress(progress); reason != "" {
+				termination = reason
+				break
+			}
+			if guard.Metrics().Iterations >= policy.MaxIterations && format != nil {
+				if reason := guard.RecordModelCall(); reason != "" {
+					termination = reason
+					break
+				}
+				finalAnswer, err = r.requestStructuredCompletion(ctx, subType, req, messages, streamCB, format)
+				if err != nil {
+					return nil, err
+				}
+				logEvent("assistant", finalAnswer, nil)
+				if looksLikeJSONObject(finalAnswer) {
+					termination = agentloop.TerminationSucceeded
+				} else {
+					termination = agentloop.TerminationInvalidOutput
+				}
 				break
 			}
 			continue
 		}
 
 		finalAnswer = resp.Content
+		if format != nil {
+			if normalized, ok := normalizedJSONObject(finalAnswer); ok {
+				finalAnswer = normalized
+			}
+		}
+		if missing := evidence.missingRequiredTools(); len(missing) > 0 {
+			guidance := ollama.Message{Role: "system", Content: fmt.Sprintf("The task is not complete. Before returning the final JSON, successfully call these required tools: %s.", strings.Join(missing, ", "))}
+			messages = append(messages, *resp, guidance)
+			req.Messages = messages
+			logEvent("assistant", finalAnswer, nil)
+			logEvent("system", guidance.Content, nil)
+			finalAnswer = ""
+			if reason := guard.ObserveProgress(fmt.Sprintf("required-tools:%d", evidence.ToolCallsSucceeded)); reason != "" {
+				termination = reason
+				break
+			}
+			continue
+		}
+		if format != nil {
+			if looksLikeJSONObject(finalAnswer) {
+				termination = agentloop.TerminationSucceeded
+				logEvent("assistant", finalAnswer, nil)
+				break
+			}
+			messages = append(messages, *resp)
+			if reason := guard.RecordFormatRepair(); reason != "" {
+				termination = reason
+				logEvent("assistant", finalAnswer, nil)
+				break
+			}
+			if reason := guard.RecordModelCall(); reason != "" {
+				termination = reason
+				break
+			}
+			finalAnswer, err = r.requestStructuredCompletion(ctx, subType, req, messages, streamCB, format)
+			if err != nil {
+				return nil, err
+			}
+			if normalized, ok := normalizedJSONObject(finalAnswer); ok {
+				finalAnswer = normalized
+			}
+			logEvent("assistant", finalAnswer, nil)
+			if !looksLikeJSONObject(finalAnswer) {
+				termination = agentloop.TerminationInvalidOutput
+				break
+			}
+		}
+		termination = agentloop.TerminationSucceeded
 		logEvent("assistant", finalAnswer, nil)
 		break
 	}
 
-	if format != nil && evidence != nil && evidence.ToolCallsSucceeded > 0 && !looksLikeJSONObject(finalAnswer) {
-		finalAnswer, err = r.requestStructuredCompletion(ctx, req, messages, streamCB)
-		if err != nil {
-			return nil, err
+	if termination == agentloop.TerminationSucceeded && format != nil && successfulToolCalls > 0 && !looksLikeJSONObject(finalAnswer) {
+		if reason := guard.RecordFormatRepair(); reason == "" {
+			if reason := guard.RecordModelCall(); reason == "" {
+				finalAnswer, err = r.requestStructuredCompletion(ctx, subType, req, messages, streamCB, format)
+				if err != nil {
+					return nil, err
+				}
+				logEvent("assistant", finalAnswer, nil)
+				if looksLikeJSONObject(finalAnswer) {
+					termination = agentloop.TerminationSucceeded
+				} else {
+					termination = agentloop.TerminationInvalidOutput
+				}
+			} else {
+				termination = reason
+			}
+		} else {
+			termination = reason
 		}
-		logEvent("assistant", finalAnswer, nil)
+	}
+	if termination != agentloop.TerminationSucceeded {
+		metrics := guard.Terminate(termination)
+		summary := fmt.Sprintf("subagent loop terminated: %s", termination)
+		logEvent("system", summary, nil)
+		return &ResultReport{
+			SubagentID:    subID,
+			Type:          subType,
+			Task:          task,
+			Status:        "FAILED",
+			Summary:       summary,
+			JSONLFile:     jsonlPath,
+			ToolCallsRun:  toolCallsRun,
+			WorkingDir:    r.workspace,
+			Termination:   termination,
+			LoopMetrics:   &metrics,
+			ArtifactFiles: artifactFiles,
+			CreatedFiles:  createdFiles,
+		}, nil
 	}
 	if finalAnswer == "" {
-		finalAnswer = "Subagent task completed tool execution."
+		finalAnswer = "Subagent task completed without content."
 	}
 
 	artifactReq := artifactRequirementForSubagent(subType)
@@ -323,6 +527,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 			JSONLFile:     jsonlPath,
 			ToolCallsRun:  toolCallsRun,
 			WorkingDir:    r.workspace,
+			Termination:   agentloop.TerminationFailed,
 			ArtifactFiles: artifactFiles,
 			CreatedFiles:  createdFiles,
 		}, nil
@@ -331,6 +536,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		logEvent("system", fmt.Sprintf("Subagent artifacts verified. Artifact Files: %s; Created Files: %s", pathListOrNone(artifactFiles), pathListOrNone(createdFiles)), nil)
 	}
 
+	metrics := guard.Terminate(agentloop.TerminationSucceeded)
 	report := &ResultReport{
 		SubagentID:    subID,
 		Type:          subType,
@@ -340,6 +546,8 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		JSONLFile:     jsonlPath,
 		ToolCallsRun:  toolCallsRun,
 		WorkingDir:    r.workspace,
+		Termination:   agentloop.TerminationSucceeded,
+		LoopMetrics:   &metrics,
 		ArtifactFiles: artifactFiles,
 		CreatedFiles:  createdFiles,
 	}
@@ -350,25 +558,183 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	return report, nil
 }
 
+func (r *SubagentRunner) callModelWithHeartbeat(ctx context.Context, subType string, req ollama.ChatRequest, streamCB ollama.StreamCallbacks) (*ollama.Message, error) {
+	if r.callbacks.OnModelHeartbeat == nil {
+		return r.client.ChatStreamFullWithContext(ctx, req, streamCB)
+	}
+	type result struct {
+		message *ollama.Message
+		err     error
+	}
+	started := time.Now()
+	resultChan := make(chan result, 1)
+	go func() {
+		message, err := r.client.ChatStreamFullWithContext(ctx, req, streamCB)
+		resultChan <- result{message: message, err: err}
+	}()
+	ticker := time.NewTicker(r.heartbeatEvery())
+	defer ticker.Stop()
+	for {
+		select {
+		case completed := <-resultChan:
+			return completed.message, completed.err
+		case <-ticker.C:
+			r.callbacks.OnModelHeartbeat(subType, time.Since(started).Round(time.Second))
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func contextTermination(ctx context.Context) (agentloop.TerminationReason, string, string) {
+	if ctx != nil && ctx.Err() == context.DeadlineExceeded {
+		return agentloop.TerminationTimedOut, "TIMED_OUT", "Subagent execution timed out."
+	}
+	return agentloop.TerminationCancelled, "INTERRUPTED", "Subagent execution was canceled."
+}
+
 func looksLikeJSONObject(value string) bool {
-	value = strings.TrimSpace(value)
+	_, ok := normalizedJSONObject(value)
+	return ok
+}
+
+func normalizedJSONObject(value string) (string, bool) {
+	value = extractPlanningJSONObject(value)
 	if !strings.HasPrefix(value, "{") || !strings.HasSuffix(value, "}") {
-		return false
+		return "", false
 	}
 	var decoded map[string]any
 	decoder := json.NewDecoder(strings.NewReader(value))
 	if err := decoder.Decode(&decoded); err != nil || decoded == nil {
-		return false
+		return "", false
 	}
 	var trailing any
-	return decoder.Decode(&trailing) == io.EOF
+	if decoder.Decode(&trailing) != io.EOF {
+		return "", false
+	}
+	return value, true
 }
 
-func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, req ollama.ChatRequest, messages []ollama.Message, streamCB ollama.StreamCallbacks) (string, error) {
-	completionReq := req
-	completionReq.Tools = nil
-	completionReq.Messages = append(append([]ollama.Message(nil), messages...), ollama.Message{Role: "system", Content: "Tool use is complete. Return only the final JSON object matching the required schema now. Do not call tools."})
-	completion, err := r.client.ChatStreamFullWithContext(ctx, completionReq, streamCB)
+func buildEvidenceCompletion(subType string, task string, evidence *executionEvidence) (string, error) {
+	switch SubagentType(subType) {
+	case TypeCoder:
+		var codeTask CodeTask
+		if err := json.Unmarshal([]byte(task), &codeTask); err != nil {
+			return "", fmt.Errorf("decode coder task: %w", err)
+		}
+		report := codeReportFromEvidence(codeTask.Step, evidence)
+		report.Unresolved = nil
+		report.EvidenceDerived = false
+		report.Completed = append([]string(nil), codeTask.Step.Acceptance...)
+		if len(report.Completed) == 0 {
+			report.Completed = []string{codeTask.Step.Objective}
+		}
+		changed := make(map[string]struct{}, len(report.ChangedFiles))
+		for _, path := range report.ChangedFiles {
+			changed[path] = struct{}{}
+		}
+		for _, finding := range codeTask.ReviewFixes {
+			status := "not_addressed"
+			evidenceText := "no successful writer tool call changed the finding's file"
+			if _, exists := changed[finding.File]; exists {
+				status = "addressed"
+				evidenceText = "a successful writer tool call changed the finding's planned file; Tester and Reviewer must verify the required outcome"
+			}
+			report.AddressedFindings = append(report.AddressedFindings, AddressedFinding{
+				ID:       finding.ID,
+				Status:   status,
+				Evidence: evidenceText,
+			})
+		}
+		encoded, err := json.Marshal(report)
+		return string(encoded), err
+	case TypeTester:
+		var payload struct {
+			RequiredCommands []string `json:"required_commands"`
+		}
+		if err := json.Unmarshal([]byte(task), &payload); err != nil {
+			return "", fmt.Errorf("decode tester task: %w", err)
+		}
+		encoded, err := json.Marshal(testReportFromEvidence(payload.RequiredCommands, evidence))
+		return string(encoded), err
+	default:
+		return "", fmt.Errorf("%s requires model-authored structured completion", subType)
+	}
+}
+
+func (r *SubagentRunner) requestStructuredRepair(ctx context.Context, subType string, payload string, rolePrompt string, invalidOutput string, validationErr error, format any, temperature *float64) (string, error) {
+	if format == nil {
+		return "", fmt.Errorf("structured repair format is required")
+	}
+	numCtx := 32768
+	if r.cfg != nil && r.cfg.NumCtx > 0 {
+		numCtx = r.cfg.NumCtx
+	}
+	options := &ollama.Options{NumCtx: numCtx}
+	if budget := r.roleBudget(SubagentType(subType)); budget.NumPredict > 0 {
+		numPredict := budget.NumPredict
+		options.NumPredict = &numPredict
+	}
+	if temperature != nil {
+		options.Temperature = *temperature
+	}
+	prompt := "Return only a corrected JSON object matching the supplied schema. Do not call tools and do not add prose."
+	if strings.TrimSpace(rolePrompt) != "" {
+		prompt += "\n\nROLE CONTRACT:\n" + rolePrompt
+	}
+	content := "TASK:\n" + payload + "\n\nINVALID OUTPUT:\n" + invalidOutput
+	if validationErr != nil {
+		content += "\n\nVALIDATION ERROR:\n" + validationErr.Error()
+	}
+	req := ollama.ChatRequest{
+		Model: r.model,
+		Messages: []ollama.Message{
+			{Role: "system", Content: prompt},
+			{Role: "user", Content: content},
+		},
+		Format:  format,
+		Options: options,
+		Think:   r.think,
+	}
+	completion, err := r.callModelWithHeartbeat(ctx, subType, req, ollama.StreamCallbacks{})
+	if err != nil {
+		return "", fmt.Errorf("subagent structured repair failed: %w", err)
+	}
+	return completion.Content, nil
+}
+
+func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, subType string, req ollama.ChatRequest, messages []ollama.Message, streamCB ollama.StreamCallbacks, format any) (string, error) {
+	if format == nil {
+		return "", fmt.Errorf("structured completion format is required")
+	}
+	var evidence strings.Builder
+	for _, message := range messages {
+		switch message.Role {
+		case "user":
+			evidence.WriteString("TASK:\n")
+			evidence.WriteString(message.Content)
+			evidence.WriteString("\n")
+		case "tool":
+			evidence.WriteString("TOOL RESULT:\n")
+			evidence.WriteString(message.Content)
+			evidence.WriteString("\n")
+		}
+	}
+	systemPrompt := "Return only the final JSON object matching the supplied schema. Use the task and tool evidence below. Do not call tools and do not add prose."
+	if len(messages) > 0 && messages[0].Role == "system" && strings.TrimSpace(messages[0].Content) != "" {
+		systemPrompt += "\n\nROLE CONTRACT:\n" + messages[0].Content
+	}
+	completionReq := ollama.ChatRequest{
+		Model: req.Model,
+		Messages: []ollama.Message{
+			{Role: "system", Content: systemPrompt},
+			{Role: "user", Content: evidence.String()},
+		},
+		Format:  format,
+		Options: req.Options,
+		Think:   req.Think,
+	}
+	completion, err := r.callModelWithHeartbeat(ctx, subType, completionReq, streamCB)
 	if err != nil {
 		return "", fmt.Errorf("subagent final structured response failed: %w", err)
 	}
