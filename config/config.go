@@ -12,12 +12,57 @@ type Config struct {
 	DefaultMode     string                `json:"default_mode"`
 	NumCtx          int                   `json:"num_ctx"`
 	WhitelistTools  []string              `json:"whitelist_tools"`
+	Subagents       SubagentModelsConfig  `json:"subagents"`
 	DevelopmentTeam DevelopmentTeamConfig `json:"development_team"`
+	Presenter       PresenterConfig       `json:"presenter"`
 	ImageGeneration ImageGenerationConfig `json:"image_generation"`
 	ImageInspection ImageInspectionConfig `json:"image_inspection"`
 	AudioGeneration AudioGenerationConfig `json:"audio_generation"`
 	filePath        string
 	mu              sync.RWMutex
+}
+
+type SubagentModelConfig struct {
+	Model    string `json:"model"`
+	Thinking *bool  `json:"thinking,omitempty"`
+}
+
+type SubagentModelsConfig struct {
+	Planner    SubagentModelConfig `json:"planner"`
+	Researcher SubagentModelConfig `json:"researcher"`
+	Coder      SubagentModelConfig `json:"coder"`
+	Tester     SubagentModelConfig `json:"tester"`
+	Reviewer   SubagentModelConfig `json:"reviewer"`
+	Documenter SubagentModelConfig `json:"documenter"`
+	Presenter  SubagentModelConfig `json:"presenter"`
+}
+
+func (c SubagentModelConfig) WithFallback(model string) SubagentModelConfig {
+	if c.Model == "" {
+		c.Model = model
+	}
+	return c
+}
+
+type PresenterConfig struct {
+	DefaultTemplate string `json:"default_template"`
+	MaxSlides       int    `json:"max_slides"`
+}
+
+const (
+	PresenterTemplateAuto               = "auto"
+	PresenterTemplateTechnicalEditorial = "technical-editorial"
+	PresenterTemplateProductNarrative   = "product-narrative"
+	PresenterTemplateExecutiveBrief     = "executive-brief"
+	PresenterTemplateMinimalKeynote     = "minimal-keynote"
+)
+
+var PresenterTemplates = []string{
+	PresenterTemplateAuto,
+	PresenterTemplateTechnicalEditorial,
+	PresenterTemplateProductNarrative,
+	PresenterTemplateExecutiveBrief,
+	PresenterTemplateMinimalKeynote,
 }
 
 type DevelopmentTeamConfig struct {
@@ -150,6 +195,7 @@ func LoadConfig(filePath string) (*Config, error) {
 			"list_dir",
 			"grep_search",
 		},
+		Presenter:       DefaultPresenterConfig(),
 		ImageGeneration: DefaultImageGenerationConfig(),
 		ImageInspection: DefaultImageInspectionConfig(),
 		AudioGeneration: DefaultAudioGenerationConfig(),
@@ -175,6 +221,7 @@ func LoadConfig(filePath string) (*Config, error) {
 
 	cfg.filePath = absPath
 	cfg.DefaultMode = safeDefaultMode(cfg.DefaultMode)
+	cfg.Presenter = normalizePresenterConfig(cfg.Presenter)
 	cfg.ImageGeneration = normalizeImageGenerationConfig(cfg.ImageGeneration)
 	cfg.ImageInspection = normalizeImageInspectionConfig(cfg.ImageInspection)
 	cfg.AudioGeneration = normalizeAudioGenerationConfig(cfg.AudioGeneration)
@@ -191,6 +238,33 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func DefaultPresenterConfig() PresenterConfig {
+	return PresenterConfig{
+		DefaultTemplate: PresenterTemplateAuto,
+		MaxSlides:       10,
+	}
+}
+
+func normalizePresenterConfig(cfg PresenterConfig) PresenterConfig {
+	defaults := DefaultPresenterConfig()
+	if !isPresenterTemplate(cfg.DefaultTemplate) {
+		cfg.DefaultTemplate = defaults.DefaultTemplate
+	}
+	if cfg.MaxSlides <= 0 || cfg.MaxSlides > 20 {
+		cfg.MaxSlides = defaults.MaxSlides
+	}
+	return cfg
+}
+
+func isPresenterTemplate(value string) bool {
+	for _, candidate := range PresenterTemplates {
+		if value == candidate {
+			return true
+		}
+	}
+	return false
 }
 
 func DefaultImageGenerationConfig() ImageGenerationConfig {

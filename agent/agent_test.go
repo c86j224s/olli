@@ -161,6 +161,37 @@ func TestAgentRegistersPlannerTool(t *testing.T) {
 	}
 }
 
+func TestAgentRegistersPresenterTemplates(t *testing.T) {
+	tempDir := t.TempDir()
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tempDir); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(originalWD)
+
+	cfg, err := config.LoadConfig(filepath.Join(tempDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ag := agent.New(ollama.NewClient("http://localhost:11434"), "qwen3.5:0.8b", "test", nil, cfg)
+	definition, ok := ag.GetRegistry().GetDefinition("delegate_presenter")
+	if !ok {
+		t.Fatal("expected delegate_presenter to be registered")
+	}
+	templateProperty, ok := definition.Function.Parameters.Properties["template"]
+	if !ok || len(templateProperty.Enum) != len(config.PresenterTemplates) {
+		t.Fatalf("unexpected Presenter template schema: %#v", definition.Function.Parameters)
+	}
+	for index, want := range config.PresenterTemplates {
+		if templateProperty.Enum[index] != want {
+			t.Fatalf("Presenter template %d = %q, want %q", index, templateProperty.Enum[index], want)
+		}
+	}
+}
+
 func TestAgentRegistersGoalTools(t *testing.T) {
 	tempDir := t.TempDir()
 	originalWD, err := os.Getwd()

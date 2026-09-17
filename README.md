@@ -21,6 +21,32 @@
 
 ---
 
+## Presenter 템플릿과 역할별 모델
+
+Presenter는 모델이 HTML/CSS/JavaScript 전체를 자유 생성하는 대신, 검증된 시안 하나를 선택하고 구조화된 슬라이드 콘텐츠만 작성합니다. 호스트 Renderer가 반응형 레이아웃, 키보드 탐색, 진행률, 접근성 속성, HTML escaping을 공통 적용합니다.
+
+지원 템플릿:
+
+- `technical-editorial`: 아키텍처·코드·워크플로·검증 결과 중심의 기술 발표
+- `product-narrative`: 문제에서 제품 가치와 증거로 이어지는 제품 서사
+- `executive-brief`: 지표·위험·의사결정·후속 조치 중심의 간결한 보고
+- `minimal-keynote`: 한 장에 한 메시지를 강조하는 대형 타이포그래피 발표
+- `auto`: Presenter가 내용과 청중에 맞는 시안을 선택
+
+`delegate_presenter`의 선택적 `template` 인자로 시안을 고정할 수 있습니다. `config.json`의 `subagents`는 Planner, Researcher, Coder, Tester, Reviewer, Documenter, Presenter마다 모델과 thinking 사용 여부를 따로 지정합니다. Presenter 기본 권장값은 `gemma4:12b`, `thinking: false`입니다.
+
+빠른 요청 예시:
+
+```text
+새 개발팀 루프 엔진을 엔지니어들에게 소개하는 7장 발표를 만들어줘.
+Architect → Cassandra → Detail Planner → Coder → Reviewer → Verifier 흐름과
+Counter/Tetris 검증 결과를 포함하고 technical-editorial 템플릿을 사용해줘.
+```
+
+설정, 템플릿 선택 기준, 호출 예시, 출력 계약과 문제 해결은 [Presenter 사용 가이드](PRESENTER_GUIDE.md)를 참고하세요.
+
+---
+
 ## 안전한 개발 및 테스트
 
 이 저장소의 테스트와 에이전트 실행은 실제 체크아웃이나 사용자 홈에서 직접 수행하지 않습니다. macOS의 `sandbox-exec`로 감싼 일회용 체크아웃에서 실행하며, 실제 홈과 실제 저장소 접근 및 네트워크를 차단하고 쓰기는 실행별 임시 디렉터리로 제한합니다. 샌드박스를 준비할 수 없으면 안전하지 않은 대체 경로로 실행하지 않고 실패합니다.

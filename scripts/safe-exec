@@ -292,6 +292,21 @@ if [ "${OLLI_SAFE_NETWORK_MODE:-}" = "ollama" ]; then
         printf '[safe-exec] refusing invalid product smoke flag\n' >&2
         exit 1
     fi
+    if [ "${OLLI_PRESENTER_SMOKE:-}" = "1" ]; then
+        CHILD_ENV+=("OLLI_MODEL_SMOKE=1" "OLLI_PRESENTER_SMOKE=1")
+        if [ -n "${OLLI_PRESENTER_MODEL:-}" ]; then
+            case "$OLLI_PRESENTER_MODEL" in
+                *[!A-Za-z0-9._:/-]*)
+                    printf '[safe-exec] refusing unsafe Presenter model name: %s\n' "$OLLI_PRESENTER_MODEL" >&2
+                    exit 1
+                    ;;
+            esac
+            CHILD_ENV+=("OLLI_PRESENTER_MODEL=$OLLI_PRESENTER_MODEL")
+        fi
+    elif [ -n "${OLLI_PRESENTER_SMOKE:-}" ]; then
+        printf '[safe-exec] refusing invalid Presenter smoke flag\n' >&2
+        exit 1
+    fi
     if [ "${OLLI_TEST_CODER_SMOKE:-}" = "1" ]; then
         CHILD_ENV+=("OLLI_TEST_CODER_SMOKE=1")
         if [ -n "${OLLI_TEST_CODER_MODEL:-}" ]; then

@@ -12,13 +12,14 @@ import (
 type SubagentType string
 
 const (
-	TypePlanner    SubagentType = "Planner"
-	TypeResearcher SubagentType = "Researcher"
-	TypeCoder      SubagentType = "Coder"
-	TypeTester     SubagentType = "Tester"
-	TypeReviewer   SubagentType = "Reviewer"
-	TypeDocumenter SubagentType = "Documenter"
-	TypePresenter  SubagentType = "Presenter"
+	TypePlanner       SubagentType = "Planner"
+	TypeResearcher    SubagentType = "Researcher"
+	TypeCoder         SubagentType = "Coder"
+	TypeTester        SubagentType = "Tester"
+	TypeReviewer      SubagentType = "Reviewer"
+	TypeDocumenter    SubagentType = "Documenter"
+	TypePresenter     SubagentType = "Presenter"
+	TypePresenterPlan SubagentType = "PresenterPlan"
 )
 
 type SubagentCallbacks struct {

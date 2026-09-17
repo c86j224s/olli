@@ -1,17 +1,52 @@
 {
   "default_mode": "accept-edit",
   "num_ctx": 32768,
+  "subagents": {
+    "planner": {
+      "model": "gemma4:e4b",
+      "thinking": false
+    },
+    "researcher": {
+      "model": "gemma4:12b",
+      "thinking": false
+    },
+    "coder": {
+      "model": "qwen3.8:27b",
+      "thinking": false
+    },
+    "tester": {
+      "model": "gemma4:e4b",
+      "thinking": false
+    },
+    "reviewer": {
+      "model": "gemma4:12b",
+      "thinking": false
+    },
+    "documenter": {
+      "model": "gemma4:12b",
+      "thinking": false
+    },
+    "presenter": {
+      "model": "gemma4:12b",
+      "thinking": false
+    }
+  },
   "development_team": {
-    "planner_model": "",
-    "coder_model": "",
-    "tester_model": "",
-    "reviewer_model": "",
-    "cassandra_model": "",
-    "detail_planner_model": "",
-    "requirement_reviewer_model": "",
-    "logic_reviewer_model": "",
-    "safety_reviewer_model": "",
-    "test_reviewer_model": ""
+    "planner_model": "gemma4:e4b",
+    "coder_model": "qwen3.8:27b",
+    "test_coder_model": "gemma4:12b",
+    "tester_model": "gemma4:e4b",
+    "reviewer_model": "gemma4:12b",
+    "cassandra_model": "gemma4:e4b",
+    "detail_planner_model": "gemma4:e4b",
+    "requirement_reviewer_model": "gemma4:12b",
+    "logic_reviewer_model": "gemma4:12b",
+    "safety_reviewer_model": "gemma4:12b",
+    "test_reviewer_model": "gemma4:12b"
+  },
+  "presenter": {
+    "default_template": "auto",
+    "max_slides": 10
   },
   "whitelist_tools": [
     "calculator",
