@@ -6,15 +6,17 @@ import (
 )
 
 const (
-	defaultPlannerNumPredict  = 1536
-	defaultCoderNumPredict    = 4096
-	defaultTesterNumPredict   = 512
-	defaultReviewerNumPredict = 1536
+	defaultPlannerNumPredict   = 1536
+	defaultCoderNumPredict     = 4096
+	defaultTesterNumPredict    = 512
+	defaultReviewerNumPredict  = 1536
+	defaultPresenterNumPredict = 4096
 
-	defaultPlannerTimeout  = 10 * time.Minute
-	defaultCoderTimeout    = 40 * time.Minute
-	defaultTesterTimeout   = 6 * time.Minute
-	defaultReviewerTimeout = 20 * time.Minute
+	defaultPlannerTimeout   = 10 * time.Minute
+	defaultCoderTimeout     = 40 * time.Minute
+	defaultTesterTimeout    = 6 * time.Minute
+	defaultReviewerTimeout  = 20 * time.Minute
+	defaultPresenterTimeout = 20 * time.Minute
 )
 
 type roleBudget struct {
@@ -34,6 +36,8 @@ func defaultRoleBudget(subType SubagentType) roleBudget {
 		return roleBudget{NumPredict: defaultTesterNumPredict, Timeout: defaultTesterTimeout}
 	case TypeReviewer:
 		return roleBudget{NumPredict: defaultReviewerNumPredict, Timeout: defaultReviewerTimeout}
+	case TypePresenter, TypePresenterPlan:
+		return roleBudget{NumPredict: defaultPresenterNumPredict, Timeout: defaultPresenterTimeout}
 	default:
 		return roleBudget{}
 	}

@@ -70,6 +70,9 @@ func TestConfigWhitelistManagement(t *testing.T) {
 	if cfg.ImageInspection.Ollama.MaxImageBytes != 67108864 {
 		t.Fatalf("expected default inspection max bytes, got %d", cfg.ImageInspection.Ollama.MaxImageBytes)
 	}
+	if cfg.Presenter.DefaultTemplate != config.PresenterTemplateAuto || cfg.Presenter.MaxSlides != 10 {
+		t.Fatalf("unexpected Presenter defaults: %#v", cfg.Presenter)
+	}
 	if cfg.AudioGeneration.ACEStep.Endpoint != "http://127.0.0.1:8001" {
 		t.Fatalf("expected default ACE-Step endpoint, got %s", cfg.AudioGeneration.ACEStep.Endpoint)
 	}
@@ -251,6 +254,33 @@ func TestDevelopmentTeamConfigUsesConfiguredModelsAndFallback(t *testing.T) {
 	}
 	if cfg.RequirementReviewerModel != "gemma4:12b" || cfg.LogicReviewerModel != "qwen3.8:27b" || cfg.SafetyReviewerModel != "gemma4:12b" || cfg.TestReviewerModel != "gemma4:12b" {
 		t.Fatalf("unexpected specialist reviewer fallback: %#v", cfg)
+	}
+}
+
+func TestSubagentModelConfigUsesRoleModelAndFallback(t *testing.T) {
+	thinking := false
+	configured := (config.SubagentModelConfig{Model: "gemma4:12b", Thinking: &thinking}).WithFallback("fallback")
+	if configured.Model != "gemma4:12b" || configured.Thinking == nil || *configured.Thinking {
+		t.Fatalf("configured role was not preserved: %#v", configured)
+	}
+	fallback := (config.SubagentModelConfig{}).WithFallback("qwen3.8:27b")
+	if fallback.Model != "qwen3.8:27b" || fallback.Thinking != nil {
+		t.Fatalf("role fallback is wrong: %#v", fallback)
+	}
+}
+
+func TestPresenterConfigNormalizesInvalidValues(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"presenter":{"default_template":"invented","max_slides":99}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Presenter.DefaultTemplate != config.PresenterTemplateAuto || cfg.Presenter.MaxSlides != 10 {
+		t.Fatalf("invalid Presenter config was not normalized: %#v", cfg.Presenter)
 	}
 }
 

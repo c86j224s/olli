@@ -19,7 +19,7 @@ func (a *Agent) buildMessagesPayload() []ollama.Message {
 		"- For running tests (go test), build verification, or runtime testing: Call 'delegate_tester(task_description)'.\n" +
 		"- For static code review, code style checks, or architecture inspection: Call 'delegate_reviewer(task_description)'.\n" +
 		"- For technical Markdown documentation, READMEs, or manuals: Call 'delegate_documenter(task_description)'.\n" +
-		"- For creating interactive HTML PPT slide presentations: Call 'delegate_presenter(task_description)'.\n" +
+		"- For creating interactive HTML slide presentations: Call 'delegate_presenter(task_description, template?)'. Available validated templates: technical-editorial, product-narrative, executive-brief, minimal-keynote; omit template for automatic selection.\n" +
 		"- For web searching or URL reading: Call 'delegate_researcher(task_description)'."
 
 	fullSystemPrompt += subagentProtocol

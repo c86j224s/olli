@@ -44,6 +44,39 @@ func (a *Agent) buildSubagentCallbacks(ctx context.Context) subagent.SubagentCal
 	}
 }
 
+func (a *Agent) configuredSubagentRunner(role config.SubagentModelConfig, ctx context.Context) *subagent.SubagentRunner {
+	role = role.WithFallback(a.model)
+	runner := subagent.NewRunner(a.client, role.Model, a.cfg, a.currentDir, a.getSessionFilePath(), a.buildSubagentCallbacks(ctx), a.getWorkspaceRoot())
+	if role.Thinking != nil {
+		runner = runner.WithThinking(*role.Thinking)
+	}
+	return runner
+}
+
+func (a *Agent) subagentModelConfig(role string) config.SubagentModelConfig {
+	if a.cfg == nil {
+		return config.SubagentModelConfig{}.WithFallback(a.model)
+	}
+	switch role {
+	case "planner":
+		return a.cfg.Subagents.Planner.WithFallback(a.model)
+	case "researcher":
+		return a.cfg.Subagents.Researcher.WithFallback(a.model)
+	case "coder":
+		return a.cfg.Subagents.Coder.WithFallback(a.model)
+	case "tester":
+		return a.cfg.Subagents.Tester.WithFallback(a.model)
+	case "reviewer":
+		return a.cfg.Subagents.Reviewer.WithFallback(a.model)
+	case "documenter":
+		return a.cfg.Subagents.Documenter.WithFallback(a.model)
+	case "presenter":
+		return a.cfg.Subagents.Presenter.WithFallback(a.model)
+	default:
+		return config.SubagentModelConfig{}.WithFallback(a.model)
+	}
+}
+
 func (a *Agent) buildEnrichedSubagentTask(rawTask string) string {
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📋 [CONTEXT FROM MAIN AGENT]:\n- Active Working Directory: %s\n", a.currentDir))
@@ -173,7 +206,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: false}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), a.buildSubagentCallbacks(ctx), a.getWorkspaceRoot())
+		runner := a.configuredSubagentRunner(a.subagentModelConfig("planner"), ctx)
 		report, plan, err := runner.RunPlannerWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("planner subagent failed: %w", err)
@@ -205,8 +238,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks(ctx)
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
+		runner := a.configuredSubagentRunner(a.subagentModelConfig("researcher"), ctx)
 		report, err := runner.RunResearcherWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("researcher subagent failed: %w", err)
@@ -237,8 +269,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks(ctx)
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
+		runner := a.configuredSubagentRunner(a.subagentModelConfig("coder"), ctx)
 		report, err := runner.RunCoderWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("coder subagent failed: %w", err)
@@ -269,8 +300,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks(ctx)
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
+		runner := a.configuredSubagentRunner(a.subagentModelConfig("tester"), ctx)
 		report, err := runner.RunTesterWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("tester subagent failed: %w", err)
@@ -301,8 +331,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks(ctx)
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
+		runner := a.configuredSubagentRunner(a.subagentModelConfig("reviewer"), ctx)
 		report, err := runner.RunReviewerWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("reviewer subagent failed: %w", err)
@@ -333,8 +362,7 @@ func (a *Agent) registerSubagentTools() {
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks(ctx)
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
+		runner := a.configuredSubagentRunner(a.subagentModelConfig("documenter"), ctx)
 		report, err := runner.RunDocumenterWithContext(ctx, enrichedTask)
 		if err != nil {
 			return "", fmt.Errorf("documenter subagent failed: %w", err)
@@ -356,7 +384,12 @@ func (a *Agent) registerSubagentTools() {
 				Properties: map[string]ollama.FunctionParamProperty{
 					"task_description": {
 						Type:        "string",
-						Description: "Detailed PPT slide deck generation task description",
+						Description: "Detailed slide deck objective, audience, source facts, and desired outcome",
+					},
+					"template": {
+						Type:        "string",
+						Description: "Optional visual template; auto lets Presenter choose from the validated catalog",
+						Enum:        config.PresenterTemplates,
 					},
 				},
 				Required: []string{"task_description"},
@@ -364,10 +397,10 @@ func (a *Agent) registerSubagentTools() {
 		},
 	}, tools.ToolMetadata{WorkflowCallable: true}, func(ctx context.Context, args map[string]interface{}) (string, error) {
 		task, _ := args["task_description"].(string)
+		templateName, _ := args["template"].(string)
 		enrichedTask := a.buildEnrichedSubagentTask(task)
-		subCB := a.buildSubagentCallbacks(ctx)
-		runner := subagent.NewRunner(a.client, a.model, a.cfg, a.currentDir, a.getSessionFilePath(), subCB, a.getWorkspaceRoot())
-		report, err := runner.RunPresenterWithContext(ctx, enrichedTask)
+		runner := a.configuredSubagentRunner(a.subagentModelConfig("presenter"), ctx)
+		report, err := runner.RunPresenterWithTemplateContext(ctx, enrichedTask, templateName)
 		if err != nil {
 			return "", fmt.Errorf("presenter subagent failed: %w", err)
 		}

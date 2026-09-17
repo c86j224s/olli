@@ -11,11 +11,12 @@ func TestDefaultRoleBudgetsAreBoundedAndOrdered(t *testing.T) {
 	coder := defaultRoleBudget(TypeCoder)
 	tester := defaultRoleBudget(TypeTester)
 	reviewer := defaultRoleBudget(TypeReviewer)
-	if planner.Timeout != 10*time.Minute || coder.Timeout != 40*time.Minute || tester.Timeout != 6*time.Minute || reviewer.Timeout != 20*time.Minute {
-		t.Fatalf("unexpected role timeouts: planner=%v coder=%v tester=%v reviewer=%v", planner.Timeout, coder.Timeout, tester.Timeout, reviewer.Timeout)
+	presenter := defaultRoleBudget(TypePresenter)
+	if planner.Timeout != 10*time.Minute || coder.Timeout != 40*time.Minute || tester.Timeout != 6*time.Minute || reviewer.Timeout != 20*time.Minute || presenter.Timeout != 20*time.Minute {
+		t.Fatalf("unexpected role timeouts: planner=%v coder=%v tester=%v reviewer=%v presenter=%v", planner.Timeout, coder.Timeout, tester.Timeout, reviewer.Timeout, presenter.Timeout)
 	}
 	for role, budget := range map[SubagentType]roleBudget{
-		TypePlanner: planner, TypeCoder: coder, TypeTester: tester, TypeReviewer: reviewer,
+		TypePlanner: planner, TypeCoder: coder, TypeTester: tester, TypeReviewer: reviewer, TypePresenter: presenter,
 	} {
 		if budget.NumPredict <= 0 || budget.Timeout <= 0 {
 			t.Fatalf("%s has no bounded budget: %#v", role, budget)

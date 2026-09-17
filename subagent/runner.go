@@ -90,6 +90,10 @@ func (r *SubagentRunner) withThinking(enabled bool) *SubagentRunner {
 	return &clone
 }
 
+func (r *SubagentRunner) WithThinking(enabled bool) *SubagentRunner {
+	return r.withThinking(enabled)
+}
+
 func (r *SubagentRunner) roleBudget(subType SubagentType) roleBudget {
 	if r != nil && r.budgetOverrides != nil {
 		if budget, exists := r.budgetOverrides[subType]; exists {

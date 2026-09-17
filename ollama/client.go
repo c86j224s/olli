@@ -24,7 +24,7 @@ func NewClient(baseURL string) *Client {
 	return &Client{
 		BaseURL: baseURL,
 		HTTPClient: &http.Client{
-			Timeout: 10 * time.Minute, // Generous 10 minute timeout for long local LLM reasoning & subagent runs
+			Timeout: 40 * time.Minute,
 		},
 	}
 }
