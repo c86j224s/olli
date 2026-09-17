@@ -284,6 +284,39 @@ func TestPresenterConfigNormalizesInvalidValues(t *testing.T) {
 	}
 }
 
+func TestAIGatewayConfigPreservesUnsupportedStrategyForStartupValidation(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"ai_gateway":{"enabled":true,"strategy":"invented","nodes":[{"id":"gpu-a","endpoint":"https://gpu-a.example","max_concurrency":1,"weight":100}]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AIGateway.Strategy != "invented" {
+		t.Fatalf("unsupported gateway strategy was silently changed: %#v", cfg.AIGateway)
+	}
+}
+
+func TestAIGatewayConfigDefaultsAndNodeNormalization(t *testing.T) {
+	tempDir := t.TempDir()
+	cfgPath := filepath.Join(tempDir, "config.json")
+	if err := os.WriteFile(cfgPath, []byte(`{"ai_gateway":{"enabled":true,"nodes":[{"id":"gpu-a","endpoint":"https://gpu-a.example","models":["gemma4:12b"]}]}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadConfig(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.AIGateway.Enabled || cfg.AIGateway.Strategy != config.AIGatewayStrategyLeastLoaded || cfg.AIGateway.HealthIntervalSeconds != 15 || cfg.AIGateway.FailureThreshold != 3 || cfg.AIGateway.CooldownSeconds != 60 {
+		t.Fatalf("unexpected gateway defaults: %#v", cfg.AIGateway)
+	}
+	if len(cfg.AIGateway.Nodes) != 1 || cfg.AIGateway.Nodes[0].MaxConcurrency != 1 || cfg.AIGateway.Nodes[0].Weight != 100 {
+		t.Fatalf("gateway node defaults were not normalized: %#v", cfg.AIGateway.Nodes)
+	}
+}
+
 func TestConfigInvalidDefaultModeFallsBackToAsk(t *testing.T) {
 	tempDir := t.TempDir()
 	cfgPath := filepath.Join(tempDir, "config.json")

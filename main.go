@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ergochat/readline"
@@ -15,6 +16,7 @@ import (
 	"github.com/c86j224s/olli/agent"
 	"github.com/c86j224s/olli/cli"
 	"github.com/c86j224s/olli/config"
+	"github.com/c86j224s/olli/gateway"
 	"github.com/c86j224s/olli/ollama"
 	"github.com/c86j224s/olli/session"
 )
@@ -23,17 +25,35 @@ func main() {
 	// Restore standard POSIX terminal termios settings (ONLCR) to fix staircase newline drifting
 	_ = exec.Command("stty", "sane").Run()
 
-	client := ollama.NewClient("http://localhost:11434")
+	cfg, err := config.LoadConfig("./config.json")
+	if err != nil {
+		fmt.Printf("%s[Error]%s Failed to load config.json: %v\n", cli.ColorRed, cli.ColorReset, err)
+		os.Exit(1)
+	}
+
+	var client ollama.ChatClient = ollama.NewClient("http://localhost:11434")
+	if cfg.AIGateway.Enabled {
+		aiGateway, err := gateway.New(cfg.AIGateway)
+		if err != nil {
+			fmt.Printf("%s[Error]%s Failed to initialize AI gateway: %v\n", cli.ColorRed, cli.ColorReset, err)
+			os.Exit(1)
+		}
+		gatewayCtx, gatewayCancel := context.WithCancel(context.Background())
+		defer gatewayCancel()
+		aiGateway.Start(gatewayCtx)
+		defer aiGateway.Close()
+		client = aiGateway
+	}
 
 	models, err := client.ListModels()
 	if err != nil {
 		fmt.Printf("%s[Error]%s Failed to connect to Ollama: %v\n", cli.ColorRed, cli.ColorReset, err)
-		fmt.Println("Please make sure Ollama is running (`ollama serve`).")
+		fmt.Println("Please make sure the configured Ollama node or AI gateway is available.")
 		os.Exit(1)
 	}
 
 	if len(models) == 0 {
-		fmt.Printf("%s[Error]%s No local models found in Ollama.\n", cli.ColorRed, cli.ColorReset)
+		fmt.Printf("%s[Error]%s No Ollama models found.\n", cli.ColorRed, cli.ColorReset)
 		os.Exit(1)
 	}
 
@@ -54,12 +74,6 @@ func main() {
 	sessMgr, err := session.NewManager("./sessions", workspaceRoot)
 	if err != nil {
 		fmt.Printf("%s[Error]%s Failed to initialize session manager: %v\n", cli.ColorRed, cli.ColorReset, err)
-		os.Exit(1)
-	}
-
-	cfg, err := config.LoadConfig("./config.json")
-	if err != nil {
-		fmt.Printf("%s[Error]%s Failed to load config.json: %v\n", cli.ColorRed, cli.ColorReset, err)
 		os.Exit(1)
 	}
 
@@ -103,6 +117,12 @@ func main() {
 			readline.PcItem("show"),
 			readline.PcItem("validate"),
 			readline.PcItem("run"),
+		),
+		readline.PcItem("/gateway",
+			readline.PcItem("status"),
+			readline.PcItem("nodes"),
+			readline.PcItem("drain"),
+			readline.PcItem("resume"),
 		),
 		readline.PcItem("/summary"),
 		readline.PcItem("/summarize"),
@@ -225,6 +245,12 @@ func main() {
 
 		contentStarted := false
 		subThinkingActive := false
+		var callbackMu sync.Mutex
+		withCallbackLock := func(callback func()) {
+			callbackMu.Lock()
+			defer callbackMu.Unlock()
+			callback()
+		}
 
 		callbacks := agent.Callbacks{
 			OnThinkingStart: func() {
@@ -276,39 +302,49 @@ func main() {
 				return allowed, always
 			},
 			OnSubagentThinkingStart: func(subType string) {
-				spinner.Stop()
-				subThinkingActive = true
-				boldColor, italicColor := cli.GetSubagentPalette(subType)
-				fmt.Printf("   %s↳ 🧠 [%s Thinking]%s %s", boldColor, subType, cli.ColorReset, italicColor)
+				withCallbackLock(func() {
+					spinner.Stop()
+					subThinkingActive = true
+					boldColor, italicColor := cli.GetSubagentPalette(subType)
+					fmt.Printf("   %s↳ 🧠 [%s Thinking]%s %s", boldColor, subType, cli.ColorReset, italicColor)
+				})
 			},
 			OnSubagentThinkingToken: func(token string) {
-				spinner.Stop()
-				fmt.Print(token)
+				withCallbackLock(func() {
+					spinner.Stop()
+					fmt.Print(token)
+				})
 			},
 			OnSubagentThinkingEnd: func() {
-				if subThinkingActive {
-					subThinkingActive = false
-					fmt.Printf("%s\n", cli.ColorReset)
-				}
+				withCallbackLock(func() {
+					if subThinkingActive {
+						subThinkingActive = false
+						fmt.Printf("%s\n", cli.ColorReset)
+					}
+				})
 			},
 			OnSubagentHeartbeat: func(subType string, elapsed time.Duration) {
-				spinner.Stop()
-				boldColor, _ := cli.GetSubagentPalette(subType)
-				fmt.Printf("   %s↳ ⏳ [%s]%s model response is still generating (%s)\n", boldColor, subType, cli.ColorReset, elapsed)
+				withCallbackLock(func() {
+					spinner.Stop()
+					boldColor, _ := cli.GetSubagentPalette(subType)
+					fmt.Printf("   %s↳ ⏳ [%s]%s model response is still generating (%s)\n", boldColor, subType, cli.ColorReset, elapsed)
+				})
 			},
 			OnSubagentToolCall: func(subType string, toolName string, args map[string]interface{}, result string, execErr error) {
-				spinner.Stop()
-				boldColor, dimColor := cli.GetSubagentPalette(subType)
-				fmt.Printf("   %s↳ ⚙️  [%s Tool Executed]%s %s%s%s(%s)\n", boldColor, subType, cli.ColorReset, cli.ColorBold, toolName, cli.ColorReset, agent.FormatArgs(args))
-				if execErr != nil {
-					fmt.Printf("   %s    ❌ [Error/Rejection]%s %v\n\n", cli.ColorRed, cli.ColorReset, execErr)
-				} else {
-					truncRes := result
-					if len(truncRes) > 150 {
-						truncRes = truncRes[:150] + "... [truncated]"
+				withCallbackLock(func() {
+					spinner.Stop()
+					boldColor, dimColor := cli.GetSubagentPalette(subType)
+					fmt.Printf("   %s↳ ⚙️  [%s Tool Executed]%s %s%s%s(%s)\n", boldColor, subType, cli.ColorReset, cli.ColorBold, toolName, cli.ColorReset, agent.FormatArgs(args))
+					if execErr != nil {
+						fmt.Printf("   %s    ❌ [Error/Rejection]%s %v\n\n", cli.ColorRed, cli.ColorReset, execErr)
+					} else {
+						truncRes := result
+						if len(truncRes) > 150 {
+							truncRes = truncRes[:150] + "... [truncated]"
+						}
+						fmt.Printf("   %s    📥 [Output]%s %s\n\n", dimColor, cli.ColorReset, truncRes)
 					}
-					fmt.Printf("   %s    📥 [Output]%s %s\n\n", dimColor, cli.ColorReset, truncRes)
-				}
+				})
 			},
 		}
 

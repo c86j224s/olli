@@ -107,16 +107,24 @@ func (a *Agent) getWorkspaceRoot() string {
 }
 
 func formatSubagentReport(title string, report *subagent.ResultReport) string {
-	return fmt.Sprintf("%s\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nArtifact Files: %s\nCreated Files: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
+	return fmt.Sprintf("%s\nTask: %s\nStatus: %s\nSummary: %s\nWorking Dir: %s\nRoute Node: %s\nArtifact Files: %s\nCreated Files: %s\nTurn Log Saved To: %s\n(Tool calls run: %d)",
 		title,
 		report.Task,
 		report.Status,
 		report.Summary,
 		report.WorkingDir,
+		formatSubagentRouteNode(report.RouteNodeID),
 		formatSubagentPathList(report.ArtifactFiles),
 		formatSubagentPathList(report.CreatedFiles),
 		report.JSONLFile,
 		report.ToolCallsRun)
+}
+
+func formatSubagentRouteNode(nodeID string) string {
+	if strings.TrimSpace(nodeID) == "" {
+		return "direct"
+	}
+	return nodeID
 }
 
 func formatSubagentPathList(paths []string) string {

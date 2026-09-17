@@ -38,6 +38,9 @@ This repository is `O.L.L.I.`, a Go-based local Ollama agent with tool execution
 ## Model Routing and Generated Artifacts
 
 - Treat model selection as part of the role contract. Configure Planner, Researcher, Coder, Tester, Reviewer, Documenter, Presenter, and development-team specialists independently when their workloads differ; preserve a documented fallback to the active model for older configs.
+- Multi-node model routing must use bounded leases, per-node concurrency limits, health checks, drain state, and fail-closed endpoint validation. Log only stable node IDs, never authentication headers or tokens.
+- Parallelize read-only roles only when every branch receives the same immutable snapshot, cancellation propagates to all branches, and results/errors are merged in a deterministic role or architecture order. Keep mutation-capable Coder work one-writer until isolated workspaces and deterministic integration exist.
+- Never automatically replay a partially streamed or tool-executing model turn on another node. Connection failures before any observable progress may be retried only through an explicit bounded policy; after tools or mutations, preserve evidence and let the workflow decide.
 - Prefer the smallest model that can satisfy a narrow, validated contract. Do not ask a small model to invent content, application structure, styling, interaction code, and safety controls in one response.
 - For repeatable visual or document output, have the model choose from a small validated template catalog and return strict structured content. Keep responsive layout, accessibility, escaping, navigation, and other mechanical guarantees in deterministic host renderers.
 - Treat model output as untrusted data. Use strict schemas, bounded lengths and collection sizes, allowlisted variants, safe path validation, contextual escaping, and at most a bounded repair pass. Never silently accept or broaden an invalid contract.

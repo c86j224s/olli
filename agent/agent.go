@@ -49,7 +49,7 @@ type Callbacks struct {
 }
 
 type Agent struct {
-	client              *ollama.Client
+	client              ollama.ChatClient
 	model               string
 	systemMsg           string
 	numCtx              int
@@ -87,7 +87,7 @@ func FormatArgs(args map[string]interface{}) string {
 	return string(b)
 }
 
-func New(client *ollama.Client, model string, systemMsg string, sessMgr *session.Manager, cfg *config.Config) *Agent {
+func New(client ollama.ChatClient, model string, systemMsg string, sessMgr *session.Manager, cfg *config.Config) *Agent {
 	initialDir, err := os.Getwd()
 	if err != nil {
 		initialDir = "."
@@ -307,6 +307,7 @@ func (a *Agent) ClearHistory() {
 func (a *Agent) GetHistoryCount() int                { return len(a.history) }
 func (a *Agent) GetRegistry() *tools.Registry        { return a.registry }
 func (a *Agent) GetSessionManager() *session.Manager { return a.sessMgr }
+func (a *Agent) GetClient() ollama.ChatClient        { return a.client }
 
 func (a *Agent) ShouldRequirePermission(toolName string) bool {
 	if isSensitiveTool(toolName) {

@@ -113,7 +113,7 @@ Rules:
 	}
 	roleCtx, cancel := withRoleTimeout(ctx, planRunner.roleBudget(TypePresenter))
 	defer cancel()
-	report, err := planRunner.executeSubagentLoopWithFormat(roleCtx, subID, string(TypePresenterPlan), task, sysPrompt, planRunner.newRoleRegistry(), presentationPlanSchema(maxSlides), nil, nil)
+	report, err := planRunner.withRole("presenter").executeSubagentLoopWithFormat(roleCtx, subID, string(TypePresenterPlan), task, sysPrompt, planRunner.newRoleRegistry(), presentationPlanSchema(maxSlides), nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -122,7 +122,7 @@ Rules:
 	}
 	plan, validationErr := parseAndValidatePresentationPlan(report.Summary, requestedTemplate, maxSlides)
 	if validationErr != nil {
-		repaired, repairErr := planRunner.requestStructuredRepair(roleCtx, string(TypePresenterPlan), task, sysPrompt, report.Summary, validationErr, presentationPlanSchema(maxSlides), nil)
+		repaired, repairErr := planRunner.withRole("presenter").requestStructuredRepair(roleCtx, string(TypePresenterPlan), task, sysPrompt, report.Summary, validationErr, presentationPlanSchema(maxSlides), nil)
 		if repairErr != nil {
 			return nil, fmt.Errorf("presenter plan remained invalid after one repair: %w", repairErr)
 		}

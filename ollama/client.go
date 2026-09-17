@@ -12,9 +12,32 @@ import (
 	"time"
 )
 
+type ChatClient interface {
+	ListModels() ([]string, error)
+	ListModelsWithContext(context.Context) ([]string, error)
+	ChatStreamFull(ChatRequest, StreamCallbacks) (*Message, error)
+	ChatStreamFullWithContext(context.Context, ChatRequest, StreamCallbacks) (*Message, error)
+}
+
+type RouteRequest struct {
+	Role  string
+	Model string
+}
+
+type ClientLease interface {
+	Client() ChatClient
+	NodeID() string
+	Release(error)
+}
+
+type LeaseProvider interface {
+	Acquire(context.Context, RouteRequest) (ClientLease, error)
+}
+
 type Client struct {
 	BaseURL    string
 	HTTPClient *http.Client
+	Headers    http.Header
 }
 
 func NewClient(baseURL string) *Client {
@@ -26,6 +49,17 @@ func NewClient(baseURL string) *Client {
 		HTTPClient: &http.Client{
 			Timeout: 40 * time.Minute,
 		},
+	}
+}
+
+func (c *Client) applyHeaders(req *http.Request) {
+	if c == nil || req == nil {
+		return
+	}
+	for name, values := range c.Headers {
+		for _, value := range values {
+			req.Header.Add(name, value)
+		}
 	}
 }
 
@@ -113,7 +147,16 @@ type StreamCallbacks struct {
 }
 
 func (c *Client) ListModels() ([]string, error) {
-	resp, err := c.HTTPClient.Get(c.BaseURL + "/api/tags")
+	return c.ListModelsWithContext(context.Background())
+}
+
+func (c *Client) ListModelsWithContext(ctx context.Context) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/tags", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Ollama models request: %w", err)
+	}
+	c.applyHeaders(req)
+	resp, err := c.HTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to reach Ollama API: %w", err)
 	}
@@ -156,6 +199,7 @@ func (c *Client) ChatStreamFullWithContext(ctx context.Context, req ChatRequest,
 		return nil, fmt.Errorf("failed to create http request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	c.applyHeaders(httpReq)
 
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
@@ -263,6 +307,7 @@ func (c *Client) chatOnceWithContext(ctx context.Context, req ChatRequest, cb St
 		return nil, fmt.Errorf("failed to create http request: %w", err)
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
+	c.applyHeaders(httpReq)
 	resp, err := c.HTTPClient.Do(httpReq)
 	if err != nil {
 		if ctx.Err() != nil {

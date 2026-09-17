@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	agentloop "github.com/c86j224s/olli/loop"
 	"github.com/c86j224s/olli/ollama"
@@ -153,6 +154,10 @@ func (m TeamModels) reviewerModel(dimension ReviewDimension) string {
 	}
 }
 
+func (m *ModelTeamRoles) ParallelReviewsEnabled() bool {
+	return m != nil && m.runner != nil && m.runner.leaseProvider != nil
+}
+
 func (m *ModelTeamRoles) TeamWorkspace() string {
 	if m == nil || m.runner == nil {
 		return ""
@@ -218,19 +223,73 @@ func (m *ModelTeamRoles) PlanArchitecture(ctx context.Context, objective string)
 		return nil, planning, fmt.Errorf("cassandra rejected repaired architecture: %s", planning.Reviews[len(planning.Reviews)-1].Summary)
 	}
 	architecture := &planning.Architecture
-	details := make([]DetailPlan, 0, len(architecture.Packages))
-	for _, work := range architecture.Packages {
-		detail, err := m.detailArchitectureWork(ctx, architecture, work)
-		if err != nil {
-			return nil, nil, fmt.Errorf("detail planning %s failed: %w", work.ID, err)
-		}
-		details = append(details, *detail)
+	details, err := m.detailArchitectureWorks(ctx, architecture)
+	if err != nil {
+		return nil, nil, err
 	}
 	plan, err := flattenArchitecturePlan(*architecture, details)
 	if err != nil {
 		return nil, nil, err
 	}
 	return plan, planning, nil
+}
+
+func (m *ModelTeamRoles) detailArchitectureWorks(ctx context.Context, architecture *ArchitecturePlan) ([]DetailPlan, error) {
+	if architecture == nil {
+		return nil, fmt.Errorf("architecture is required")
+	}
+	if m.runner.leaseProvider == nil {
+		details := make([]DetailPlan, 0, len(architecture.Packages))
+		for _, work := range architecture.Packages {
+			detail, err := m.detailArchitectureWork(ctx, architecture, work)
+			if err != nil {
+				return nil, fmt.Errorf("detail planning %s failed: %w", work.ID, err)
+			}
+			details = append(details, *detail)
+		}
+		return details, nil
+	}
+	type result struct {
+		index  int
+		workID string
+		detail *DetailPlan
+		err    error
+	}
+	results := make(chan result, len(architecture.Packages))
+	var wg sync.WaitGroup
+	for index, work := range architecture.Packages {
+		index, work := index, work
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			detail, err := m.detailArchitectureWork(ctx, architecture, work)
+			if err != nil {
+				err = fmt.Errorf("detail planning %s failed: %w", work.ID, err)
+			}
+			results <- result{index: index, workID: work.ID, detail: detail, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	ordered := make([]DetailPlan, len(architecture.Packages))
+	errorsByIndex := make([]error, len(architecture.Packages))
+	for item := range results {
+		if item.err != nil {
+			errorsByIndex[item.index] = item.err
+			continue
+		}
+		if item.detail == nil {
+			errorsByIndex[item.index] = fmt.Errorf("detail planning %s returned no plan", item.workID)
+			continue
+		}
+		ordered[item.index] = *item.detail
+	}
+	for _, err := range errorsByIndex {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ordered, nil
 }
 
 func (m *ModelTeamRoles) Code(ctx context.Context, task CodeTask) (*CodeReport, error) {
@@ -267,7 +326,7 @@ TEST-ONLY MILESTONE:
 	if m.models.CoderThinking != nil {
 		coderRunner = coderRunner.withThinking(*m.models.CoderThinking)
 	}
-	report, err := coderRunner.executeSubagentLoopWithFormat(roleCtx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderPrompt, reg, codeReportSchema(), &temperature, evidence)
+	report, err := coderRunner.withRole("coder").executeSubagentLoopWithFormat(roleCtx, newSubagentID("team-coder"), string(TypeCoder), string(payload), coderPrompt, reg, codeReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -328,7 +387,7 @@ func (m *ModelTeamRoles) runTester(ctx context.Context, role string, commands []
 	evidence := &executionEvidence{ProgressMarker: commandProgressMarker, RequiredCalls: requiredCommandCalls(commands)}
 	evidence.ProgressState = func() string { return evidenceAttemptProgressSet(evidence) }
 	evidence.CompletionReady = func() bool { return len(evidence.missingRequiredTools()) == 0 }
-	report, err := m.runner.withModel(m.models.Tester).executeSubagentLoopWithFormat(roleCtx, newSubagentID(role), string(TypeTester), string(payload), testerTeamPrompt, reg, testReportSchema(), &temperature, evidence)
+	report, err := m.runner.withModel(m.models.Tester).withRole("tester").executeSubagentLoopWithFormat(roleCtx, newSubagentID(role), string(TypeTester), string(payload), testerTeamPrompt, reg, testReportSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +441,7 @@ func (m *ModelTeamRoles) Review(ctx context.Context, task ReviewTask) (*ReviewRe
 			return len(evidence.missingRequiredTools()) == 0 && requireReviewerFileEvidence(missingSnapshots, evidence, m.runner.workspace) == nil
 		}
 	}
-	reviewerRunner := m.runner.withModel(m.models.reviewerModel(task.Dimension))
+	reviewerRunner := m.runner.withModel(m.models.reviewerModel(task.Dimension)).withRole("reviewer." + string(task.Dimension))
 	if m.models.ReviewerThinking != nil {
 		reviewerRunner = reviewerRunner.withThinking(*m.models.ReviewerThinking)
 	}
@@ -412,7 +471,7 @@ func (m *ModelTeamRoles) Review(ctx context.Context, task ReviewTask) (*ReviewRe
 		validationErr = validateDimensionReviewReport(reviewContext.Plan, task.Dimension, previous, reviewReport)
 	}
 	if validationErr != nil {
-		repaired, repairErr := reviewerRunner.requestStructuredRepair(roleCtx, string(TypeReviewer), string(payload), prompt, report.Summary, validationErr, reviewReportSchema(), &temperature)
+		repaired, repairErr := reviewerRunner.withRole("reviewer."+string(task.Dimension)).requestStructuredRepair(roleCtx, string(TypeReviewer), string(payload), prompt, report.Summary, validationErr, reviewReportSchema(), &temperature)
 		if repairErr != nil {
 			return nil, repairErr
 		}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 
 	agentgraph "github.com/c86j224s/olli/graph"
 	"github.com/c86j224s/olli/tools"
@@ -380,6 +381,64 @@ func beginSemanticReview(state *developmentTeamState) {
 	}
 }
 
+func runDimensionReviews(ctx context.Context, roles DevelopmentTeamRoles, dimensions []ReviewDimension, reviewContext ReviewContext) ([]DimensionReview, error) {
+	if len(dimensions) == 0 {
+		return nil, nil
+	}
+	parallel, ok := roles.(interface{ ParallelReviewsEnabled() bool })
+	if !ok || !parallel.ParallelReviewsEnabled() {
+		reviews := make([]DimensionReview, 0, len(dimensions))
+		for _, dimension := range dimensions {
+			review, err := roles.Review(ctx, ReviewTask{Dimension: dimension, Context: reviewContext})
+			if err != nil {
+				return nil, fmt.Errorf("%s review failed: %w", dimension, err)
+			}
+			reviews = append(reviews, DimensionReview{Dimension: dimension, Report: *review})
+		}
+		return reviews, nil
+	}
+	type result struct {
+		index  int
+		review *ReviewReport
+		err    error
+	}
+	results := make(chan result, len(dimensions))
+	var wg sync.WaitGroup
+	for index, dimension := range dimensions {
+		index, dimension := index, dimension
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			review, err := roles.Review(ctx, ReviewTask{Dimension: dimension, Context: reviewContext})
+			if err != nil {
+				err = fmt.Errorf("%s review failed: %w", dimension, err)
+			}
+			results <- result{index: index, review: review, err: err}
+		}()
+	}
+	wg.Wait()
+	close(results)
+	ordered := make([]DimensionReview, len(dimensions))
+	errorsByIndex := make([]error, len(dimensions))
+	for item := range results {
+		if item.err != nil {
+			errorsByIndex[item.index] = item.err
+			continue
+		}
+		if item.review == nil {
+			errorsByIndex[item.index] = fmt.Errorf("%s review returned no report", dimensions[item.index])
+			continue
+		}
+		ordered[item.index] = DimensionReview{Dimension: dimensions[item.index], Report: *item.review}
+	}
+	for _, err := range errorsByIndex {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ordered, nil
+}
+
 func runTeamReviewingNode(ctx context.Context, raw agentgraph.State) (agentgraph.NodeResult, error) {
 	state, err := teamState(raw)
 	if err != nil {
@@ -391,13 +450,9 @@ func runTeamReviewingNode(ctx context.Context, raw agentgraph.State) (agentgraph
 	}
 	reviewContext := buildReviewContext(state.report, state.currentStep.ID, state.currentStep.AllowedFiles, state.reviewHistory)
 	dimensions := reviewDimensionsForContext(reviewContext, state.fixing)
-	var reviews []DimensionReview
-	for _, dimension := range dimensions {
-		review, err := state.runner.roles.Review(ctx, ReviewTask{Dimension: dimension, Context: reviewContext})
-		if err != nil {
-			return agentgraph.NodeResult{}, state.nodeError("%s review failed: %v", dimension, err)
-		}
-		reviews = append(reviews, DimensionReview{Dimension: dimension, Report: *review})
+	reviews, err := runDimensionReviews(ctx, state.runner.roles, dimensions, reviewContext)
+	if err != nil {
+		return agentgraph.NodeResult{}, state.nodeError("review failed: %v", err)
 	}
 	bundle := mergeDimensionReviews(reviews)
 	round := ReviewRound{StepID: state.currentStep.ID, Dimensions: bundle.Dimensions, Findings: bundle.Findings, Summary: bundle.Summary}

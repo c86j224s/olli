@@ -48,6 +48,14 @@
     "default_template": "auto",
     "max_slides": 10
   },
+  "ai_gateway": {
+    "enabled": false,
+    "strategy": "least-loaded",
+    "health_interval_seconds": 15,
+    "failure_threshold": 3,
+    "cooldown_seconds": 60,
+    "nodes": []
+  },
   "whitelist_tools": [
     "calculator",
     "get_current_time",

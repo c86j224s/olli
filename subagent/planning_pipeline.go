@@ -737,7 +737,7 @@ func (m *ModelTeamRoles) createArchitectureAttempt(ctx context.Context, objectiv
 	evidence.CompletionReady = func() bool { return len(evidence.missingRequiredTools()) == 0 }
 	callCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypePlanner))
 	defer cancel()
-	report, err := m.runner.withModel(m.models.Planner).executeSubagentLoopWithFormat(callCtx, newSubagentID("architect"), string(TypePlanner), string(payload), architectPlannerPrompt, reg, architecturePlanSchema(), &temperature, evidence)
+	report, err := m.runner.withModel(m.models.Planner).withRole("architect").executeSubagentLoopWithFormat(callCtx, newSubagentID("architect"), string(TypePlanner), string(payload), architectPlannerPrompt, reg, architecturePlanSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, err
 	}
@@ -764,7 +764,7 @@ func (m *ModelTeamRoles) reviewArchitecture(ctx context.Context, objective strin
 	temperature := 0.1
 	callCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypeReviewer))
 	defer cancel()
-	cassandraRunner := m.runner.withModel(m.models.Cassandra)
+	cassandraRunner := m.runner.withModel(m.models.Cassandra).withRole("cassandra")
 	if m.models.ReviewerThinking != nil {
 		cassandraRunner = cassandraRunner.withThinking(*m.models.ReviewerThinking)
 	}
@@ -1135,7 +1135,7 @@ func (m *ModelTeamRoles) detailArchitectureWork(ctx context.Context, architectur
 	temperature := 0.1
 	callCtx, cancel := withRoleTimeout(ctx, m.runner.roleBudget(TypePlanner))
 	defer cancel()
-	report, err := m.runner.withModel(m.models.DetailPlanner).executeSubagentLoopWithFormat(callCtx, newSubagentID("detail-planner"), string(TypePlanner), string(payload), detailPlannerPrompt, reg, detailPlanSchema(), &temperature, nil)
+	report, err := m.runner.withModel(m.models.DetailPlanner).withRole("detail-planner").executeSubagentLoopWithFormat(callCtx, newSubagentID("detail-planner"), string(TypePlanner), string(payload), detailPlannerPrompt, reg, detailPlanSchema(), &temperature, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -21,6 +21,32 @@
 
 ---
 
+## 여러 Ollama 머신을 묶는 AI Gateway
+
+O.L.L.I.는 여러 머신의 Ollama를 모델·역할 기반 풀로 등록하고 weighted least-loaded 방식으로 서브에이전트를 배정할 수 있습니다. 노드별 동시 실행 제한, health probe, circuit breaker, drain/resume을 제공하며 Gateway가 활성화되면 네 전문 Reviewer와 독립 Detail Planner를 병렬 실행합니다. Coder는 파일 충돌을 막기 위해 계속 one-writer 순차 실행합니다.
+
+```json
+"ai_gateway": {
+  "enabled": true,
+  "strategy": "least-loaded",
+  "nodes": [
+    {
+      "id": "gpu-review-a",
+      "endpoint": "https://gpu-review-a.example.internal",
+      "models": ["gemma4:12b"],
+      "roles": ["reviewer", "presenter"],
+      "max_concurrency": 2,
+      "weight": 100,
+      "auth_token_env": "OLLI_GPU_REVIEW_A_TOKEN"
+    }
+  ]
+}
+```
+
+운영 명령은 `/gateway status`, `/gateway nodes`, `/gateway drain <node-id>`, `/gateway resume <node-id>`입니다. Ollama를 공용 인터넷에 직접 노출하지 말고 Tailscale/WireGuard 및 HTTPS 또는 mTLS reverse proxy를 사용하세요. 처음에는 `main` 노드 한 대로 Gateway를 확인한 뒤 Reviewer/Detail Planner, 마지막으로 Coder 노드를 추가하는 단계적 활성화를 권장합니다. 머신 준비, 전체 설정, 라우팅 규칙, 역할 이름, 배포·롤백·장애 대응은 [AI Gateway 가이드](AI_GATEWAY_GUIDE.md)를 참고하세요.
+
+---
+
 ## Presenter 템플릿과 역할별 모델
 
 Presenter는 모델이 HTML/CSS/JavaScript 전체를 자유 생성하는 대신, 검증된 시안 하나를 선택하고 구조화된 슬라이드 콘텐츠만 작성합니다. 호스트 Renderer가 반응형 레이아웃, 키보드 탐색, 진행률, 접근성 속성, HTML escaping을 공통 적용합니다.
