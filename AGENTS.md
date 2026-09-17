@@ -33,7 +33,18 @@ This repository is `O.L.L.I.`, a Go-based local Ollama agent with tool execution
 - Use small, focused patches. Do not rewrite unrelated files or revert user changes.
 - Use `rg` for search and `go test`/`go vet` for validation.
 - Prefer structured path APIs over string prefix checks. On case-insensitive filesystems, string comparisons are not enough for home/system-root checks; use canonical paths and same-file checks where possible.
-- Add or update regression tests whenever changing command execution, filesystem access, sessions, subagents, config permissions, or build cleanup.
+- Add or update regression tests whenever changing command execution, filesystem access, sessions, subagents, config permissions, generated-artifact renderers, model routing, time budgets, or build cleanup.
+
+## Model Routing and Generated Artifacts
+
+- Treat model selection as part of the role contract. Configure Planner, Researcher, Coder, Tester, Reviewer, Documenter, Presenter, and development-team specialists independently when their workloads differ; preserve a documented fallback to the active model for older configs.
+- Prefer the smallest model that can satisfy a narrow, validated contract. Do not ask a small model to invent content, application structure, styling, interaction code, and safety controls in one response.
+- For repeatable visual or document output, have the model choose from a small validated template catalog and return strict structured content. Keep responsive layout, accessibility, escaping, navigation, and other mechanical guarantees in deterministic host renderers.
+- Treat model output as untrusted data. Use strict schemas, bounded lengths and collection sizes, allowlisted variants, safe path validation, contextual escaping, and at most a bounded repair pass. Never silently accept or broaden an invalid contract.
+- A subagent's SUCCESS text is not completion evidence. Verify the reported artifact exists as a regular non-symlink file inside the workspace, validate its format, and exercise the user-visible interaction when practical.
+- When visual quality matters, inspect the rendered result at its primary viewport and at least one narrow viewport. Check navigation state, overflow, console errors, reduced-motion behavior, and external network requests rather than evaluating source alone.
+- Align layered time budgets: the parent workflow must outlive its bounded child calls, and the Ollama HTTP client timeout must not undercut the longest permitted role call. Add regression coverage whenever changing one layer.
+- Disposable smoke workspaces are intentionally deleted. If a human must inspect a generated artifact, capture it through an explicit safe export or test-owned output path before cleanup; do not weaken sandbox cleanup or copy arbitrary workspace contents to the host.
 
 ## Regression Test Safety
 
