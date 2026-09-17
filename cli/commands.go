@@ -7,19 +7,21 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/c86j224s/olli/agent"
+	"github.com/c86j224s/olli/gateway"
 	"github.com/c86j224s/olli/ollama"
 )
 
 type ToolConfirmer func(context.Context, string, map[string]interface{}) (bool, bool)
 
-func HandleCommand(cmdStr string, ag *agent.Agent, client *ollama.Client, models []string) bool {
+func HandleCommand(cmdStr string, ag *agent.Agent, client ollama.ChatClient, models []string) bool {
 	return HandleCommandWithContext(context.Background(), cmdStr, ag, client, models, nil)
 }
 
-func HandleCommandWithContext(ctx context.Context, cmdStr string, ag *agent.Agent, client *ollama.Client, models []string, confirm ToolConfirmer) bool {
+func HandleCommandWithContext(ctx context.Context, cmdStr string, ag *agent.Agent, client ollama.ChatClient, models []string, confirm ToolConfirmer) bool {
 	command, remainder := splitFirstField(cmdStr)
 	if command == "" {
 		return false
@@ -100,6 +102,9 @@ func HandleCommandWithContext(ctx context.Context, cmdStr string, ag *agent.Agen
 		}
 		fmt.Println()
 
+	case "/gateway":
+		handleGatewayCommand(ctx, remainder, ag)
+
 	case "/model":
 		if len(args) == 0 {
 			fmt.Printf("\n🤖 Active Model: %s%s%s\n\n", ColorBold, ag.GetModel(), ColorReset)
@@ -134,6 +139,40 @@ func HandleCommandWithContext(ctx context.Context, cmdStr string, ag *agent.Agen
 	}
 
 	return false
+}
+
+func handleGatewayCommand(ctx context.Context, remainder string, ag *agent.Agent) {
+	aiGateway, ok := ag.GetClient().(*gateway.Gateway)
+	if !ok {
+		fmt.Printf("%s[Gateway]%s AI gateway is disabled; using a single Ollama client.\n\n", ColorYellow, ColorReset)
+		return
+	}
+	args := strings.Fields(remainder)
+	command := "status"
+	if len(args) > 0 {
+		command = args[0]
+	}
+	switch command {
+	case "status", "nodes":
+		if command == "status" {
+			refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+			aiGateway.Refresh(refreshCtx)
+			cancel()
+		}
+		fmt.Printf("\n%sAI Gateway%s\n%s\n\n", ColorBold, ColorReset, aiGateway.StatusText())
+	case "drain", "resume":
+		if len(args) != 2 {
+			fmt.Printf("%sUsage: /gateway %s <node-id>%s\n\n", ColorYellow, command, ColorReset)
+			return
+		}
+		if err := aiGateway.SetDrain(args[1], command == "drain"); err != nil {
+			fmt.Printf("%s[Error]%s %v\n\n", ColorRed, ColorReset, err)
+			return
+		}
+		fmt.Printf("%s[Gateway]%s Node %s is now %s.\n\n", ColorGreen, ColorReset, args[1], map[bool]string{true: "draining", false: "active"}[command == "drain"])
+	default:
+		fmt.Printf("%sUsage: /gateway [status|nodes|drain <node-id>|resume <node-id>]%s\n\n", ColorYellow, ColorReset)
+	}
 }
 
 func splitFirstField(value string) (string, string) {
@@ -500,6 +539,7 @@ func printHelp() {
 	fmt.Println("  /goal [set|clear|status]    : Manage goal steering")
 	fmt.Println("  /session [list|new|load|rename|current|delete]: Manage persistent sessions")
 	fmt.Println("  /workflow [list|show|validate|run]: Manage and run OAW workflows")
+	fmt.Println("  /gateway [status|nodes|drain|resume]: Inspect or drain AI gateway nodes")
 	fmt.Println("  /summary                    : View agent conversation memory summary")
 	fmt.Println("  /numctx [tokens]            : View or update context window size")
 	fmt.Println("  /tools                      : View registered tools")

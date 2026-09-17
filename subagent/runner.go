@@ -21,7 +21,10 @@ import (
 const modelHeartbeatInterval = 30 * time.Second
 
 type SubagentRunner struct {
-	client            *ollama.Client
+	client            ollama.ChatClient
+	leaseProvider     ollama.LeaseProvider
+	role              string
+	routeNodeID       string
 	model             string
 	cfg               *config.Config
 	outputDir         string
@@ -34,7 +37,7 @@ type SubagentRunner struct {
 	heartbeatInterval time.Duration
 }
 
-func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspace string, sessionFile string, callbacks SubagentCallbacks, workspaceRootArg ...string) *SubagentRunner {
+func NewRunner(client ollama.ChatClient, model string, cfg *config.Config, workspace string, sessionFile string, callbacks SubagentCallbacks, workspaceRootArg ...string) *SubagentRunner {
 	if workspace == "" {
 		workspace = "."
 	}
@@ -56,7 +59,7 @@ func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspac
 		outDir = ""
 	}
 
-	return &SubagentRunner{
+	runner := &SubagentRunner{
 		client:        client,
 		model:         model,
 		cfg:           cfg,
@@ -66,6 +69,10 @@ func NewRunner(client *ollama.Client, model string, cfg *config.Config, workspac
 		sessionFile:   sessionFile,
 		callbacks:     callbacks,
 	}
+	if provider, ok := client.(ollama.LeaseProvider); ok {
+		runner.leaseProvider = provider
+	}
+	return runner
 }
 
 func (r *SubagentRunner) GetSessionFile() string {
@@ -82,6 +89,28 @@ func (r *SubagentRunner) withModel(model string) *SubagentRunner {
 		clone.model = strings.TrimSpace(model)
 	}
 	return &clone
+}
+
+func (r *SubagentRunner) withRole(role string) *SubagentRunner {
+	clone := *r
+	clone.role = strings.TrimSpace(role)
+	return &clone
+}
+
+func (r *SubagentRunner) routed(ctx context.Context, role string) (*SubagentRunner, func(error), error) {
+	if r == nil || r.leaseProvider == nil {
+		return r, func(error) {}, nil
+	}
+	lease, err := r.leaseProvider.Acquire(ctx, ollama.RouteRequest{Role: role, Model: r.model})
+	if err != nil {
+		return nil, nil, err
+	}
+	clone := *r
+	clone.client = lease.Client()
+	clone.leaseProvider = nil
+	clone.role = role
+	clone.routeNodeID = lease.NodeID()
+	return &clone, lease.Release, nil
 }
 
 func (r *SubagentRunner) withThinking(enabled bool) *SubagentRunner {
@@ -126,7 +155,23 @@ func (r *SubagentRunner) executeSubagentLoopWithContext(ctx context.Context, sub
 	return r.executeSubagentLoopWithFormat(ctx, subID, subType, task, sysPrompt, reg, nil, nil, nil)
 }
 
-func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subID string, subType string, task string, sysPrompt string, reg *tools.Registry, format any, temperature *float64, evidence *executionEvidence) (*ResultReport, error) {
+func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subID string, subType string, task string, sysPrompt string, reg *tools.Registry, format any, temperature *float64, evidence *executionEvidence) (report *ResultReport, runErr error) {
+	if r != nil && r.leaseProvider != nil {
+		role := r.role
+		if role == "" {
+			role = subType
+		}
+		routed, release, err := r.routed(ctx, role)
+		if err != nil {
+			return nil, fmt.Errorf("route %s model %s: %w", role, r.model, err)
+		}
+		defer func() { release(runErr) }()
+		report, runErr = routed.executeSubagentLoopWithFormat(ctx, subID, subType, task, sysPrompt, reg, format, temperature, evidence)
+		if report != nil {
+			report.RouteNodeID = routed.routeNodeID
+		}
+		return report, runErr
+	}
 	if r.outputDir == "" {
 		return nil, fmt.Errorf("subagent output directory is not safely contained within the workspace root")
 	}
@@ -541,7 +586,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 	}
 
 	metrics := guard.Terminate(agentloop.TerminationSucceeded)
-	report := &ResultReport{
+	report = &ResultReport{
 		SubagentID:    subID,
 		Type:          subType,
 		Task:          task,
@@ -666,7 +711,19 @@ func buildEvidenceCompletion(subType string, task string, evidence *executionEvi
 	}
 }
 
-func (r *SubagentRunner) requestStructuredRepair(ctx context.Context, subType string, payload string, rolePrompt string, invalidOutput string, validationErr error, format any, temperature *float64) (string, error) {
+func (r *SubagentRunner) requestStructuredRepair(ctx context.Context, subType string, payload string, rolePrompt string, invalidOutput string, validationErr error, format any, temperature *float64) (completion string, runErr error) {
+	if r != nil && r.leaseProvider != nil {
+		role := r.role
+		if role == "" {
+			role = subType
+		}
+		routed, release, err := r.routed(ctx, role)
+		if err != nil {
+			return "", fmt.Errorf("route structured repair for %s model %s: %w", role, r.model, err)
+		}
+		defer func() { release(runErr) }()
+		return routed.requestStructuredRepair(ctx, subType, payload, rolePrompt, invalidOutput, validationErr, format, temperature)
+	}
 	if format == nil {
 		return "", fmt.Errorf("structured repair format is required")
 	}
@@ -700,11 +757,11 @@ func (r *SubagentRunner) requestStructuredRepair(ctx context.Context, subType st
 		Options: options,
 		Think:   r.think,
 	}
-	completion, err := r.callModelWithHeartbeat(ctx, subType, req, ollama.StreamCallbacks{})
+	message, err := r.callModelWithHeartbeat(ctx, subType, req, ollama.StreamCallbacks{})
 	if err != nil {
 		return "", fmt.Errorf("subagent structured repair failed: %w", err)
 	}
-	return completion.Content, nil
+	return message.Content, nil
 }
 
 func (r *SubagentRunner) requestStructuredCompletion(ctx context.Context, subType string, req ollama.ChatRequest, messages []ollama.Message, streamCB ollama.StreamCallbacks, format any) (string, error) {

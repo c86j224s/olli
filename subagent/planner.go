@@ -48,7 +48,7 @@ func (r *SubagentRunner) RunPlannerWithContext(ctx context.Context, task string)
 	evidence := &executionEvidence{ProgressMarker: plannerProgressMarker, RequiredCalls: requiredPlannerViewCalls(task)}
 	evidence.ProgressState = func() string { return evidenceProgressSet(evidence) }
 	evidence.CompletionReady = func() bool { return len(evidence.missingRequiredTools()) == 0 }
-	report, err := r.executeSubagentLoopWithFormat(ctx, subID, string(TypePlanner), task, plannerSystemPrompt, reg, developmentPlanSchema(), &temperature, evidence)
+	report, err := r.withRole("planner").executeSubagentLoopWithFormat(ctx, subID, string(TypePlanner), task, plannerSystemPrompt, reg, developmentPlanSchema(), &temperature, evidence)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -62,7 +62,7 @@ func (r *SubagentRunner) RunPlannerWithContext(ctx context.Context, task string)
 	if err == nil {
 		return report, plan, nil
 	}
-	repaired, repairErr := r.repairDevelopmentPlan(ctx, task, report.Summary, err)
+	repaired, repairErr := r.withRole("planner").repairDevelopmentPlan(ctx, task, report.Summary, err)
 	if repairErr != nil {
 		return report, nil, fmt.Errorf("planner output validation failed (%v), repair failed: %w", err, repairErr)
 	}
@@ -77,7 +77,19 @@ func (r *SubagentRunner) RunPlannerWithContext(ctx context.Context, task string)
 	return report, plan, nil
 }
 
-func (r *SubagentRunner) repairDevelopmentPlan(ctx context.Context, task string, invalid string, validationErr error) (string, error) {
+func (r *SubagentRunner) repairDevelopmentPlan(ctx context.Context, task string, invalid string, validationErr error) (completion string, runErr error) {
+	if r != nil && r.leaseProvider != nil {
+		role := r.role
+		if role == "" {
+			role = "planner"
+		}
+		routed, release, err := r.routed(ctx, role)
+		if err != nil {
+			return "", fmt.Errorf("route planner repair model %s: %w", r.model, err)
+		}
+		defer func() { release(runErr) }()
+		return routed.repairDevelopmentPlan(ctx, task, invalid, validationErr)
+	}
 	numCtx := 32768
 	if r.cfg != nil && r.cfg.NumCtx > 0 {
 		numCtx = r.cfg.NumCtx

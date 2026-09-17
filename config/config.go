@@ -15,6 +15,7 @@ type Config struct {
 	Subagents       SubagentModelsConfig  `json:"subagents"`
 	DevelopmentTeam DevelopmentTeamConfig `json:"development_team"`
 	Presenter       PresenterConfig       `json:"presenter"`
+	AIGateway       AIGatewayConfig       `json:"ai_gateway"`
 	ImageGeneration ImageGenerationConfig `json:"image_generation"`
 	ImageInspection ImageInspectionConfig `json:"image_inspection"`
 	AudioGeneration AudioGenerationConfig `json:"audio_generation"`
@@ -48,6 +49,29 @@ type PresenterConfig struct {
 	DefaultTemplate string `json:"default_template"`
 	MaxSlides       int    `json:"max_slides"`
 }
+
+type AIGatewayConfig struct {
+	Enabled               bool                  `json:"enabled"`
+	Strategy              string                `json:"strategy"`
+	HealthIntervalSeconds int                   `json:"health_interval_seconds"`
+	FailureThreshold      int                   `json:"failure_threshold"`
+	CooldownSeconds       int                   `json:"cooldown_seconds"`
+	Nodes                 []AIGatewayNodeConfig `json:"nodes"`
+}
+
+type AIGatewayNodeConfig struct {
+	ID                string            `json:"id"`
+	Endpoint          string            `json:"endpoint"`
+	Models            []string          `json:"models,omitempty"`
+	Roles             []string          `json:"roles,omitempty"`
+	MaxConcurrency    int               `json:"max_concurrency"`
+	Weight            int               `json:"weight"`
+	AuthTokenEnv      string            `json:"auth_token_env,omitempty"`
+	InsecureAllowHTTP bool              `json:"insecure_allow_http,omitempty"`
+	HeadersFromEnv    map[string]string `json:"headers_from_env,omitempty"`
+}
+
+const AIGatewayStrategyLeastLoaded = "least-loaded"
 
 const (
 	PresenterTemplateAuto               = "auto"
@@ -196,6 +220,7 @@ func LoadConfig(filePath string) (*Config, error) {
 			"grep_search",
 		},
 		Presenter:       DefaultPresenterConfig(),
+		AIGateway:       DefaultAIGatewayConfig(),
 		ImageGeneration: DefaultImageGenerationConfig(),
 		ImageInspection: DefaultImageInspectionConfig(),
 		AudioGeneration: DefaultAudioGenerationConfig(),
@@ -222,6 +247,7 @@ func LoadConfig(filePath string) (*Config, error) {
 	cfg.filePath = absPath
 	cfg.DefaultMode = safeDefaultMode(cfg.DefaultMode)
 	cfg.Presenter = normalizePresenterConfig(cfg.Presenter)
+	cfg.AIGateway = normalizeAIGatewayConfig(cfg.AIGateway)
 	cfg.ImageGeneration = normalizeImageGenerationConfig(cfg.ImageGeneration)
 	cfg.ImageInspection = normalizeImageInspectionConfig(cfg.ImageInspection)
 	cfg.AudioGeneration = normalizeAudioGenerationConfig(cfg.AudioGeneration)
@@ -238,6 +264,40 @@ func LoadConfig(filePath string) (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func DefaultAIGatewayConfig() AIGatewayConfig {
+	return AIGatewayConfig{
+		Strategy:              AIGatewayStrategyLeastLoaded,
+		HealthIntervalSeconds: 15,
+		FailureThreshold:      3,
+		CooldownSeconds:       60,
+	}
+}
+
+func normalizeAIGatewayConfig(cfg AIGatewayConfig) AIGatewayConfig {
+	defaults := DefaultAIGatewayConfig()
+	if cfg.Strategy == "" {
+		cfg.Strategy = defaults.Strategy
+	}
+	if cfg.HealthIntervalSeconds <= 0 {
+		cfg.HealthIntervalSeconds = defaults.HealthIntervalSeconds
+	}
+	if cfg.FailureThreshold <= 0 {
+		cfg.FailureThreshold = defaults.FailureThreshold
+	}
+	if cfg.CooldownSeconds <= 0 {
+		cfg.CooldownSeconds = defaults.CooldownSeconds
+	}
+	for index := range cfg.Nodes {
+		if cfg.Nodes[index].MaxConcurrency <= 0 {
+			cfg.Nodes[index].MaxConcurrency = 1
+		}
+		if cfg.Nodes[index].Weight <= 0 {
+			cfg.Nodes[index].Weight = 100
+		}
+	}
+	return cfg
 }
 
 func DefaultPresenterConfig() PresenterConfig {

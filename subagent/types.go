@@ -165,4 +165,5 @@ type ResultReport struct {
 	LoopMetrics   *agentloop.Metrics          `json:"loop_metrics,omitempty"`
 	ArtifactFiles []string                    `json:"artifact_files,omitempty"`
 	CreatedFiles  []string                    `json:"created_files,omitempty"`
+	RouteNodeID   string                      `json:"route_node_id,omitempty"`
 }
