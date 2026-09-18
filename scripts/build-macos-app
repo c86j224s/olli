@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+REPO_ROOT="$(cd -P -- "$SCRIPT_DIR/.." && pwd)"
+SWIFT_PACKAGE="$REPO_ROOT/apps/macos/OlliDesktop"
+OUTPUT_ROOT="$REPO_ROOT/bin/macos"
+APP="$OUTPUT_ROOT/O.L.L.I. Desktop.app"
+CONTENTS="$APP/Contents"
+MACOS="$CONTENTS/MacOS"
+RESOURCES="$CONTENTS/Resources"
+
+if [ "$(uname -s)" != "Darwin" ]; then
+    printf '[desktop-build] macOS is required\n' >&2
+    exit 1
+fi
+if [ ! -f "$REPO_ROOT/go.mod" ] || [ ! -f "$SWIFT_PACKAGE/Package.swift" ]; then
+    printf '[desktop-build] refusing to run outside the O.L.L.I. repository\n' >&2
+    exit 1
+fi
+for path in "$OUTPUT_ROOT" "$APP"; do
+    if [ -L "$path" ]; then
+        printf '[desktop-build] refusing symlinked output: %s\n' "$path" >&2
+        exit 1
+    fi
+done
+
+case "${1:-build}" in
+    clean)
+        rm -rf -- "$OUTPUT_ROOT"
+        exit 0
+        ;;
+    build) ;;
+    *)
+        printf 'usage: scripts/build-macos-app [build|clean]\n' >&2
+        exit 2
+        ;;
+esac
+
+mkdir -p "$OUTPUT_ROOT"
+BUILD_ROOT="$(mktemp -d "$OUTPUT_ROOT/.build.XXXXXX")"
+cleanup() {
+    case "${BUILD_ROOT:-}" in
+        "$OUTPUT_ROOT"/.build.*) rm -rf -- "$BUILD_ROOT" ;;
+    esac
+}
+trap cleanup EXIT HUP INT TERM
+
+GO_OUT="$BUILD_ROOT/olli-desktop-core"
+SWIFT_OUT="$BUILD_ROOT/swift"
+(
+    cd "$REPO_ROOT"
+    CGO_ENABLED=0 GOENV=off GOPROXY=off GOSUMDB=off go build -trimpath -o "$GO_OUT" ./cmd/olli-desktop-core
+)
+(
+    cd "$SWIFT_PACKAGE"
+    swift build -c release --scratch-path "$SWIFT_OUT"
+)
+SWIFT_BIN="$SWIFT_OUT/release/OlliDesktop"
+if [ ! -x "$GO_OUT" ] || [ ! -x "$SWIFT_BIN" ]; then
+    printf '[desktop-build] expected binaries were not produced\n' >&2
+    exit 1
+fi
+
+STAGED_APP="$BUILD_ROOT/O.L.L.I. Desktop.app"
+STAGED_CONTENTS="$STAGED_APP/Contents"
+STAGED_MACOS="$STAGED_CONTENTS/MacOS"
+STAGED_RESOURCES="$STAGED_CONTENTS/Resources"
+mkdir -p "$STAGED_MACOS" "$STAGED_RESOURCES"
+cp "$SWIFT_BIN" "$STAGED_MACOS/OlliDesktop"
+cp "$GO_OUT" "$STAGED_MACOS/olli-desktop-core"
+chmod 0755 "$STAGED_MACOS/OlliDesktop" "$STAGED_MACOS/olli-desktop-core"
+cat > "$STAGED_CONTENTS/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key><string>ko</string>
+    <key>CFBundleExecutable</key><string>OlliDesktop</string>
+    <key>CFBundleIdentifier</key><string>dev.olli.desktop</string>
+    <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+    <key>CFBundleName</key><string>O.L.L.I. Desktop</string>
+    <key>CFBundlePackageType</key><string>APPL</string>
+    <key>CFBundleShortVersionString</key><string>0.1.0</string>
+    <key>CFBundleVersion</key><string>1</string>
+    <key>LSMinimumSystemVersion</key><string>14.0</string>
+    <key>NSHighResolutionCapable</key><true/>
+    <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
+</dict>
+</plist>
+PLIST
+if [ -e "$APP" ]; then
+    if [ ! -d "$APP" ] || [ -L "$APP" ]; then
+        printf '[desktop-build] refusing unsafe existing app path: %s\n' "$APP" >&2
+        exit 1
+    fi
+    rm -rf -- "$APP"
+fi
+mv -- "$STAGED_APP" "$APP"
+printf '[desktop-build] built %s\n' "$APP"

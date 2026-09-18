@@ -37,6 +37,15 @@ type developmentTeamState struct {
 
 func (r *DevelopmentTeamRunner) runGraph(ctx context.Context, objective string) DevelopmentTeamReport {
 	report := DevelopmentTeamReport{Status: "FAILED", Phase: TeamPhasePlanning}
+	r.emitRunEvent(RunEvent{Kind: "run_started", GraphID: "development-team", Status: "running", Message: "Development team run started"})
+	defer func() {
+		kind := "run_completed"
+		status := report.Status
+		if status != "SUCCESS" {
+			kind = "run_failed"
+		}
+		r.emitRunEvent(RunEvent{Kind: kind, GraphID: "development-team", Phase: string(report.Phase), Status: status, Message: report.Failure})
+	}()
 	if ctx == nil {
 		report.Phase = TeamPhaseFailed
 		report.Failure = "development team context is required"
@@ -548,6 +557,7 @@ func (s *developmentTeamState) latestTestFailed() bool {
 func (s *developmentTeamState) transition(phase TeamPhase) {
 	s.report.Phase = phase
 	s.report.Transitions = append(s.report.Transitions, phase)
+	s.runner.emitRunEvent(RunEvent{Kind: "phase_changed", GraphID: "development-team", NodeID: string(phase), Phase: string(phase), Status: "running"})
 }
 
 func (s *developmentTeamState) nodeError(format string, args ...any) error {

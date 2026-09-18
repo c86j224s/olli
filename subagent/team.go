@@ -122,6 +122,7 @@ type DevelopmentTeamRunner struct {
 	roles        DevelopmentTeamRoles
 	maxFixRounds int
 	workspace    string
+	onRunEvent   func(RunEvent)
 }
 
 func NewDevelopmentTeamRunner(roles DevelopmentTeamRoles, maxFixRounds int) (*DevelopmentTeamRunner, error) {
@@ -139,6 +140,21 @@ func NewDevelopmentTeamRunner(roles DevelopmentTeamRoles, maxFixRounds int) (*De
 		workspace = strings.TrimSpace(provider.TeamWorkspace())
 	}
 	return &DevelopmentTeamRunner{roles: roles, maxFixRounds: maxFixRounds, workspace: workspace}, nil
+}
+
+func (r *DevelopmentTeamRunner) WithRunEvents(callback func(RunEvent)) *DevelopmentTeamRunner {
+	if r == nil {
+		return nil
+	}
+	clone := *r
+	clone.onRunEvent = callback
+	return &clone
+}
+
+func (r *DevelopmentTeamRunner) emitRunEvent(event RunEvent) {
+	if r != nil && r.onRunEvent != nil {
+		r.onRunEvent(event)
+	}
 }
 
 func (r *DevelopmentTeamRunner) WithWorkspace(workspace string) *DevelopmentTeamRunner {

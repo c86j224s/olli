@@ -1,7 +1,7 @@
 # Binaries
 bin/
 toy-agent
-olli
+/olli
 
 # Temporary files
 *.tmp
@@ -15,3 +15,6 @@ sessions/
 
 # Config overrides
 # config.json
+apps/android/.gradle/
+apps/android/local.properties
+apps/android/**/build/

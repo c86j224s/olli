@@ -41,6 +41,11 @@ func (a *Agent) buildSubagentCallbacks(ctx context.Context) subagent.SubagentCal
 				cb.OnSubagentHeartbeat(subType, elapsed)
 			}
 		},
+		OnRunEvent: func(event subagent.RunEvent) {
+			if cb.OnRunEvent != nil {
+				cb.OnRunEvent(AgentRunEvent{Kind: event.Kind, GraphID: event.GraphID, NodeID: event.NodeID, ParentID: event.ParentID, Phase: event.Phase, Role: event.Role, Model: event.Model, RouteNodeID: event.RouteNodeID, Status: event.Status, Message: event.Message, ToolName: event.ToolName, DurationMS: event.DurationMS, Metadata: event.Metadata})
+			}
+		},
 	}
 }
 
@@ -188,6 +193,12 @@ func (a *Agent) registerSubagentTools() {
 		team, err := subagent.NewDevelopmentTeamRunner(roles, 2)
 		if err != nil {
 			return "", err
+		}
+		callbacks := callbacksFromContext(ctx)
+		if callbacks.OnRunEvent != nil {
+			team = team.WithRunEvents(func(event subagent.RunEvent) {
+				callbacks.OnRunEvent(AgentRunEvent{Kind: event.Kind, GraphID: event.GraphID, NodeID: event.NodeID, ParentID: event.ParentID, Phase: event.Phase, Role: event.Role, Model: event.Model, RouteNodeID: event.RouteNodeID, Status: event.Status, Message: event.Message, ToolName: event.ToolName, DurationMS: event.DurationMS, Metadata: event.Metadata})
+			})
 		}
 		report := team.Run(ctx, a.buildEnrichedSubagentTask(task))
 		data, err := json.MarshalIndent(report, "", "  ")

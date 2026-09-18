@@ -83,6 +83,12 @@ func (r *SubagentRunner) GetWorkspaceRoot() string {
 	return r.workspaceRoot
 }
 
+func (r *SubagentRunner) emitRunEvent(event RunEvent) {
+	if r != nil && r.callbacks.OnRunEvent != nil {
+		r.callbacks.OnRunEvent(event)
+	}
+}
+
 func (r *SubagentRunner) withModel(model string) *SubagentRunner {
 	clone := *r
 	if strings.TrimSpace(model) != "" {
@@ -165,6 +171,7 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		if err != nil {
 			return nil, fmt.Errorf("route %s model %s: %w", role, r.model, err)
 		}
+		r.emitRunEvent(RunEvent{Kind: "model_routed", NodeID: subID, Role: role, Model: r.model, RouteNodeID: routed.routeNodeID, Status: "leased"})
 		defer func() { release(runErr) }()
 		report, runErr = routed.executeSubagentLoopWithFormat(ctx, subID, subType, task, sysPrompt, reg, format, temperature, evidence)
 		if report != nil {
@@ -176,6 +183,23 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 		return nil, fmt.Errorf("subagent output directory is not safely contained within the workspace root")
 	}
 	jsonlPath := filepath.Join(r.outputDir, subID+".jsonl")
+	r.emitRunEvent(RunEvent{Kind: "node_started", NodeID: subID, Role: subType, Model: r.model, RouteNodeID: r.routeNodeID, Status: "running"})
+	nodeStarted := time.Now()
+	defer func() {
+		status := "completed"
+		kind := "node_completed"
+		message := ""
+		if runErr != nil || (report != nil && report.Status != "SUCCESS") {
+			status = "failed"
+			kind = "node_failed"
+			if runErr != nil {
+				message = runErr.Error()
+			} else if report != nil {
+				message = report.Summary
+			}
+		}
+		r.emitRunEvent(RunEvent{Kind: kind, NodeID: subID, Role: subType, Model: r.model, RouteNodeID: r.routeNodeID, Status: status, Message: message, DurationMS: time.Since(nodeStarted).Milliseconds()})
+	}()
 	jsonlFile, err := openSubagentLogFileNoFollow(jsonlPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create subagent jsonl: %w", err)
@@ -365,6 +389,8 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 					break
 				}
 				toolCallsRun++
+				toolStarted := time.Now()
+				r.emitRunEvent(RunEvent{Kind: "tool_started", NodeID: subID, Role: subType, Model: r.model, RouteNodeID: r.routeNodeID, Status: "running", ToolName: tc.Function.Name})
 				candidatePath, existedBefore, isArtifactCandidate := artifactCandidatePath(tc.Function.Arguments, r.workspace, r.workspaceRoot)
 				toolRes, tErr := reg.ExecuteContext(ctx, tc.Function.Name, tc.Function.Arguments)
 				resContent := toolRes
@@ -390,6 +416,13 @@ func (r *SubagentRunner) executeSubagentLoopWithFormat(ctx context.Context, subI
 					}
 				}
 
+				toolStatus := "succeeded"
+				toolMessage := ""
+				if tErr != nil {
+					toolStatus = "failed"
+					toolMessage = tErr.Error()
+				}
+				r.emitRunEvent(RunEvent{Kind: "tool_completed", NodeID: subID, Role: subType, Model: r.model, RouteNodeID: r.routeNodeID, Status: toolStatus, Message: toolMessage, ToolName: tc.Function.Name, DurationMS: time.Since(toolStarted).Milliseconds()})
 				if r.callbacks.OnToolCall != nil {
 					r.callbacks.OnToolCall(subType, tc.Function.Name, tc.Function.Arguments, resContent, tErr)
 				}

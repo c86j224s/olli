@@ -28,6 +28,23 @@ type SubagentCallbacks struct {
 	OnThinkingEnd    func()
 	OnToolCall       func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
 	OnModelHeartbeat func(subType string, elapsed time.Duration)
+	OnRunEvent       func(RunEvent)
+}
+
+type RunEvent struct {
+	Kind        string
+	GraphID     string
+	NodeID      string
+	ParentID    string
+	Phase       string
+	Role        string
+	Model       string
+	RouteNodeID string
+	Status      string
+	Message     string
+	ToolName    string
+	DurationMS  int64
+	Metadata    map[string]any
 }
 
 type successfulToolCall struct {

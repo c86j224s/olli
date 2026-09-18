@@ -46,6 +46,23 @@ type Callbacks struct {
 	OnSubagentThinkingEnd            func()
 	OnSubagentToolCall               func(subType string, toolName string, args map[string]interface{}, result string, execErr error)
 	OnSubagentHeartbeat              func(subType string, elapsed time.Duration)
+	OnRunEvent                       func(AgentRunEvent)
+}
+
+type AgentRunEvent struct {
+	Kind        string
+	GraphID     string
+	NodeID      string
+	ParentID    string
+	Phase       string
+	Role        string
+	Model       string
+	RouteNodeID string
+	Status      string
+	Message     string
+	ToolName    string
+	DurationMS  int64
+	Metadata    map[string]any
 }
 
 type Agent struct {
@@ -496,8 +513,22 @@ func (a *Agent) Ask(userInput string, cb Callbacks) (string, error) {
 	return a.AskWithContext(context.Background(), userInput, cb)
 }
 
-func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbacks) (string, error) {
+func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbacks) (answer string, runErr error) {
 	ctx = context.WithValue(ctx, callbackContextKey{}, cb)
+	if cb.OnRunEvent != nil {
+		cb.OnRunEvent(AgentRunEvent{Kind: "run_started", GraphID: "main-agent", NodeID: "main", Role: "main", Model: a.model, Status: "running", Message: "Agent run started"})
+		defer func() {
+			kind := "run_completed"
+			status := "success"
+			message := ""
+			if runErr != nil {
+				kind = "run_failed"
+				status = "failed"
+				message = runErr.Error()
+			}
+			cb.OnRunEvent(AgentRunEvent{Kind: kind, GraphID: "main-agent", NodeID: "main", Role: "main", Model: a.model, Status: status, Message: message})
+		}()
+	}
 
 	userMsg := ollama.Message{Role: "user", Content: userInput}
 	a.history = append(a.history, userMsg)
@@ -633,6 +664,15 @@ func (a *Agent) AskWithContext(ctx context.Context, userInput string, cb Callbac
 
 				if tErr == nil {
 					successfulActions[agentloop.ActionFingerprint(tc.Function.Name, tc.Function.Arguments)] = struct{}{}
+				}
+				if cb.OnRunEvent != nil {
+					status := "succeeded"
+					message := ""
+					if tErr != nil {
+						status = "failed"
+						message = tErr.Error()
+					}
+					cb.OnRunEvent(AgentRunEvent{Kind: "tool_completed", GraphID: "main-agent", NodeID: "main", Role: "main", Model: a.model, Status: status, Message: message, ToolName: tc.Function.Name})
 				}
 				if cb.OnToolCall != nil {
 					cb.OnToolCall(tc.Function.Name, tc.Function.Arguments, toolRes, tErr)

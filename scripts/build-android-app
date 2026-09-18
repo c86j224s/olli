@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SOURCE="${BASH_SOURCE[0]}"
+SCRIPT_DIR="$(cd -P -- "$(dirname -- "$SOURCE")" && pwd)"
+REPO_ROOT="$(cd -P -- "$SCRIPT_DIR/.." && pwd)"
+ANDROID_DIR="$REPO_ROOT/apps/android"
+
+if [ ! -x "$ANDROID_DIR/gradlew" ]; then
+    printf '[android-build] missing Gradle wrapper: %s\n' "$ANDROID_DIR/gradlew" >&2
+    exit 1
+fi
+if [ -z "${JAVA_HOME:-}" ]; then
+    for candidate in /opt/homebrew/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home /usr/local/opt/openjdk@17/libexec/openjdk.jdk/Contents/Home; do
+        if [ -x "$candidate/bin/java" ]; then JAVA_HOME="$candidate"; export JAVA_HOME; break; fi
+    done
+fi
+if [ -z "${ANDROID_HOME:-}" ]; then
+    for candidate in "$HOME/Library/Android/sdk" /opt/homebrew/share/android-commandlinetools; do
+        if [ -d "$candidate/platforms" ]; then ANDROID_HOME="$candidate"; export ANDROID_HOME; break; fi
+    done
+fi
+if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
+    printf '[android-build] JDK 17 is required; set JAVA_HOME\n' >&2
+    exit 1
+fi
+if [ -z "${ANDROID_HOME:-}" ] || [ ! -d "$ANDROID_HOME/platforms" ]; then
+    printf '[android-build] Android SDK is required; set ANDROID_HOME\n' >&2
+    exit 1
+fi
+cat > "$ANDROID_DIR/local.properties" <<EOF
+sdk.dir=$ANDROID_HOME
+EOF
+case "${1:-build}" in
+    build) tasks=(testDebugUnitTest assembleDebug) ;;
+    test) tasks=(testDebugUnitTest) ;;
+    clean) tasks=(clean) ;;
+    *) printf 'usage: scripts/build-android-app [build|test|clean]\n' >&2; exit 2 ;;
+esac
+cd "$ANDROID_DIR"
+exec ./gradlew --no-daemon "${tasks[@]}"
