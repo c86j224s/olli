@@ -21,6 +21,19 @@
 
 ---
 
+## macOS Desktop
+
+O.L.L.I. Desktop은 기존 Go Core와 동일한 Agent·Permission Engine·Development Graph·AI Gateway를 사용하는 네이티브 SwiftUI 앱입니다. 그래프의 현재 phase와 병렬 Reviewer, 역할별 모델과 Gateway route node, 도구 이벤트, 노드별 active/limit을 실시간으로 보여 줍니다.
+
+```bash
+./scripts/build-macos-app build
+open 'bin/macos/O.L.L.I. Desktop.app'
+```
+
+앱에서도 민감 도구는 CLI와 동일하게 승인·거부 과정을 거치며, Gateway drain/resume은 진행 중 lease를 강제 종료하지 않고 새 배정만 제어합니다. 현재 MVP의 사용법, 이벤트 계약, 빌드·검증·배포 제한은 [macOS Desktop 가이드](MACOS_APP_GUIDE.md)를 참고하세요.
+
+---
+
 ## 여러 Ollama 머신을 묶는 AI Gateway
 
 O.L.L.I.는 여러 머신의 Ollama를 모델·역할 기반 풀로 등록하고 weighted least-loaded 방식으로 서브에이전트를 배정할 수 있습니다. 노드별 동시 실행 제한, health probe, circuit breaker, drain/resume을 제공하며 Gateway가 활성화되면 네 전문 Reviewer와 독립 Detail Planner를 병렬 실행합니다. Coder는 파일 충돌을 막기 위해 계속 one-writer 순차 실행합니다.

@@ -67,6 +67,15 @@ type Gateway struct {
 	stop             chan struct{}
 	stopOnce         sync.Once
 	wg               sync.WaitGroup
+	observerMu       sync.RWMutex
+	onRoute          func(RouteEvent)
+}
+
+type RouteEvent struct {
+	NodeID string
+	Role   string
+	Model  string
+	Status string
 }
 
 type lease struct {
@@ -250,6 +259,27 @@ func normalizeRole(value string) string {
 	return value
 }
 
+func (g *Gateway) SetRouteObserver(observer func(RouteEvent)) {
+	if g == nil {
+		return
+	}
+	g.observerMu.Lock()
+	g.onRoute = observer
+	g.observerMu.Unlock()
+}
+
+func (g *Gateway) emitRouteEvent(event RouteEvent) {
+	if g == nil {
+		return
+	}
+	g.observerMu.RLock()
+	observer := g.onRoute
+	g.observerMu.RUnlock()
+	if observer != nil {
+		observer(event)
+	}
+}
+
 func (g *Gateway) Start(ctx context.Context) {
 	if g == nil {
 		return
@@ -341,6 +371,7 @@ func (g *Gateway) Acquire(ctx context.Context, request ollama.RouteRequest) (oll
 				candidate.mu.Lock()
 				candidate.active++
 				candidate.mu.Unlock()
+				g.emitRouteEvent(RouteEvent{NodeID: candidate.id, Role: role, Model: model, Status: "leased"})
 				return &lease{gateway: g, node: candidate}, nil
 			default:
 			}
@@ -415,6 +446,11 @@ func (l *lease) Release(runErr error) {
 		}
 		l.node.mu.Unlock()
 		<-l.node.semaphore
+		status := "released"
+		if runErr != nil {
+			status = "failed"
+		}
+		l.gateway.emitRouteEvent(RouteEvent{NodeID: l.node.id, Status: status})
 	})
 }
 
