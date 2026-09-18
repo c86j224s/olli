@@ -14,6 +14,8 @@ import (
 
 var runIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+func ValidRunID(value string) bool { return runIDPattern.MatchString(value) }
+
 type Recorder struct {
 	root string
 }

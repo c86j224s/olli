@@ -48,7 +48,8 @@ This repository is `O.L.L.I.`, a Go-based local Ollama agent with tool execution
 - When visual quality matters, inspect the rendered result at its primary viewport and at least one narrow viewport. Check navigation state, overflow, console errors, reduced-motion behavior, and external network requests rather than evaluating source alone.
 - Align layered time budgets: the parent workflow must outlive its bounded child calls, and the Ollama HTTP client timeout must not undercut the longest permitted role call. Add regression coverage whenever changing one layer.
 - Disposable smoke workspaces are intentionally deleted. If a human must inspect a generated artifact, capture it through an explicit safe export or test-owned output path before cleanup; do not weaken sandbox cleanup or copy arbitrary workspace contents to the host.
-- CLI and desktop adapters must share the same Core permission, workspace, sandbox, model-routing, and cancellation boundaries. A GUI must never gain a privileged alternate tool path.
+- CLI, desktop, mobile, and remote controller adapters must share the same Core permission, workspace, sandbox, model-routing, and cancellation boundaries. A GUI or remote API must never gain a privileged alternate tool path.
+- Remote controller endpoints bind to loopback by default. Non-loopback binds require explicit opt-in and authentication; mobile release clients require HTTPS. Never persist controller bearer tokens in source, config, logs, backups, or plain preferences.
 - Runtime UI events are an observability contract, not a transcript dump. Keep them ordered, bounded, replayable, and free of credentials, request headers, source snapshots, full prompts, or unbounded model/tool output.
 - Interactive graph controls must act only at explicit safe boundaries. Drain stops new leases; cancel propagates context; model and graph edits apply to a future run unless a checkpoint/resume contract proves mid-run mutation is safe.
 

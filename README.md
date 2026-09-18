@@ -21,6 +21,27 @@
 
 ---
 
+## Android Mobile
+
+O.L.L.I. Mobile은 Android 기기에서 모델이나 파일 도구를 직접 실행하지 않고, 인증된 Controller API로 실행·그래프·이벤트·Gateway 상태를 관찰하고 permission을 결정하는 Jetpack Compose 앱입니다.
+
+```bash
+# Controller 머신
+export OLLI_CONTROLLER_TOKEN="$(openssl rand -hex 32)"
+go run ./cmd/olli-controller \
+  --workspace "$PWD" \
+  --bind 100.64.0.10:8766 \
+  --allow-remote-bind
+
+# Android APK
+cd apps/android
+./gradlew testDebugUnitTest assembleDebug
+```
+
+배포 앱은 HTTPS만 허용하며 token은 앱 프로세스 메모리에만 유지합니다. 설치, Tailscale/WireGuard·reverse proxy 구성, emulator 연결과 수동 테스트는 [Android Mobile 가이드](ANDROID_APP_GUIDE.md)를 참고하세요.
+
+---
+
 ## macOS Desktop
 
 O.L.L.I. Desktop은 기존 Go Core와 동일한 Agent·Permission Engine·Development Graph·AI Gateway를 사용하는 네이티브 SwiftUI 앱입니다. 그래프의 현재 phase와 병렬 Reviewer, 역할별 모델과 Gateway route node, 도구 이벤트, 노드별 active/limit을 실시간으로 보여 줍니다.
